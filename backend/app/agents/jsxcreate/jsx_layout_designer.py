@@ -1,13 +1,15 @@
+import asyncio
 from typing import Dict, List
 from crewai import Agent, Task
 from custom_llm import get_azure_llm
 
+
 class JSXLayoutDesigner:
     """레이아웃 설계 전문 에이전트"""
-    
+
     def __init__(self):
         self.llm = get_azure_llm()
-    
+
     def create_agent(self):
         return Agent(
             role="JSX Layout Design Specialist",
@@ -18,12 +20,12 @@ class JSXLayoutDesigner:
             verbose=True,
             llm=self.llm
         )
-    
-    def design_layout_structure(self, content: Dict, analysis: Dict, component_name: str) -> Dict:
+
+    async def design_layout_structure(self, content: Dict, analysis: Dict, component_name: str) -> Dict:
         """레이아웃 구조 설계"""
-        
+
         agent = self.create_agent()
-        
+
         design_task = Task(
             description=f"""
             분석된 콘텐츠 특성에 맞는 JSX 레이아웃 구조를 설계하세요:
@@ -60,37 +62,37 @@ class JSXLayoutDesigner:
             agent=agent,
             expected_output="레이아웃 구조 설계 JSON"
         )
-        
+
         try:
-            result = agent.execute_task(design_task)
+            result = await agent.execute_task(design_task)
             design_result = self._parse_design_result(str(result), analysis)
-            
+
             print(f"✅ 레이아웃 설계 완료: {design_result.get('layout_type', '기본')} 구조")
             return design_result
-            
+
         except Exception as e:
             print(f"⚠️ 레이아웃 설계 실패: {e}")
             return self._create_default_design(analysis, component_name)
-    
+
     def _parse_design_result(self, result_text: str, analysis: Dict) -> Dict:
         """설계 결과 파싱"""
         try:
             import json
             import re
-            
+
             json_match = re.search(r'\{[^}]*\}', result_text, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group())
         except:
             pass
-        
+
         return self._create_default_design(analysis, "DefaultComponent")
-    
+
     def _create_default_design(self, analysis: Dict, component_name: str) -> Dict:
         """기본 설계 생성"""
-        
+
         layout_type = analysis.get('recommended_layout', 'grid')
-        
+
         designs = {
             "hero": {
                 "layout_type": "hero",
@@ -133,5 +135,5 @@ class JSXLayoutDesigner:
                 "text_sections": ["card_content"]
             }
         }
-        
+
         return designs.get(layout_type, designs["grid"])

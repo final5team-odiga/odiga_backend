@@ -2,6 +2,8 @@ import os
 import re
 import json
 import asyncio
+import aiofiles
+
 from agents.jsxcreate.jsx_content_analyzer import JSXContentAnalyzer
 from agents.jsxcreate.jsx_layout_designer import JSXLayoutDesigner
 from agents.jsxcreate.jsx_code_generator import JSXCodeGenerator
@@ -11,6 +13,7 @@ from typing import Dict, List
 from custom_llm import get_azure_llm
 from utils.pdf_vector_manager import PDFVectorManager
 from utils.agent_decision_logger import get_agent_logger
+
 
 class JSXCreatorAgent:
     """다중 에이전트 조율자 - JSX 생성 총괄 (의사결정 로깅 포함)"""
@@ -31,20 +34,22 @@ class JSXCreatorAgent:
 
     async def generate_jsx_components_async(self, template_data_path: str, templates_dir: str = "jsx_templates") -> List[Dict]:
         """jsx_templates 우선 사용하는 비동기 생성 (학습 기반)"""
-        
+
         # 이전 의사결정 로그에서 학습 인사이트 획득
-        learning_insights = self.logger.get_learning_insights("JSXCreatorAgent")
-        print(f"📚 JSXCreatorAgent 학습 인사이트: {len(learning_insights.get('recommendations', []))}개 추천사항")
+        learning_insights = self.logger.get_learning_insights(
+            "JSXCreatorAgent")
+        print(
+            f"📚 JSXCreatorAgent 학습 인사이트: {len(learning_insights.get('recommendations', []))}개 추천사항")
 
         # jsx_templates가 있으면 템플릿 기반으로, 없으면 기존 방식으로
         if os.path.exists(templates_dir) and any(f.endswith('.jsx') for f in os.listdir(templates_dir)):
             print(f"📁 jsx_templates 폴더 발견 - 템플릿 기반 생성 모드")
-            generated_components = self.generate_jsx_components_with_templates_and_learning(
+            generated_components = await self.generate_jsx_components_with_templates_and_learning(
                 template_data_path, templates_dir, learning_insights
             )
         else:
             print(f"📁 jsx_templates 없음 - 다중 에이전트 생성 모드")
-            generated_components = self.generate_jsx_components_with_multi_agents_and_learning(
+            generated_components = await self.generate_jsx_components_with_multi_agents_and_learning(
                 template_data_path, templates_dir, learning_insights
             )
 
@@ -53,8 +58,9 @@ class JSXCreatorAgent:
 
         # 전체 JSX 생성 과정 로깅
         total_components = len(generated_components)
-        successful_components = len([c for c in generated_components if c.get('jsx_code')])
-        
+        successful_components = len(
+            [c for c in generated_components if c.get('jsx_code')])
+
         self.logger.log_agent_decision(
             agent_name="JSXCreatorAgent",
             agent_role="JSX 생성 총괄 조율자",
@@ -84,21 +90,22 @@ class JSXCreatorAgent:
         print(f"✅ JSX 생성 완료: {len(generated_components)}개 컴포넌트 (학습 기반)")
         return generated_components
 
-    def generate_jsx_components_with_templates_and_learning(self, template_data_path: str, templates_dir: str, learning_insights: Dict) -> List[Dict]:
+    async def generate_jsx_components_with_templates_and_learning(self, template_data_path: str, templates_dir: str, learning_insights: Dict) -> List[Dict]:
         """jsx_templates를 활용한 JSX 생성 (학습 인사이트 적용)"""
 
         # 1. jsx_templates 폴더 분석
         print(f"\n📁 jsx_templates 폴더 분석 시작 (학습 기반)")
-        template_analysis = self.template_analyzer.analyze_jsx_templates(templates_dir)
+        template_analysis = await self.template_analyzer.analyze_jsx_templates(
+            templates_dir)
 
         if not template_analysis:
             print(f"⚠️ jsx_templates 분석 실패 - 다중 에이전트 모드로 전환")
-            return self.generate_jsx_components_with_multi_agents_and_learning(template_data_path, templates_dir, learning_insights)
+            return await self.generate_jsx_components_with_multi_agents_and_learning(template_data_path, templates_dir, learning_insights)
 
         # 2. template_data.json 읽기
         try:
-            with open(template_data_path, 'r', encoding='utf-8') as f:
-                file_content = f.read()
+            async with aiofiles.open(template_data_path, 'r', encoding='utf-8') as f:
+                file_content = await f.read()
 
             template_data = self._safe_parse_json(file_content)
 
@@ -128,10 +135,11 @@ class JSXCreatorAgent:
             print(f"\n=== {component_name} 템플릿 기반 생성 시작 (학습 적용) ===")
 
             # 콘텐츠 정제 (학습 인사이트 적용)
-            clean_content = self._clean_content_section_with_learning(content_section, learning_insights)
+            clean_content = self._clean_content_section_with_learning(
+                content_section, learning_insights)
 
             # 콘텐츠 분석
-            content_analysis = self.content_analyzer.analyze_content_for_jsx(
+            content_analysis = await self.content_analyzer.analyze_content_for_jsx(
                 clean_content, i, len(content_sections)
             )
 
@@ -146,12 +154,13 @@ class JSXCreatorAgent:
             print(f"  🎨 레이아웃 타입: {best_template_info['layout_type']}")
 
             # 템플릿을 콘텐츠에 적용
-            jsx_code = self.template_adapter.adapt_template_to_content(
+            jsx_code = await self.template_adapter.adapt_template_to_content(
                 best_template_info, clean_content, component_name
             )
 
             # 기본 검증 및 수정
-            jsx_code = self._validate_template_adapted_jsx(jsx_code, clean_content, component_name)
+            jsx_code = self._validate_template_adapted_jsx(
+                jsx_code, clean_content, component_name)
 
             # 개별 컴포넌트 생성 로깅
             self.logger.log_agent_interaction(
@@ -181,13 +190,13 @@ class JSXCreatorAgent:
 
         return generated_components
 
-    def generate_jsx_components_with_multi_agents_and_learning(self, template_data_path: str, templates_dir: str, learning_insights: Dict) -> List[Dict]:
+    async def generate_jsx_components_with_multi_agents_and_learning(self, template_data_path: str, templates_dir: str, learning_insights: Dict) -> List[Dict]:
         """다중 에이전트 협업 JSX 생성 (학습 인사이트 적용)"""
 
         # template_data.json 읽기
         try:
-            with open(template_data_path, 'r', encoding='utf-8') as f:
-                file_content = f.read()
+            async with aiofiles.open(template_data_path, 'r', encoding='utf-8') as f:
+                file_content = await f.read()
 
             template_data = self._safe_parse_json(file_content)
 
@@ -211,16 +220,18 @@ class JSXCreatorAgent:
             if not isinstance(content_section, dict):
                 continue
 
-            template_name = content_section.get("template", f"Section{i+1:02d}.jsx")
+            template_name = content_section.get(
+                "template", f"Section{i+1:02d}.jsx")
             component_name = f"{template_name.replace('.jsx', '')}MultiAgent{i+1}"
 
             print(f"\n=== {component_name} 다중 에이전트 협업 시작 (학습 적용) ===")
 
             # 콘텐츠 정제 (학습 인사이트 적용)
-            clean_content = self._clean_content_section_with_learning(content_section, learning_insights)
+            clean_content = self._clean_content_section_with_learning(
+                content_section, learning_insights)
 
             # 4단계 다중 에이전트 협업 프로세스 (학습 기반)
-            jsx_code = self._multi_agent_jsx_pipeline_with_learning(
+            jsx_code = await self._multi_agent_jsx_pipeline_with_learning(
                 clean_content,
                 component_name,
                 i,
@@ -245,10 +256,11 @@ class JSXCreatorAgent:
 
     def _select_template_with_learning(self, content: Dict, analysis: Dict, template_analysis: Dict, learning_insights: Dict) -> str:
         """학습 인사이트를 적용한 템플릿 선택"""
-        
+
         # 기본 템플릿 선택
-        base_selection = self.template_analyzer.get_best_template_for_content(content, analysis)
-        
+        base_selection = self.template_analyzer.get_best_template_for_content(
+            content, analysis)
+
         # 학습 인사이트 적용
         recommendations = learning_insights.get('recommendations', [])
         for recommendation in recommendations:
@@ -257,9 +269,11 @@ class JSXCreatorAgent:
                 available_templates = list(template_analysis.keys())
                 if len(available_templates) > 1:
                     # 기본 선택과 다른 템플릿 중에서 선택
-                    alternative_templates = [t for t in available_templates if t != base_selection]
+                    alternative_templates = [
+                        t for t in available_templates if t != base_selection]
                     if alternative_templates:
-                        print(f"  🎯 학습 인사이트 적용: 다양성을 위해 {alternative_templates[0]} 선택")
+                        print(
+                            f"  🎯 학습 인사이트 적용: 다양성을 위해 {alternative_templates[0]} 선택")
                         return alternative_templates[0]
             elif "템플릿" in recommendation and "신뢰도" in recommendation:
                 # 신뢰도가 높은 템플릿 우선 선택
@@ -268,17 +282,18 @@ class JSXCreatorAgent:
                     if info.get('layout_confidence', 0) > 0.8
                 ]
                 if high_confidence_templates and base_selection not in high_confidence_templates:
-                    print(f"  🎯 학습 인사이트 적용: 고신뢰도 템플릿 {high_confidence_templates[0]} 선택")
+                    print(
+                        f"  🎯 학습 인사이트 적용: 고신뢰도 템플릿 {high_confidence_templates[0]} 선택")
                     return high_confidence_templates[0]
-        
+
         return base_selection
 
     def _clean_content_section_with_learning(self, content_section: Dict, learning_insights: Dict) -> Dict:
         """학습 인사이트를 적용한 콘텐츠 정제"""
-        
+
         # 기본 정제
         clean_content = self._clean_content_section(content_section)
-        
+
         # 학습 인사이트 적용
         key_insights = learning_insights.get('key_insights', [])
         for insight in key_insights:
@@ -291,12 +306,13 @@ class JSXCreatorAgent:
                 # 본문을 더 풍부하게 만들기
                 body = clean_content.get('body', '')
                 if len(body) < 500:
-                    clean_content['body'] = body + "\n\n이 경험은 특별한 의미를 가지고 있습니다."
-        
+                    clean_content['body'] = body + \
+                        "\n\n이 경험은 특별한 의미를 가지고 있습니다."
+
         return clean_content
 
-    def _multi_agent_jsx_pipeline_with_learning(self, content: Dict, component_name: str, index: int, 
-                                              total_sections: int, learning_insights: Dict) -> str:
+    def _multi_agent_jsx_pipeline_with_learning(self, content: Dict, component_name: str, index: int,
+                                                total_sections: int, learning_insights: Dict) -> str:
         """4단계 다중 에이전트 파이프라인 (학습 기반)"""
 
         try:
@@ -305,18 +321,20 @@ class JSXCreatorAgent:
             analysis_result = self.content_analyzer.analyze_content_for_jsx(
                 content, index, total_sections
             )
-            
+
             # 학습 인사이트를 분석 결과에 통합
-            analysis_result = self._enhance_analysis_with_learning(analysis_result, learning_insights)
+            analysis_result = self._enhance_analysis_with_learning(
+                analysis_result, learning_insights)
 
             # 2단계: 레이아웃 설계 (JSXLayoutDesigner) - 학습 적용
             print(f"  🎨 2단계: 레이아웃 설계 중... (학습 적용)")
             design_result = self.layout_designer.design_layout_structure(
                 content, analysis_result, component_name
             )
-            
+
             # 학습 인사이트를 설계 결과에 통합
-            design_result = self._enhance_design_with_learning(design_result, learning_insights)
+            design_result = self._enhance_design_with_learning(
+                design_result, learning_insights)
 
             # 3단계: JSX 코드 생성 (JSXCodeGenerator) - 학습 적용
             print(f"  💻 3단계: JSX 코드 생성 중... (학습 적용)")
@@ -326,7 +344,8 @@ class JSXCreatorAgent:
 
             # 4단계: 코드 검증 및 수정 (학습 기반 검증)
             print(f"  🔍 4단계: 코드 검증 중... (학습 적용)")
-            validated_jsx = self._validate_generated_jsx_with_learning(jsx_code, content, component_name, learning_insights)
+            validated_jsx = self._validate_generated_jsx_with_learning(
+                jsx_code, content, component_name, learning_insights)
 
             # 각 단계별 상호작용 로깅
             self.logger.log_agent_interaction(
@@ -350,9 +369,9 @@ class JSXCreatorAgent:
 
     def _enhance_analysis_with_learning(self, analysis_result: Dict, learning_insights: Dict) -> Dict:
         """학습 인사이트로 분석 결과 강화"""
-        
+
         enhanced_result = analysis_result.copy()
-        
+
         # 학습 기반 레이아웃 추천 조정
         recommendations = learning_insights.get('recommendations', [])
         for recommendation in recommendations:
@@ -364,16 +383,17 @@ class JSXCreatorAgent:
                 if enhanced_result.get('recommended_layout') == 'minimal':
                     enhanced_result['recommended_layout'] = 'magazine'
                     enhanced_result['learning_adjustment'] = 'enhanced_based_on_learning'
-        
+
         return enhanced_result
 
     def _enhance_design_with_learning(self, design_result: Dict, learning_insights: Dict) -> Dict:
         """학습 인사이트로 설계 결과 강화"""
-        
+
         enhanced_result = design_result.copy()
-        
+
         # 학습 기반 색상 스키마 조정
-        performance_analysis = learning_insights.get('performance_analysis', {})
+        performance_analysis = learning_insights.get(
+            'performance_analysis', {})
         if performance_analysis.get('performance_metrics'):
             # 이전 성능이 좋았던 색상 스키마 적용
             enhanced_result['color_scheme'] = {
@@ -381,15 +401,16 @@ class JSXCreatorAgent:
                 "secondary": "#f1f5f9"
             }
             enhanced_result['learning_enhancement'] = 'color_optimized'
-        
+
         return enhanced_result
 
     def _validate_generated_jsx_with_learning(self, jsx_code: str, content: Dict, component_name: str, learning_insights: Dict) -> str:
         """학습 기반 JSX 검증"""
-        
+
         # 기본 검증
-        validated_jsx = self._validate_generated_jsx(jsx_code, content, component_name)
-        
+        validated_jsx = self._validate_generated_jsx(
+            jsx_code, content, component_name)
+
         # 학습 인사이트 기반 추가 검증
         key_insights = learning_insights.get('key_insights', [])
         for insight in key_insights:
@@ -398,21 +419,24 @@ class JSXCreatorAgent:
                 images = content.get('images', [])
                 if images and '<img' not in validated_jsx:
                     # 강제로 이미지 추가
-                    validated_jsx = self._force_add_images_to_jsx(validated_jsx, images)
+                    validated_jsx = self._force_add_images_to_jsx(
+                        validated_jsx, images)
             elif "콘텐츠" in insight and "완전" in insight:
                 # 콘텐츠 완전성 확인 강화
                 title = content.get('title', '')
                 if title and title not in validated_jsx:
-                    validated_jsx = self._force_add_content_to_jsx(validated_jsx, content)
-        
+                    validated_jsx = self._force_add_content_to_jsx(
+                        validated_jsx, content)
+
         return validated_jsx
 
     def _create_safe_fallback_jsx_with_learning(self, content: Dict, component_name: str, index: int, learning_insights: Dict) -> str:
         """학습 기반 안전한 폴백 JSX 생성"""
-        
+
         # 기본 폴백 생성
-        base_jsx = self._create_safe_fallback_jsx(content, component_name, index)
-        
+        base_jsx = self._create_safe_fallback_jsx(
+            content, component_name, index)
+
         # 학습 인사이트 적용
         recommendations = learning_insights.get('recommendations', [])
         for recommendation in recommendations:
@@ -422,39 +446,40 @@ class JSXCreatorAgent:
                 base_jsx = base_jsx.replace('#f5f7fa', '#fef7ed')  # 따뜻한 베이지
             elif "여백" in recommendation and "넓은" in recommendation:
                 # 더 넓은 여백 적용
-                base_jsx = base_jsx.replace('padding: 60px 20px', 'padding: 80px 40px')
-        
+                base_jsx = base_jsx.replace(
+                    'padding: 60px 20px', 'padding: 80px 40px')
+
         return base_jsx
 
     def _force_add_images_to_jsx(self, jsx_code: str, images: List[str]) -> str:
         """JSX에 이미지 강제 추가"""
-        
+
         if not images:
             return jsx_code
-        
+
         # Container 내부에 이미지 추가
         image_jsx = f'\n      <img src="{images[0]}" alt="Travel" style={{{{width: "100%", maxWidth: "600px", height: "300px", objectFit: "cover", borderRadius: "8px", margin: "20px 0"}}}} />'
-        
+
         # return 문 내부에 추가
         jsx_code = jsx_code.replace(
             '<Container>',
             f'<Container>{image_jsx}'
         )
-        
+
         return jsx_code
 
     def _force_add_content_to_jsx(self, jsx_code: str, content: Dict) -> str:
         """JSX에 콘텐츠 강제 추가"""
-        
+
         title = content.get('title', '')
         body = content.get('body', '')
-        
+
         if title and title not in jsx_code:
             jsx_code = jsx_code.replace('<Title>', f'<Title>{title}')
-        
+
         if body and body not in jsx_code:
             jsx_code = jsx_code.replace('<Content>', f'<Content>{body}')
-        
+
         return jsx_code
 
     # 기존 메서드들 유지 (변경 없음)
@@ -484,16 +509,19 @@ class JSXCreatorAgent:
         if title and title not in jsx_code:
             # Props를 실제 값으로 교체
             jsx_code = jsx_code.replace('{title}', title)
-            jsx_code = jsx_code.replace('{subtitle}', content.get('subtitle', ''))
+            jsx_code = jsx_code.replace(
+                '{subtitle}', content.get('subtitle', ''))
             jsx_code = jsx_code.replace('{body}', content.get('body', ''))
-            jsx_code = jsx_code.replace('{tagline}', content.get('tagline', ''))
+            jsx_code = jsx_code.replace(
+                '{tagline}', content.get('tagline', ''))
 
             # 이미지 URL 교체
             images = content.get('images', [])
             if images:
                 for i, img_url in enumerate(images[:6]):
                     if img_url and img_url.strip():
-                        jsx_code = jsx_code.replace(f'{{imageUrl{i+1}}}', img_url)
+                        jsx_code = jsx_code.replace(
+                            f'{{imageUrl{i+1}}}', img_url)
                         jsx_code = jsx_code.replace('{imageUrl}', img_url)
 
         # 4. 문법 오류 수정
@@ -558,9 +586,11 @@ class JSXCreatorAgent:
         image_tags = []
         for i, img_url in enumerate(images[:6]):
             if img_url and img_url.strip():
-                image_tags.append(f'        <TravelImage src="{img_url}" alt="Travel {i+1}" />')
+                image_tags.append(
+                    f'        <TravelImage src="{img_url}" alt="Travel {i+1}" />')
 
-        image_jsx = '\n'.join(image_tags) if image_tags else '        <PlaceholderDiv>이미지 없음</PlaceholderDiv>'
+        image_jsx = '\n'.join(
+            image_tags) if image_tags else '        <PlaceholderDiv>이미지 없음</PlaceholderDiv>'
 
         return f'''import React from "react";
 import styled from "styled-components";
@@ -710,7 +740,8 @@ export const {component_name} = () => {{
 
         clean_title = title
         for pattern in patterns_to_remove:
-            clean_title = re.sub(pattern, '', clean_title, flags=re.IGNORECASE | re.DOTALL)
+            clean_title = re.sub(pattern, '', clean_title,
+                                 flags=re.IGNORECASE | re.DOTALL)
 
         clean_title = re.sub(r'\s+', ' ', clean_title)
         clean_title = re.sub(r'^[,\s]+|[,\s]+$', '', clean_title)
@@ -726,7 +757,8 @@ export const {component_name} = () => {{
 
         clean_subtitle = subtitle
         for pattern in patterns_to_remove:
-            clean_subtitle = re.sub(pattern, '', clean_subtitle, flags=re.IGNORECASE | re.DOTALL)
+            clean_subtitle = re.sub(
+                pattern, '', clean_subtitle, flags=re.IGNORECASE | re.DOTALL)
 
         clean_subtitle = re.sub(r'\s+', ' ', clean_subtitle)
         clean_subtitle = re.sub(r'^[,\s]+|[,\s]+$', '', clean_subtitle)
@@ -742,7 +774,8 @@ export const {component_name} = () => {{
 
         clean_body = body
         for pattern in patterns_to_remove:
-            clean_body = re.sub(pattern, '', clean_body, flags=re.IGNORECASE | re.DOTALL)
+            clean_body = re.sub(pattern, '', clean_body,
+                                flags=re.IGNORECASE | re.DOTALL)
 
         return clean_body.strip()
 
@@ -755,7 +788,8 @@ export const {component_name} = () => {{
         except json.JSONDecodeError as e:
             print(f"JSON 직접 파싱 실패: {e}")
             try:
-                cleaned_str = json_content.replace("'", '"').replace('True', 'true').replace('False', 'false').replace('None', 'null')
+                cleaned_str = json_content.replace("'", '"').replace(
+                    'True', 'true').replace('False', 'false').replace('None', 'null')
                 parsed_data = json.loads(cleaned_str)
                 print("✅ Python dict 문자열 변환 후 파싱 성공")
                 return parsed_data
@@ -799,11 +833,13 @@ export const {component_name} = () => {{
                 if os.path.exists(file_path):
                     file_size = os.path.getsize(file_path)
                     approach = component.get('approach', 'standard')
-                    learning_applied = component.get('learning_insights_applied', False)
-                    
-                    print(f"✅ {component['file']} 저장 완료 (크기: {file_size} bytes, 방식: {approach}, 학습적용: {learning_applied})")
+                    learning_applied = component.get(
+                        'learning_insights_applied', False)
+
+                    print(
+                        f"✅ {component['file']} 저장 완료 (크기: {file_size} bytes, 방식: {approach}, 학습적용: {learning_applied})")
                     saved_components.append(component)
-                    
+
                     # 개별 파일 저장 로깅
                     self.logger.log_agent_interaction(
                         source_agent="JSXCreatorAgent",
@@ -849,5 +885,6 @@ export const {component_name} = () => {{
             }
         )
 
-        print(f"📁 저장 완료: {len(saved_components)}/{len(generated_components)}개 성공 (학습 기반)")
+        print(
+            f"📁 저장 완료: {len(saved_components)}/{len(generated_components)}개 성공 (학습 기반)")
         return saved_components

@@ -2,13 +2,15 @@ from typing import Dict, List
 from crewai import Agent, Task
 from custom_llm import get_azure_llm
 import re
+import asyncio
+
 
 class JSXCodeGenerator:
     """JSX 코드 생성 전문 에이전트"""
-    
+
     def __init__(self):
         self.llm = get_azure_llm()
-    
+
     def create_agent(self):
         return Agent(
             role="React JSX Code Generation Expert",
@@ -61,14 +63,14 @@ class JSXCodeGenerator:
             verbose=True,
             llm=self.llm
         )
-    
-    def generate_jsx_code(self, content: Dict, design: Dict, component_name: str) -> str:
-      """JSX 코드 생성 (마크다운 블록 제거)"""
-      
-      agent = self.create_agent()
-      
-      generation_task = Task(
-          description=f"""
+
+    async def generate_jsx_code(self, content: Dict, design: Dict, component_name: str) -> str:
+        """JSX 코드 생성 (마크다운 블록 제거)"""
+
+        agent = self.create_agent()
+
+        generation_task = Task(
+            description=f"""
           설계된 레이아웃 구조를 바탕으로 완벽한 JSX 코드를 생성하세요:
           
           **실제 콘텐츠:**
@@ -102,101 +104,102 @@ class JSXCodeGenerator:
           
           **출력:** 순수한 JSX 파일 코드만 출력 (마크다운 블록이나 설명 없이)
           """,
-          agent=agent,
-          expected_output="순수한 JSX 코드 (마크다운 블록 없음)"
-      )
-      
-      try:
-          result = agent.execute_task(generation_task)
-          jsx_code = str(result)
-          
-          # 마크다운 블록 강제 제거
-          jsx_code = self._remove_markdown_blocks(jsx_code)
-          
-          # 기본 검증
-          jsx_code = self._validate_basic_structure(jsx_code, component_name)
-          
-          # 이미지 URL 강제 포함
-          jsx_code = self._ensure_image_urls(jsx_code, content)
-          
-          print(f"✅ JSX 코드 생성 완료: {component_name}")
-          return jsx_code
-          
-      except Exception as e:
-          print(f"⚠️ JSX 코드 생성 실패: {e}")
-          return self._create_fallback_jsx(content, design, component_name)
+            agent=agent,
+            expected_output="순수한 JSX 코드 (마크다운 블록 없음)"
+        )
 
-  
+        try:
+            result = await agent.execute_task(generation_task)
+            jsx_code = str(result)
+
+            # 마크다운 블록 강제 제거
+            jsx_code = self._remove_markdown_blocks(jsx_code)
+
+            # 기본 검증
+            jsx_code = self._validate_basic_structure(jsx_code, component_name)
+
+            # 이미지 URL 강제 포함
+            jsx_code = self._ensure_image_urls(jsx_code, content)
+
+            print(f"✅ JSX 코드 생성 완료: {component_name}")
+            return jsx_code
+
+        except Exception as e:
+            print(f"⚠️ JSX 코드 생성 실패: {e}")
+            return self._create_fallback_jsx(content, design, component_name)
+
     def _remove_markdown_blocks(self, jsx_code: str) -> str:
-          """마크다운 블록 완전 제거"""
-  
-          # 모든 종류의 마크다운 블록 제거
-          jsx_code = re.sub(r'```jsx', '', jsx_code)
-          jsx_code = re.sub(r'```\n?', '', jsx_code)
-          jsx_code = re.sub(r'^```', '', jsx_code)
-          jsx_code = re.sub(r'`{3,}', '', jsx_code)
-  
-          # 설명 텍스트 제거
-          jsx_code = re.sub(r'^(이 코드는|다음은|아래는|위의?).*?\n', '', jsx_code, flags=re.MULTILINE)
-          jsx_code = re.sub(r'코드.*?입니다.*?\n', '', jsx_code, flags=re.MULTILINE)
-  
-          return jsx_code.strip()
+        """마크다운 블록 완전 제거"""
+
+        # 모든 종류의 마크다운 블록 제거
+        jsx_code = re.sub(r'```jsx', '', jsx_code)
+        jsx_code = re.sub(r'```\n?', '', jsx_code)
+        jsx_code = re.sub(r'^```', '', jsx_code)
+        jsx_code = re.sub(r'`{3,}', '', jsx_code)
+
+        # 설명 텍스트 제거
+        jsx_code = re.sub(r'^(이 코드는|다음은|아래는|위의?).*?\n',
+                          '', jsx_code, flags=re.MULTILINE)
+        jsx_code = re.sub(r'코드.*?입니다.*?\n', '', jsx_code, flags=re.MULTILINE)
+
+        return jsx_code.strip()
 
     def _ensure_image_urls(self, jsx_code: str, content: Dict) -> str:
         """이미지 URL 강제 포함"""
-        
+
         images = content.get('images', [])
         if not images:
             return jsx_code
-        
+
         # 이미지 태그가 없으면 추가
         if '<img' not in jsx_code and 'Image' not in jsx_code:
             # Container 내부에 이미지 추가
             container_pattern = r'(return $$\s*<Container[^>]*>)(.*?)(</Container>)'
-            
+
             def add_images(match):
                 container_open = match.group(1)
                 container_content = match.group(2)
                 container_close = match.group(3)
-                
+
                 # 첫 번째 이미지 추가
                 if images:
                     image_jsx = f'\n      <img src="{images}" alt="Travel" style={{{{width: "100%", maxWidth: "600px", height: "300px", objectFit: "cover", borderRadius: "8px", margin: "20px 0"}}}} />'
                     new_content = container_content + image_jsx
                     return container_open + new_content + '\n    ' + container_close
-                
+
                 return match.group(0)
-            
-            jsx_code = re.sub(container_pattern, add_images, jsx_code, flags=re.DOTALL)
-        
+
+            jsx_code = re.sub(container_pattern, add_images,
+                              jsx_code, flags=re.DOTALL)
+
         return jsx_code
 
     def _validate_basic_structure(self, jsx_code: str, component_name: str) -> str:
         """기본 구조 검증"""
-        
+
         # 필수 요소 확인
         if 'import React' not in jsx_code:
             jsx_code = 'import React from "react";\n' + jsx_code
-        
+
         if 'import styled' not in jsx_code:
             jsx_code = jsx_code.replace(
                 'import React from "react";',
                 'import React from "react";\nimport styled from "styled-components";'
             )
-        
+
         if f'export const {component_name}' not in jsx_code:
             jsx_code = jsx_code.replace(
                 'export const',
                 f'export const {component_name}'
             )
-        
+
         return jsx_code
 
     def _create_fallback_jsx(self, content: Dict, design: Dict, component_name: str) -> str:
         """폴백 JSX 생성"""
-        
+
         layout_type = design.get('layout_type', 'grid')
-        
+
         if layout_type == 'hero':
             return self._create_hero_fallback(content, component_name)
         elif layout_type == 'magazine':
@@ -210,20 +213,22 @@ class JSXCodeGenerator:
 
     def _create_grid_fallback(self, content: Dict, component_name: str) -> str:
         """그리드 폴백 JSX"""
-        
+
         title = content.get('title', '도쿄 여행 이야기')
         subtitle = content.get('subtitle', '특별한 순간들')
         body = content.get('body', '여행의 아름다운 기억들')
         images = content.get('images', [])
         tagline = content.get('tagline', 'TRAVEL & CULTURE')
-        
+
         image_tags = []
         for i, img_url in enumerate(images[:4]):
             if img_url and img_url.strip():
-                image_tags.append(f'        <GridImage src="{img_url}" alt="Travel {i+1}" />')
-        
-        image_jsx = '\n'.join(image_tags) if image_tags else '        <div>이미지 없음</div>'
-        
+                image_tags.append(
+                    f'        <GridImage src="{img_url}" alt="Travel {i+1}" />')
+
+        image_jsx = '\n'.join(
+            image_tags) if image_tags else '        <div>이미지 없음</div>'
+
         return f'''import React from "react";
 import styled from "styled-components";
 
@@ -319,15 +324,15 @@ export const {component_name} = () => {{
 
     def _create_hero_fallback(self, content: Dict, component_name: str) -> str:
         """히어로 폴백 JSX"""
-        
+
         title = content.get('title', '도쿄 여행 이야기')
         subtitle = content.get('subtitle', '특별한 순간들')
         body = content.get('body', '여행의 아름다운 기억들')
         images = content.get('images', [])
         tagline = content.get('tagline', 'TRAVEL & CULTURE')
-        
+
         first_image = images[0] if images else ''
-        
+
         return f'''import React from "react";
 import styled from "styled-components";
 
@@ -394,15 +399,15 @@ export const {component_name} = () => {{
 
     def _create_magazine_fallback(self, content: Dict, component_name: str) -> str:
         """매거진 폴백 JSX"""
-        
+
         title = content.get('title', '도쿄 여행 이야기')
         subtitle = content.get('subtitle', '특별한 순간들')
         body = content.get('body', '여행의 아름다운 기억들')
         images = content.get('images', [])
         tagline = content.get('tagline', 'TRAVEL & CULTURE')
-        
+
         featured_image = images[0] if images else ''
-        
+
         return f'''import React from "react";
 import styled from "styled-components";
 
@@ -491,12 +496,12 @@ export const {component_name} = () => {{
 
     def _create_minimal_fallback(self, content: Dict, component_name: str) -> str:
         """미니멀 폴백 JSX"""
-        
+
         title = content.get('title', '도쿄 여행 이야기')
         subtitle = content.get('subtitle', '특별한 순간들')
         body = content.get('body', '여행의 아름다운 기억들')
         tagline = content.get('tagline', 'TRAVEL & CULTURE')
-        
+
         return f'''import React from "react";
 import styled from "styled-components";
 
@@ -564,15 +569,15 @@ export const {component_name} = () => {{
 
     def _create_card_fallback(self, content: Dict, component_name: str) -> str:
         """카드 폴백 JSX"""
-        
+
         title = content.get('title', '도쿄 여행 이야기')
         subtitle = content.get('subtitle', '특별한 순간들')
         body = content.get('body', '여행의 아름다운 기억들')
         images = content.get('images', [])
         tagline = content.get('tagline', 'TRAVEL & CULTURE')
-        
+
         first_image = images[0] if images else ''
-        
+
         return f'''import React from "react";
 import styled from "styled-components";
 
