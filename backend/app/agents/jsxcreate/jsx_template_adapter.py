@@ -3,6 +3,7 @@ from typing import Dict, List
 from crewai import Agent, Task, Crew, Process
 from custom_llm import get_azure_llm
 from utils.agent_decision_logger import get_agent_logger, get_complete_data_manager
+import asyncio
 
 class JSXTemplateAdapter:
     """JSX 템플릿 어댑터 (CrewAI 기반 로깅 시스템 통합)"""
