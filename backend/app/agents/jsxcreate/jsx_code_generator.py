@@ -897,10 +897,10 @@ export const {component_name} = () => {{
 
     def _remove_markdown_blocks(self, jsx_code: str) -> str:
         """마크다운 블록 완전 제거"""
-        jsx_code = re.sub(r'```
-        jsx_code=re.sub(r'```', '', jsx_code)
-        jsx_code=re.sub(r'^(이 코드는|다음은|아래는).*?\n', '',
-                        jsx_code, flags=re.MULTILINE)
+        jsx_code = re.sub(r'```[\s\S]*?```', '', jsx_code)
+        jsx_code = re.sub(r'```', '', jsx_code)
+        jsx_code = re.sub(r'^(이 코드는|다음은|아래는).*?\n', '',
+                          jsx_code, flags=re.MULTILINE)
         return jsx_code.strip()
 
     def _validate_basic_structure(self, jsx_code: str, component_name: str) -> str:
