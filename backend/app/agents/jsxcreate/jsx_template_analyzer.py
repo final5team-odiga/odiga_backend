@@ -5,6 +5,7 @@ from crewai import Agent, Task, Crew, Process
 from custom_llm import get_azure_llm
 from utils.pdf_vector_manager import PDFVectorManager
 from utils.agent_decision_logger import get_agent_logger, get_complete_data_manager
+import asyncio
 
 class JSXTemplateAnalyzer:
     """JSX 템플릿 분석기 (CrewAI 기반 로깅 시스템 통합)"""
@@ -22,7 +23,7 @@ class JSXTemplateAnalyzer:
         self.agent_result_integrator = self._create_agent_result_integrator()
         self.template_selector_agent = self._create_template_selector_agent()
 
-    def _create_template_analysis_agent(self):
+    async def _create_template_analysis_agent(self):
         """템플릿 분석 전문 에이전트"""
         return Agent(
             role="JSX 템플릿 구조 분석 전문가",
@@ -49,7 +50,7 @@ class JSXTemplateAnalyzer:
             allow_delegation=False
         )
 
-    def _create_vector_enhancement_agent(self):
+    async def _create_vector_enhancement_agent(self):
         """벡터 데이터 강화 전문가"""
         return Agent(
             role="PDF 벡터 데이터 기반 템플릿 강화 전문가",
@@ -75,7 +76,7 @@ class JSXTemplateAnalyzer:
             allow_delegation=False
         )
 
-    def _create_agent_result_integrator(self):
+    async def _create_agent_result_integrator(self):
         """에이전트 결과 통합 전문가"""
         return Agent(
             role="에이전트 결과 통합 및 템플릿 강화 전문가",
@@ -101,7 +102,7 @@ class JSXTemplateAnalyzer:
             allow_delegation=False
         )
 
-    def _create_template_selector_agent(self):
+    async def _create_template_selector_agent(self):
         """템플릿 선택 전문가"""
         return Agent(
             role="콘텐츠 기반 최적 템플릿 선택 전문가",
@@ -128,16 +129,16 @@ class JSXTemplateAnalyzer:
             allow_delegation=False
         )
 
-    def analyze_jsx_templates(self, templates_dir: str = "jsx_templates") -> Dict[str, Dict]:
+    async def analyze_jsx_templates(self, templates_dir: str = "jsx_templates") -> Dict[str, Dict]:
         """jsx_templates 폴더의 모든 템플릿 분석 (CrewAI 기반 벡터 데이터 활용 + 로깅)"""
-        
+
         # 이전 에이전트 결과 수집
         previous_results = self.result_manager.get_all_outputs(exclude_agent="JSXTemplateAnalyzer")
         binding_results = [r for r in previous_results if "BindingAgent" in r.get('agent_name', '')]
         org_results = [r for r in previous_results if "OrgAgent" in r.get('agent_name', '')]
-        
+
         print(f"📊 이전 에이전트 결과 수집: 전체 {len(previous_results)}개, BindingAgent {len(binding_results)}개, OrgAgent {len(org_results)}개")
-        
+
         if not os.path.exists(templates_dir):
             print(f"❌ 템플릿 폴더 없음: {templates_dir}")
             # 에러 로깅
@@ -155,9 +156,9 @@ class JSXTemplateAnalyzer:
                 }
             )
             return {}
-        
+
         jsx_files = [f for f in os.listdir(templates_dir) if f.endswith('.jsx')]
-        
+
         if not jsx_files:
             print(f"❌ JSX 템플릿 파일 없음: {templates_dir}")
             # 에러 로깅
@@ -175,12 +176,12 @@ class JSXTemplateAnalyzer:
                 }
             )
             return {}
-        
+
         # CrewAI Task들 생성
         template_analysis_task = self._create_template_analysis_task(templates_dir, jsx_files)
         vector_enhancement_task = self._create_vector_enhancement_task()
         agent_integration_task = self._create_agent_integration_task(binding_results, org_results)
-        
+
         # CrewAI Crew 생성 및 실행
         analysis_crew = Crew(
             agents=[self.template_analysis_agent, self.vector_enhancement_agent, self.agent_result_integrator],
@@ -188,20 +189,20 @@ class JSXTemplateAnalyzer:
             process=Process.sequential,
             verbose=True
         )
-        
+
         # Crew 실행
-        crew_result = analysis_crew.kickoff()
-        
+        crew_result = await analysis_crew.kickoff()
+
         # 실제 분석 수행
-        analyzed_templates = self._execute_template_analysis_with_crew_insights(
+        analyzed_templates = await self._execute_template_analysis_with_crew_insights(
             crew_result, templates_dir, jsx_files, binding_results, org_results
         )
-        
+
         self.templates_cache = analyzed_templates
-        
+
         # 전체 분석 결과 로깅
         successful_analyses = len([t for t in analyzed_templates.values() if t.get('analysis_success', True)])
-        
+
         self.result_manager.store_agent_output(
             agent_name="JSXTemplateAnalyzer",
             agent_role="JSX 템플릿 분석기",
@@ -236,34 +237,36 @@ class JSXTemplateAnalyzer:
                 "crewai_enhanced": True
             }
         )
-        
+
         return analyzed_templates
 
-    def _execute_template_analysis_with_crew_insights(self, crew_result, templates_dir: str, jsx_files: List[str], 
-                                                    binding_results: List[Dict], org_results: List[Dict]) -> Dict[str, Dict]:
-        """CrewAI 인사이트를 활용한 실제 템플릿 분석"""
+    async def _execute_template_analysis_with_crew_insights(self, crew_result, templates_dir: str, jsx_files: List[str], 
+                                                        binding_results: List[Dict], org_results: List[Dict]) -> Dict[str, Dict]:
+        """CrewAI 인사이트를 활용한 실제 템플릿 분석 (비동기)"""
         print(f"📁 CrewAI 기반 {len(jsx_files)}개 JSX 템플릿 분석 시작 (벡터 데이터 통합 + 에이전트 결과 활용)")
-        
+
         analyzed_templates = {}
         successful_analyses = 0
-        
-        for jsx_file in jsx_files:
+
+        async def analyze_single(jsx_file: str) -> Tuple[str, Dict]:
             file_path = os.path.join(templates_dir, jsx_file)
-            template_analysis = self._analyze_single_template(file_path, jsx_file)
-            
-            # 벡터 데이터와 연결
-            template_analysis = self._enhance_with_vector_data(template_analysis, jsx_file)
-            
-            # 에이전트 결과 데이터로 템플릿 분석 강화
-            template_analysis = self._enhance_with_agent_results(template_analysis, binding_results, org_results)
-            
-            analyzed_templates[jsx_file] = template_analysis
-            
-            if template_analysis.get('analysis_success', True):
-                successful_analyses += 1
-            
+
+            loop = asyncio.get_event_loop()
+            template_analysis = await loop.run_in_executor(None, self._analyze_single_template, file_path, jsx_file)
+            template_analysis = await loop.run_in_executor(None, self._enhance_with_vector_data, template_analysis, jsx_file)
+            template_analysis = await loop.run_in_executor(None, self._enhance_with_agent_results, template_analysis, binding_results, org_results)
+
             print(f"✅ {jsx_file} 분석 완료: {template_analysis['layout_type']} (벡터 매칭: {template_analysis['vector_matched']}, 에이전트 강화: {template_analysis.get('agent_enhanced', False)})")
-        
+            return jsx_file, template_analysis
+
+        tasks = [analyze_single(f) for f in jsx_files]
+        results = await asyncio.gather(*tasks)
+
+        for jsx_file, analysis in results:
+            analyzed_templates[jsx_file] = analysis
+            if analysis.get('analysis_success', True):
+                successful_analyses += 1
+
         return analyzed_templates
 
     def _create_template_analysis_task(self, templates_dir: str, jsx_files: List[str]) -> Task:
@@ -271,10 +274,10 @@ class JSXTemplateAnalyzer:
         return Task(
             description=f"""
             {templates_dir} 폴더의 {len(jsx_files)}개 JSX 템플릿 파일들을 체계적으로 분석하세요.
-            
+
             **분석 대상 파일들:**
             {', '.join(jsx_files)}
-            
+
             **분석 요구사항:**
             1. 각 JSX 파일의 구조적 특성 분석
             2. 컴포넌트명 및 Props 추출
@@ -282,14 +285,14 @@ class JSXTemplateAnalyzer:
             4. 레이아웃 타입 분류 (simple/hero/grid/gallery/overlay)
             5. 이미지 전략 및 텍스트 전략 평가
             6. 복잡도 수준 측정 (simple/moderate/complex)
-            
+
             **분석 결과 구조:**
             각 템플릿별로 다음 정보 포함:
             - 기본 정보 (파일명, 컴포넌트명, props)
             - 레이아웃 특성 (타입, 특징, 그리드 구조)
             - 콘텐츠 전략 (이미지, 텍스트)
             - 복잡도 및 사용 권장사항
-            
+
             모든 템플릿의 상세 분석 결과를 제공하세요.
             """,
             expected_output="JSX 템플릿별 상세 분석 결과",
@@ -301,25 +304,25 @@ class JSXTemplateAnalyzer:
         return Task(
             description="""
             PDF 벡터 데이터베이스를 활용하여 템플릿 분석 결과를 강화하세요.
-            
+
             **강화 요구사항:**
             1. 각 템플릿의 레이아웃 특성을 벡터 검색 쿼리로 변환
             2. 유사한 매거진 레이아웃 패턴 검색 (top 3)
             3. 벡터 매칭 기반 신뢰도 계산
             4. PDF 소스 기반 사용 용도 분류
-            
+
             **강화 영역:**
             - 레이아웃 신뢰도 향상
             - 사용 시나리오 최적화
             - 벡터 매칭 상태 표시
             - 유사 레이아웃 정보 제공
-            
+
             **출력 요구사항:**
             - 벡터 매칭 성공/실패 상태
             - 신뢰도 점수 (0.0-1.0)
             - 권장 사용 용도
             - 유사 레이아웃 목록
-            
+
             이전 태스크의 분석 결과를 벡터 데이터로 강화하세요.
             """,
             expected_output="벡터 데이터 기반 강화된 템플릿 분석 결과",
@@ -332,27 +335,27 @@ class JSXTemplateAnalyzer:
         return Task(
             description=f"""
             BindingAgent와 OrgAgent의 실행 결과를 분석하여 템플릿 특성을 더욱 강화하세요.
-            
+
             **통합 대상:**
             - BindingAgent 결과: {len(binding_results)}개
             - OrgAgent 결과: {len(org_results)}개
-            
+
             **BindingAgent 인사이트 활용:**
             1. 이미지 배치 전략 분석 (그리드/갤러리)
             2. 시각적 일관성 평가 결과 반영
             3. 전문적 이미지 배치 인사이트 통합
-            
+
             **OrgAgent 인사이트 활용:**
             1. 텍스트 구조 복잡도 분석
             2. 매거진 스타일 최적화 정보
             3. 구조화된 레이아웃 인사이트
-            
+
             **강화 방법:**
             - 템플릿 신뢰도 점수 향상
             - 레이아웃 타입별 보너스 적용
             - 사용 권장사항 정교화
             - 에이전트 인사이트 메타데이터 추가
-            
+
             이전 태스크들의 결과에 에이전트 인사이트를 통합하여 최종 강화된 템플릿 분석을 완성하세요.
             """,
             expected_output="에이전트 인사이트가 통합된 최종 템플릿 분석 결과",
@@ -360,17 +363,14 @@ class JSXTemplateAnalyzer:
             context=[self._create_template_analysis_task("", []), self._create_vector_enhancement_task()]
         )
 
-    def get_best_template_for_content(self, content: Dict, analysis: Dict) -> str:
+    async def get_best_template_for_content(self, content: Dict, analysis: Dict) -> str:
         """콘텐츠에 가장 적합한 템플릿 선택 (CrewAI 기반 벡터 데이터 + 에이전트 결과 활용 + 로깅)"""
-        
-        # 이전 에이전트 결과 수집
         previous_results = self.result_manager.get_all_outputs(exclude_agent="JSXTemplateAnalyzer")
         binding_results = [r for r in previous_results if "BindingAgent" in r.get('agent_name', '')]
         org_results = [r for r in previous_results if "OrgAgent" in r.get('agent_name', '')]
-        
+
         if not self.templates_cache:
             selected_template = "Section01.jsx"
-            # 기본 선택 로깅
             self.result_manager.store_agent_output(
                 agent_name="JSXTemplateAnalyzer_Selector",
                 agent_role="템플릿 선택기",
@@ -385,53 +385,48 @@ class JSXTemplateAnalyzer:
                 }
             )
             return selected_template
-        
-        # CrewAI Task 생성
+
         template_selection_task = self._create_template_selection_task(content, analysis, previous_results)
-        
-        # CrewAI Crew 생성 및 실행
         selection_crew = Crew(
             agents=[self.template_selector_agent],
             tasks=[template_selection_task],
             process=Process.sequential,
             verbose=True
         )
-        
-        # Crew 실행
-        crew_result = selection_crew.kickoff()
-        
-        # 실제 선택 수행
-        selected_template = self._execute_template_selection_with_crew_insights(
+
+        # 비동기 실행
+        crew_result = await asyncio.to_thread(selection_crew.kickoff)
+        selected_template = await asyncio.to_thread(
+            self._execute_template_selection_with_crew_insights,
             crew_result, content, analysis, previous_results, binding_results, org_results
         )
-        
+
         return selected_template
 
-    def _execute_template_selection_with_crew_insights(self, crew_result, content: Dict, analysis: Dict, 
+    async def _execute_template_selection_with_crew_insights(self, crew_result, content: Dict, analysis: Dict, 
                                                      previous_results: List[Dict], binding_results: List[Dict], 
                                                      org_results: List[Dict]) -> str:
-        """CrewAI 인사이트를 활용한 실제 템플릿 선택"""
+        """CrewAI 인사이트를 활용한 실제 템플릿 선택 (비동기 버전)"""
         image_count = len(content.get('images', []))
         text_length = len(content.get('body', ''))
         content_emotion = analysis.get('emotion_tone', 'neutral')
-        
-        # 콘텐츠 기반 벡터 검색
+
+        # 콘텐츠 기반 벡터 검색 (비동기 처리 가정)
         content_query = f"{content.get('title', '')} {content.get('body', '')[:200]}"
-        content_vectors = self.vector_manager.search_similar_layouts(
+        content_vectors = await self.vector_manager.search_similar_layouts_async(
             content_query,
             "magazine_layout",
             top_k=5
         )
-        
+
         best_template = None
         best_score = 0
         scoring_details = []
-        
+
         for template_name, template_info in self.templates_cache.items():
             score = 0
             score_breakdown = {"template": template_name}
-            
-            # 기본 매칭 점수
+
             template_images = template_info['image_strategy']
             if image_count == 0 and template_images == 0:
                 score += 30
@@ -442,26 +437,21 @@ class JSXTemplateAnalyzer:
             elif image_count > 1 and template_images > 1:
                 score += 20
                 score_breakdown["image_match"] = 20
-            
-            # 텍스트 길이 매칭
+
             if text_length < 300 and template_info['layout_type'] in ['simple', 'hero']:
                 score += 20
                 score_breakdown["text_match"] = 20
             elif text_length > 500 and template_info['layout_type'] in ['grid', 'gallery']:
                 score += 20
                 score_breakdown["text_match"] = 20
-            
-            # 벡터 데이터 기반 보너스 점수
+
             if template_info.get('vector_matched', False):
                 vector_bonus = template_info.get('layout_confidence', 0) * 30
                 score += vector_bonus
                 score_breakdown["vector_bonus"] = vector_bonus
-            
-            # 에이전트 결과 기반 보너스 점수 (새로 추가)
+
             if template_info.get('agent_enhanced', False):
                 agent_bonus = 0
-                
-                # BindingAgent 인사이트 보너스
                 binding_insights = template_info.get('binding_insights', [])
                 if binding_insights:
                     if image_count > 1 and 'grid_layout_optimized' in binding_insights:
@@ -470,8 +460,7 @@ class JSXTemplateAnalyzer:
                         agent_bonus += 15
                     if 'professional_image_placement' in binding_insights:
                         agent_bonus += 10
-                
-                # OrgAgent 인사이트 보너스
+
                 org_insights = template_info.get('org_insights', [])
                 if org_insights:
                     if text_length > 500 and 'structured_text_layout' in org_insights:
@@ -480,17 +469,15 @@ class JSXTemplateAnalyzer:
                         agent_bonus += 20
                     if text_length > 800 and 'complex_content_support' in org_insights:
                         agent_bonus += 10
-                
+
                 score += agent_bonus
                 score_breakdown["agent_bonus"] = agent_bonus
-            
-            # 콘텐츠 벡터와 템플릿 벡터 매칭
+
             template_vectors = template_info.get('similar_pdf_layouts', [])
             vector_match_bonus = self._calculate_vector_content_match(content_vectors, template_vectors) * 20
             score += vector_match_bonus
             score_breakdown["content_vector_match"] = vector_match_bonus
-            
-            # 감정 톤 매칭
+
             recommended_usage = template_info.get('recommended_usage', 'general')
             if content_emotion == 'peaceful' and 'culture' in recommended_usage:
                 score += 15
@@ -498,20 +485,19 @@ class JSXTemplateAnalyzer:
             elif content_emotion == 'exciting' and 'travel' in recommended_usage:
                 score += 15
                 score_breakdown["emotion_match"] = 15
-            
+
             score_breakdown["total_score"] = score
             scoring_details.append(score_breakdown)
-            
+
             if score > best_score:
                 best_score = score
                 best_template = template_name
-        
+
         selected_template = best_template or "Section01.jsx"
-        
-        # 선택 결과 로깅
+
         selected_info = self.templates_cache.get(selected_template, {})
-        
-        self.result_manager.store_agent_output(
+
+        await self.result_manager.store_agent_output_async(
             agent_name="JSXTemplateAnalyzer_Selector",
             agent_role="템플릿 선택기",
             task_description="CrewAI 기반 콘텐츠 기반 최적 템플릿 선택",
@@ -555,8 +541,7 @@ class JSXTemplateAnalyzer:
                 "crewai_enhanced": True
             }
         )
-        
-        # 선택 이유 로깅
+
         print(f"🎯 CrewAI 기반 템플릿 선택: {selected_template}")
         print(f"- 점수: {best_score}")
         print(f"- 벡터 매칭: {selected_info.get('vector_matched', False)}")
@@ -565,7 +550,7 @@ class JSXTemplateAnalyzer:
         print(f"- 용도: {selected_info.get('recommended_usage', 'general')}")
         print(f"- BindingAgent 인사이트: {len(selected_info.get('binding_insights', []))}개")
         print(f"- OrgAgent 인사이트: {len(selected_info.get('org_insights', []))}개")
-        
+
         return selected_template
 
     def _create_template_selection_task(self, content: Dict, analysis: Dict, previous_results: List[Dict]) -> Task:
@@ -606,74 +591,66 @@ class JSXTemplateAnalyzer:
         )
 
     # 기존 메서드들 유지 (변경 없음)
-    def _enhance_with_agent_results(self, template_analysis: Dict, binding_results: List[Dict], org_results: List[Dict]) -> Dict:
+    async def _enhance_with_agent_results(self, template_analysis: Dict, binding_results: List[Dict], org_results: List[Dict]) -> Dict:
         """에이전트 결과 데이터로 템플릿 분석 강화"""
         enhanced_analysis = template_analysis.copy()
         enhanced_analysis['agent_enhanced'] = False
         enhanced_analysis['binding_insights'] = []
         enhanced_analysis['org_insights'] = []
-        
+
         if not binding_results and not org_results:
             return enhanced_analysis
-        
+
         enhanced_analysis['agent_enhanced'] = True
-        
-        # BindingAgent 결과 활용
+
         if binding_results:
             latest_binding = binding_results[-1]
             binding_answer = latest_binding.get('agent_final_answer', '')
-            
-            # 이미지 배치 전략에서 템플릿 특성 강화
+
             if '그리드' in binding_answer or 'grid' in binding_answer.lower():
                 enhanced_analysis['binding_insights'].append('grid_layout_optimized')
                 if enhanced_analysis['layout_type'] == 'grid':
                     enhanced_analysis['layout_confidence'] = min(enhanced_analysis.get('layout_confidence', 0.5) + 0.2, 1.0)
-            
+
             if '갤러리' in binding_answer or 'gallery' in binding_answer.lower():
                 enhanced_analysis['binding_insights'].append('gallery_layout_optimized')
                 if enhanced_analysis['layout_type'] == 'gallery':
                     enhanced_analysis['layout_confidence'] = min(enhanced_analysis.get('layout_confidence', 0.5) + 0.2, 1.0)
-            
+
             if '배치' in binding_answer or 'placement' in binding_answer.lower():
                 enhanced_analysis['binding_insights'].append('professional_image_placement')
                 enhanced_analysis['recommended_usage'] = enhanced_analysis.get('recommended_usage', 'general') + '_image_focused'
-        
-        # OrgAgent 결과 활용
+
         if org_results:
             latest_org = org_results[-1]
             org_answer = latest_org.get('agent_final_answer', '')
-            
-            # 텍스트 구조에서 템플릿 특성 강화
+
             if '구조' in org_answer or 'structure' in org_answer.lower():
                 enhanced_analysis['org_insights'].append('structured_text_layout')
                 if enhanced_analysis['text_strategy'] > 3:
                     enhanced_analysis['layout_confidence'] = min(enhanced_analysis.get('layout_confidence', 0.5) + 0.15, 1.0)
-            
+
             if '매거진' in org_answer or 'magazine' in org_answer.lower():
                 enhanced_analysis['org_insights'].append('magazine_style_optimized')
                 enhanced_analysis['recommended_usage'] = 'magazine_editorial'
-            
+
             if '복잡' in org_answer or 'complex' in org_answer.lower():
                 enhanced_analysis['org_insights'].append('complex_content_support')
                 if enhanced_analysis['complexity_level'] == 'complex':
                     enhanced_analysis['layout_confidence'] = min(enhanced_analysis.get('layout_confidence', 0.5) + 0.1, 1.0)
-        
+
         return enhanced_analysis
 
-    def _enhance_with_vector_data(self, template_analysis: Dict, jsx_file: str) -> Dict:
+    async def _enhance_with_vector_data(self, template_analysis: Dict, jsx_file: str) -> Dict:
         """벡터 데이터로 템플릿 분석 강화"""
         try:
-            # 템플릿의 레이아웃 특성을 쿼리로 변환
             layout_query = self._create_layout_query_from_template(template_analysis)
-            
-            # 벡터 검색으로 유사한 매거진 레이아웃 찾기
-            similar_layouts = self.vector_manager.search_similar_layouts(
+            similar_layouts = await self.vector_manager.search_similar_layouts(
                 layout_query,
                 "magazine_layout",
                 top_k=3
             )
-            
-            # 벡터 데이터로 템플릿 특성 보강
+
             if similar_layouts:
                 template_analysis['vector_matched'] = True
                 template_analysis['similar_pdf_layouts'] = similar_layouts
@@ -684,66 +661,57 @@ class JSXTemplateAnalyzer:
                 template_analysis['similar_pdf_layouts'] = []
                 template_analysis['layout_confidence'] = 0.5
                 template_analysis['recommended_usage'] = 'general'
-                
+
         except Exception as e:
             print(f"⚠️ 벡터 데이터 통합 실패 ({jsx_file}): {e}")
             template_analysis['vector_matched'] = False
             template_analysis['similar_pdf_layouts'] = []
             template_analysis['layout_confidence'] = 0.3
-        
+
         return template_analysis
 
-    def _create_layout_query_from_template(self, template_analysis: Dict) -> str:
+    async def _create_layout_query_from_template(self, template_analysis: Dict) -> str:
         """템플릿 분석 결과를 벡터 검색 쿼리로 변환"""
         layout_type = template_analysis['layout_type']
         image_count = template_analysis['image_strategy']
         complexity = template_analysis['complexity_level']
         features = template_analysis['layout_features']
-        
-        # 템플릿 특성을 자연어 쿼리로 변환
+
         query_parts = [
             f"{layout_type} magazine layout",
             f"{image_count} images" if image_count > 0 else "text focused",
             f"{complexity} complexity design",
             "grid system" if template_analysis['grid_structure'] else "flexible layout"
         ]
-        
-        # 특징 추가
+
         if 'fixed_height' in features:
             query_parts.append("fixed height sections")
         if 'vertical_layout' in features:
             query_parts.append("vertical column layout")
         if 'gap_spacing' in features:
             query_parts.append("spaced elements design")
-        
+
         return " ".join(query_parts)
 
-    def _calculate_layout_confidence(self, template_analysis: Dict, similar_layouts: List[Dict]) -> float:
+    async def _calculate_layout_confidence(self, template_analysis: Dict, similar_layouts: List[Dict]) -> float:
         """벡터 매칭 기반 레이아웃 신뢰도 계산"""
         if not similar_layouts:
             return 0.3
-        
-        # 유사도 점수 평균
+
         avg_similarity = sum(layout.get('score', 0) for layout in similar_layouts) / len(similar_layouts)
-        
-        # 템플릿 복잡도와 매칭 정도
         complexity_bonus = 0.2 if template_analysis['complexity_level'] == 'moderate' else 0.1
-        
-        # 이미지 전략 매칭 보너스
         image_bonus = 0.1 if template_analysis['image_strategy'] > 0 else 0.05
-        
+
         confidence = min(avg_similarity + complexity_bonus + image_bonus, 1.0)
         return round(confidence, 2)
 
-    def _determine_usage_from_vectors(self, similar_layouts: List[Dict]) -> str:
+    async def _determine_usage_from_vectors(self, similar_layouts: List[Dict]) -> str:
         """벡터 데이터 기반 사용 용도 결정"""
         if not similar_layouts:
             return 'general'
-        
-        # PDF 소스 분석
+
         pdf_sources = [layout.get('pdf_name', '') for layout in similar_layouts]
-        
-        # 매거진 타입 추론
+
         if any('travel' in source.lower() for source in pdf_sources):
             return 'travel_focused'
         elif any('culture' in source.lower() for source in pdf_sources):
@@ -753,35 +721,32 @@ class JSXTemplateAnalyzer:
         else:
             return 'editorial'
 
-    def _calculate_vector_content_match(self, content_vectors: List[Dict], template_vectors: List[Dict]) -> float:
+    async def _calculate_vector_content_match(self, content_vectors: List[Dict], template_vectors: List[Dict]) -> float:
         """콘텐츠 벡터와 템플릿 벡터 간 매칭 점수"""
         if not content_vectors or not template_vectors:
             return 0.0
-        
-        # PDF 소스 기반 매칭
+
         content_sources = set(v.get('pdf_name', '') for v in content_vectors)
         template_sources = set(v.get('pdf_name', '') for v in template_vectors)
-        
-        # 공통 소스 비율
+
         common_sources = content_sources.intersection(template_sources)
         if content_sources:
             match_ratio = len(common_sources) / len(content_sources)
             return min(match_ratio, 1.0)
-        
+
         return 0.0
 
-    def _analyze_single_template(self, file_path: str, file_name: str) -> Dict:
+    async def _analyze_single_template(self, file_path: str, file_name: str) -> Dict:
         """개별 JSX 템플릿 분석 (기존 메서드 유지)"""
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                jsx_content = f.read()
-            
-            # 기본 정보 추출
+            async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
+                jsx_content = await f.read()
+
             component_name = self._extract_component_name(jsx_content)
             props = self._extract_props(jsx_content)
             styled_components = self._extract_styled_components(jsx_content)
             layout_structure = self._analyze_layout_structure(jsx_content)
-            
+
             return {
                 'file_name': file_name,
                 'component_name': component_name,
@@ -796,10 +761,9 @@ class JSXTemplateAnalyzer:
                 'original_jsx': jsx_content,
                 'analysis_success': True
             }
-            
+
         except Exception as e:
             print(f"⚠️ {file_name} 분석 실패: {e}")
-            # 개별 템플릿 분석 실패 로깅
             self.result_manager.store_agent_output(
                 agent_name="JSXTemplateAnalyzer_SingleTemplate",
                 agent_role="개별 템플릿 분석기",
@@ -808,16 +772,16 @@ class JSXTemplateAnalyzer:
                 reasoning_process=f"템플릿 파일 {file_path} 분석 중 예외 발생",
                 error_logs=[{"error": str(e), "file": file_name}]
             )
-            
+
             return self._create_default_template_analysis(file_name)
 
     # 기존 메서드들 유지 (변경 없음)
-    def _extract_component_name(self, jsx_content: str) -> str:
+    async def _extract_component_name(self, jsx_content: str) -> str:
         """컴포넌트 이름 추출"""
         match = re.search(r'export const (\w+)', jsx_content)
         return match.group(1) if match else "UnknownComponent"
 
-    def _extract_props(self, jsx_content: str) -> List[str]:
+    async def _extract_props(self, jsx_content: str) -> List[str]:
         """Props 추출"""
         props_match = re.search(r'\(\s*\{\s*([^}]+)\s*\}\s*\)', jsx_content)
         if props_match:
@@ -826,23 +790,23 @@ class JSXTemplateAnalyzer:
             return [prop for prop in props if prop]
         return []
 
-    def _extract_styled_components(self, jsx_content: str) -> List[Dict]:
+    async def _extract_styled_components(self, jsx_content: str) -> List[Dict]:
         """Styled Components 추출"""
         styled_components = []
         pattern = r'const\s+(\w+)\s*=\s*styled\.(\w+)`([^`]*)`'
         matches = re.findall(pattern, jsx_content, re.DOTALL)
-        
+
         for comp_name, element_type, css_content in matches:
             styled_components.append({
                 'name': comp_name,
                 'element': element_type,
                 'css': css_content.strip(),
-                'properties': self._extract_css_properties(css_content)
+                'properties': await self._extract_css_properties(css_content)
             })
-        
+
         return styled_components
 
-    def _extract_css_properties(self, css_content: str) -> Dict:
+    async def _extract_css_properties(self, css_content: str) -> Dict:
         """CSS 속성 분석"""
         properties = {
             'display': 'block',
@@ -851,25 +815,25 @@ class JSXTemplateAnalyzer:
             'flex': False,
             'absolute': False
         }
-        
+
         if 'display: flex' in css_content or 'display: inline-flex' in css_content:
             properties['display'] = 'flex'
             properties['flex'] = True
-        
+
         if 'display: grid' in css_content:
             properties['display'] = 'grid'
             properties['grid'] = True
-        
+
         if 'position: absolute' in css_content:
             properties['position'] = 'absolute'
             properties['absolute'] = True
-        
+
         return properties
 
-    def _analyze_layout_structure(self, jsx_content: str) -> Dict:
+    async def _analyze_layout_structure(self, jsx_content: str) -> Dict:
         """레이아웃 구조 분석"""
         image_count = jsx_content.count('styled.img')
-        
+
         if 'position: absolute' in jsx_content:
             layout_type = 'overlay'
         elif 'display: grid' in jsx_content or 'display: inline-flex' in jsx_content:
@@ -883,7 +847,7 @@ class JSXTemplateAnalyzer:
                 layout_type = 'gallery'
         else:
             layout_type = 'simple'
-        
+
         features = []
         if 'height: 800px' in jsx_content:
             features.append('fixed_height')
@@ -893,7 +857,7 @@ class JSXTemplateAnalyzer:
             features.append('gap_spacing')
         if 'flex-direction: column' in jsx_content:
             features.append('vertical_layout')
-        
+
         styled_comp_count = jsx_content.count('const Styled')
         if styled_comp_count <= 3:
             complexity = 'simple'
@@ -901,7 +865,7 @@ class JSXTemplateAnalyzer:
             complexity = 'moderate'
         else:
             complexity = 'complex'
-        
+
         return {
             'type': layout_type,
             'features': features,
@@ -911,7 +875,7 @@ class JSXTemplateAnalyzer:
             'complexity': complexity
         }
 
-    def _create_default_template_analysis(self, file_name: str) -> Dict:
+    async def _create_default_template_analysis(self, file_name: str) -> Dict:
         """기본 템플릿 분석 결과"""
         return {
             'file_name': file_name,
