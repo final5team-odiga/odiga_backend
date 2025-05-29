@@ -390,13 +390,21 @@ class MultiAgentTemplateManager:
         """OrgAgent 비동기 실행"""
         print("\n=== OrgAgent: PDF 벡터 기반 텍스트 처리 (비동기) ===")
         
-        # OrgAgent가 비동기 메서드를 가지고 있다면 직접 호출, 아니면 executor 사용
-        if hasattr(self.org_agent, 'process_content') and asyncio.iscoroutinefunction(self.org_agent.process_content):
+        try:
+            # 직접 비동기 호출 시도
             text_mapping = await self.org_agent.process_content(magazine_content, available_templates)
-        else:
-            text_mapping = await asyncio.get_event_loop().run_in_executor(
-                None, self.org_agent.process_content, magazine_content, available_templates
-            )
+        except Exception as e:
+            print(f"⚠️ OrgAgent 비동기 호출 실패, 동기 버전 시도: {e}")
+            # 폴백: 동기 버전 사용
+            if hasattr(self.org_agent, 'process_content_sync'):
+                text_mapping = await asyncio.get_event_loop().run_in_executor(
+                    None, self.org_agent.process_content_sync, magazine_content, available_templates
+                )
+            else:
+                # 동기 메서드를 비동기로 실행
+                text_mapping = await asyncio.get_event_loop().run_in_executor(
+                    None, self.org_agent.process_content, magazine_content, available_templates
+                )
         
         # OrgAgent 완료 로깅 (비동기)
         await self._log_org_agent_complete_async(text_mapping)
@@ -407,13 +415,21 @@ class MultiAgentTemplateManager:
         """BindingAgent 비동기 실행"""
         print("\n=== BindingAgent: PDF 벡터 기반 이미지 처리 (비동기) ===")
         
-        # BindingAgent가 비동기 메서드를 가지고 있다면 직접 호출, 아니면 executor 사용
-        if hasattr(self.binding_agent, 'process_images') and asyncio.iscoroutinefunction(self.binding_agent.process_images):
+        try:
+            # 직접 비동기 호출 시도
             image_distribution = await self.binding_agent.process_images(image_urls, image_locations, template_requirements)
-        else:
-            image_distribution = await asyncio.get_event_loop().run_in_executor(
-                None, self.binding_agent.process_images, image_urls, image_locations, template_requirements
-            )
+        except Exception as e:
+            print(f"⚠️ BindingAgent 비동기 호출 실패, 동기 버전 시도: {e}")
+            # 폴백: 동기 버전 사용
+            if hasattr(self.binding_agent, 'process_images_sync'):
+                image_distribution = await asyncio.get_event_loop().run_in_executor(
+                    None, self.binding_agent.process_images_sync, image_urls, image_locations, template_requirements
+                )
+            else:
+                # 동기 메서드를 비동기로 실행
+                image_distribution = await asyncio.get_event_loop().run_in_executor(
+                    None, self.binding_agent.process_images, image_urls, image_locations, template_requirements
+                )
         
         # BindingAgent 완료 로깅 (비동기)
         await self._log_binding_agent_complete_async(image_distribution)
@@ -424,13 +440,18 @@ class MultiAgentTemplateManager:
         """CoordinatorAgent 비동기 실행"""
         print("\n=== CoordinatorAgent: 벡터 기반 결과 통합 (비동기) ===")
         
-        # CoordinatorAgent가 비동기 메서드를 가지고 있다면 직접 호출, 아니면 executor 사용
-        if hasattr(self.coordinator_agent, 'coordinate_magazine_creation') and asyncio.iscoroutinefunction(self.coordinator_agent.coordinate_magazine_creation):
+        try:
+            # 직접 비동기 호출 (조건문 제거)
             final_template_data = await self.coordinator_agent.coordinate_magazine_creation(text_mapping, image_distribution)
-        else:
-            final_template_data = await asyncio.get_event_loop().run_in_executor(
-                None, self.coordinator_agent.coordinate_magazine_creation, text_mapping, image_distribution
-            )
+        except Exception as e:
+            print(f"⚠️ CoordinatorAgent 비동기 호출 실패, 동기 버전 시도: {e}")
+            # 폴백: 동기 버전 사용
+            if hasattr(self.coordinator_agent, 'coordinate_magazine_creation_sync'):
+                final_template_data = await asyncio.get_event_loop().run_in_executor(
+                    None, self.coordinator_agent.coordinate_magazine_creation_sync, text_mapping, image_distribution
+                )
+            else:
+                raise e
         
         # CoordinatorAgent 완료 로깅 (비동기)
         await self._log_coordinator_agent_complete_async(final_template_data)
