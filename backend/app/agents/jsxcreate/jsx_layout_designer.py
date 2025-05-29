@@ -5,6 +5,7 @@ from custom_llm import get_azure_llm
 from utils.agent_decision_logger import get_agent_logger, get_complete_data_manager
 import json
 import re
+import asyncio
 
 class JSXLayoutDesigner:
     """레이아웃 설계 전문 에이전트 (에이전트 결과 데이터 기반)"""
