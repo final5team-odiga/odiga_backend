@@ -1,17 +1,204 @@
 import asyncio
-from typing import Dict, List
+import sys
+import time
+import concurrent.futures
+from typing import Dict, List, Optional, Callable, Any
+from collections import deque
+from dataclasses import dataclass
+
 from crewai import Agent, Task, Crew
 from custom_llm import get_azure_llm
 from utils.pdf_vector_manager import PDFVectorManager
 from utils.agent_decision_logger import get_agent_logger
 
+@dataclass
+class WorkItem:
+    id: str
+    task_func: Callable
+    args: tuple
+    kwargs: dict
+    priority: int = 0
+    max_retries: int = 3
+    current_retry: int = 0
+    timeout: float = 300.0
+
+class AsyncWorkQueue:
+    def __init__(self, max_workers: int = 2, max_queue_size: int = 50):
+        self.max_workers = max_workers
+        self.max_queue_size = max_queue_size
+        self.work_queue = deque()
+        self.active_tasks = {}
+        self.results = {}
+        self.semaphore = asyncio.Semaphore(max_workers)
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        
+    async def add_work(self, work_item: WorkItem) -> str:
+        """작업을 큐에 추가"""
+        if len(self.work_queue) >= self.max_queue_size:
+            old_item = self.work_queue.popleft()
+            print(f"⚠️ 큐 용량 초과로 작업 {old_item.id} 제거")
+        
+        self.work_queue.append(work_item)
+        return work_item.id
+    
+    async def process_work_item(self, work_item: WorkItem) -> Optional[Any]:
+        """개별 작업 처리"""
+        async with self.semaphore:
+            try:
+                print(f"🔄 작업 {work_item.id} 시작 (시도 {work_item.current_retry + 1}/{work_item.max_retries + 1})")
+                
+                if asyncio.iscoroutinefunction(work_item.task_func):
+                    result = await asyncio.wait_for(
+                        work_item.task_func(*work_item.args, **work_item.kwargs),
+                        timeout=work_item.timeout
+                    )
+                else:
+                    result = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            self.executor,
+                            lambda: work_item.task_func(*work_item.args, **work_item.kwargs)
+                        ),
+                        timeout=work_item.timeout
+                    )
+                
+                self.results[work_item.id] = {"status": "success", "result": result}
+                print(f"✅ 작업 {work_item.id} 완료")
+                return result
+                
+            except asyncio.TimeoutError:
+                print(f"⏰ 작업 {work_item.id} 타임아웃 ({work_item.timeout}초)")
+                if work_item.current_retry < work_item.max_retries:
+                    work_item.current_retry += 1
+                    work_item.timeout *= 1.5
+                    await self.add_work(work_item)
+                else:
+                    self.results[work_item.id] = {"status": "timeout", "error": "최대 재시도 횟수 초과"}
+                return None
+                
+            except Exception as e:
+                print(f"❌ 작업 {work_item.id} 실패: {e}")
+                if work_item.current_retry < work_item.max_retries:
+                    work_item.current_retry += 1
+                    await self.add_work(work_item)
+                else:
+                    self.results[work_item.id] = {"status": "error", "error": str(e)}
+                return None
+    
+    async def process_queue(self) -> dict:
+        """큐의 모든 작업을 배치 처리"""
+        tasks = []
+        
+        while self.work_queue:
+            work_item = self.work_queue.popleft()
+            task = asyncio.create_task(self.process_work_item(work_item))
+            tasks.append(task)
+            self.active_tasks[work_item.id] = task
+        
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        
+        return self.results
+
+class CircuitBreaker:
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: float = 60.0):
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self.failure_count = 0
+        self.last_failure_time = None
+        self.state = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+    
+    def is_open(self) -> bool:
+        if self.state == "OPEN":
+            if time.time() - self.last_failure_time > self.recovery_timeout:
+                self.state = "HALF_OPEN"
+                return False
+            return True
+        return False
+    
+    def record_success(self):
+        self.failure_count = 0
+        self.state = "CLOSED"
+    
+    def record_failure(self):
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+        if self.failure_count >= self.failure_threshold:
+            self.state = "OPEN"
+
 class BindingAgent:
-    """PDF 벡터 데이터 기반 이미지 배치 에이전트"""
+    """PDF 벡터 데이터 기반 이미지 배치 에이전트 (비동기 처리 및 응답 수집 강화)"""
 
     def __init__(self):
         self.llm = get_azure_llm()
         self.vector_manager = PDFVectorManager()
         self.logger = get_agent_logger()  # 응답 수집을 위한 로거 추가
+        self.recursion_threshold = 600  # 재귀 한계의 60% 지점 (1000의 60%)
+        self.fallback_to_sync = False  # 동기 전환 플래그
+        
+        # 새로운 복원력 시스템 추가
+        self.work_queue = AsyncWorkQueue(max_workers=2, max_queue_size=30)
+        self.circuit_breaker = CircuitBreaker()
+        self.batch_size = 2  # 템플릿 배치 크기
+
+    def _check_recursion_depth(self):
+        """현재 재귀 깊이 확인"""
+        frame = sys._getframe()
+        depth = 0
+        while frame:
+            depth += 1
+            frame = frame.f_back
+        return depth
+
+    def _should_use_sync(self):
+        """동기 모드로 전환할지 판단"""
+        current_depth = self._check_recursion_depth()
+        if current_depth > self.recursion_threshold:
+            print(f"⚠️ BindingAgent 재귀 깊이 {current_depth} 감지 - 동기 모드로 전환")
+            self.fallback_to_sync = True
+            return True
+        return self.fallback_to_sync
+
+    async def execute_with_resilience(self, task_func: Callable, task_id: str,
+                                    timeout: float = 300.0, max_retries: int = 2,
+                                    *args, **kwargs) -> Any:
+        """복원력 있는 작업 실행"""
+        
+        if self.circuit_breaker.is_open():
+            print(f"🚫 Circuit Breaker 열림 - 작업 {task_id} 건너뜀")
+            return self._get_fallback_result(task_id)
+        
+        work_item = WorkItem(
+            id=task_id,
+            task_func=task_func,
+            args=args,
+            kwargs=kwargs,
+            timeout=timeout,
+            max_retries=max_retries
+        )
+        
+        await self.work_queue.add_work(work_item)
+        results = await self.work_queue.process_queue()
+        
+        result = results.get(task_id)
+        if result and result["status"] == "success":
+            self.circuit_breaker.record_success()
+            return result["result"]
+        else:
+            self.circuit_breaker.record_failure()
+            return self._get_fallback_result(task_id)
+
+    def _get_fallback_result(self, task_id: str) -> dict:
+        """폴백 결과 생성"""
+        return {
+            "status": "fallback",
+            "task_id": task_id,
+            "message": "Circuit Breaker 또는 실패로 인한 폴백 결과",
+            "template": task_id.split("_")[0] if "_" in task_id else "unknown",
+            "images": [],
+            "layout_strategy": "폴백 기본 배치",
+            "coordination_result": "폴백 순서 배치",
+            "layout_source": "fallback"
+        }
 
     def create_image_layout_agent(self):
         """이미지 레이아웃 에이전트 (위치 정합성 강화)"""
@@ -112,9 +299,26 @@ class BindingAgent:
         )
 
     async def process_images(self, image_urls: List[str], image_locations: List[str], template_requirements: List[Dict]) -> Dict:
-        """PDF 벡터 데이터 기반 이미지 처리 (비동기 처리 및 응답 수집 강화)"""
-        print(f"BindingAgent: 처리할 이미지 {len(image_urls)}개, 템플릿 {len(template_requirements)}개 (비동기 처리)")
+        """PDF 벡터 데이터 기반 이미지 처리 (개선된 배치 기반 처리)"""
+        print(f"⚡ BindingAgent 개선된 배치 처리 모드: 처리할 이미지 {len(image_urls)}개, 템플릿 {len(template_requirements)}개")
+        
+        # 재귀 깊이 확인 및 동기 모드 전환
+        if self._should_use_sync():
+            print("🔄 BindingAgent 동기 모드로 전환하여 실행")
+            return await self._process_images_sync_mode(image_urls, image_locations, template_requirements)
 
+        try:
+            # 개선된 배치 기반 비동기 모드 실행
+            return await self._process_images_batch_mode(image_urls, image_locations, template_requirements)
+        except RecursionError:
+            print("🔄 BindingAgent RecursionError 감지 - 동기 모드로 전환")
+            self.fallback_to_sync = True
+            return await self._process_images_sync_mode(image_urls, image_locations, template_requirements)
+
+    async def _process_images_batch_mode(self, image_urls: List[str], image_locations: List[str], template_requirements: List[Dict]) -> Dict:
+        """개선된 배치 기반 이미지 처리"""
+        print(f"📦 BindingAgent 배치 모드 시작: {len(template_requirements)}개 템플릿을 {self.batch_size}개씩 배치 처리")
+        
         # 입력 데이터 로깅
         input_data = {
             "image_urls": image_urls,
@@ -124,52 +328,30 @@ class BindingAgent:
             "total_templates": len(template_requirements)
         }
 
-        # 에이전트 생성
-        layout_specialist = self.create_image_layout_agent()
-        visual_coordinator = self.create_visual_coordinator_agent()
-
-        # 비동기 벡터 검색으로 최적 레이아웃 찾기
+        # 레이아웃 추천 가져오기
         layout_recommendations = await self._get_layout_recommendations_by_image_count_async(
             image_urls, template_requirements
         )
 
-        # 템플릿별 이미지 배치 설계 (비동기 병렬 처리)
+        # 템플릿을 배치로 그룹화
+        template_batches = self._create_template_batches(template_requirements, self.batch_size)
+        
         template_distributions = []
-        all_agent_responses = []  # 모든 에이전트 응답 수집
+        all_agent_responses = []
 
-        # 템플릿 처리 태스크들을 병렬로 실행
-        template_tasks = []
-        for i, template_req in enumerate(template_requirements):
-            task = self._process_single_template_async(
-                template_req, image_urls, image_locations, i, len(template_requirements),
-                layout_recommendations, layout_specialist, visual_coordinator
-            )
-            template_tasks.append(task)
-
-        # 모든 템플릿 처리를 병렬로 실행
-        if template_tasks:
-            template_results = await asyncio.gather(*template_tasks, return_exceptions=True)
+        # 배치별 순차 처리
+        for batch_idx, batch_templates in enumerate(template_batches):
+            print(f"📦 배치 {batch_idx + 1}/{len(template_batches)} 처리 중...")
             
-            # 결과 수집
-            for i, result in enumerate(template_results):
-                if isinstance(result, Exception):
-                    print(f"⚠️ 템플릿 {i+1} 처리 실패: {result}")
-                    # 에러 응답 저장
-                    error_response_id = await self._log_error_response_async(
-                        template_requirements[i]["template"], str(result)
-                    )
-                    template_distributions.append({
-                        "template": template_requirements[i]["template"],
-                        "images": [],
-                        "layout_strategy": "에러로 인한 기본 배치",
-                        "coordination_result": "기본 순서 배치",
-                        "layout_source": "default",
-                        "error_response_id": error_response_id
-                    })
-                else:
-                    template_dist, agent_responses = result
-                    template_distributions.append(template_dist)
-                    all_agent_responses.extend(agent_responses)
+            batch_results = await self._process_template_batch(
+                batch_templates, batch_idx, image_urls, image_locations, layout_recommendations
+            )
+            
+            template_distributions.extend(batch_results["distributions"])
+            all_agent_responses.extend(batch_results["responses"])
+            
+            # 배치 간 쿨다운
+            await asyncio.sleep(1)
 
         # 최종 이미지 분배 결과 생성
         final_distribution = await self._create_final_distribution_async(template_distributions)
@@ -179,131 +361,121 @@ class BindingAgent:
             input_data, final_distribution, template_distributions, all_agent_responses
         )
 
-        print(f"✅ BindingAgent 완료: {len(image_urls)}개 이미지를 {len(template_requirements)}개 템플릿에 배치 (비동기 처리 및 응답 수집 완료)")
-
+        print(f"✅ BindingAgent 배치 모드 완료: {len(image_urls)}개 이미지를 {len(template_requirements)}개 템플릿에 배치")
         return {
             "image_distribution": final_distribution,
             "template_distributions": template_distributions,
             "layout_recommendations": layout_recommendations,
             "vector_enhanced": True,
             "agent_responses": all_agent_responses,
-            "final_response_id": final_response_id
+            "final_response_id": final_response_id,
+            "execution_mode": "batch_async",
+            "batches_processed": len(template_batches)
         }
 
-    async def _process_single_template_async(self, template_req: Dict, image_urls: List[str], 
-                                           image_locations: List[str], template_index: int, 
-                                           total_templates: int, layout_recommendations: List[Dict],
-                                           layout_specialist: Agent, visual_coordinator: Agent) -> tuple:
-        """단일 템플릿 처리 (비동기)"""
-        template_name = template_req["template"]
+    def _create_template_batches(self, template_requirements: List[Dict], batch_size: int) -> List[List[Dict]]:
+        """템플릿을 배치로 그룹화"""
+        batches = []
+        for i in range(0, len(template_requirements), batch_size):
+            batch = template_requirements[i:i + batch_size]
+            batches.append(batch)
+        return batches
+
+    async def _process_template_batch(self, batch_templates: List[Dict], batch_idx: int,
+                                    image_urls: List[str], image_locations: List[str],
+                                    layout_recommendations: List[Dict]) -> Dict:
+        """템플릿 배치 처리"""
+        batch_tasks = []
         
-        # 해당 템플릿에 할당할 이미지들 결정
-        assigned_images = self._assign_images_to_template(
-            image_urls, image_locations, template_index, total_templates
-        )
+        for i, template_req in enumerate(batch_templates):
+            template_index = batch_idx * self.batch_size + i
+            task_id = f"batch_{batch_idx}_template_{i}"
+            
+            # 작업을 큐에 추가
+            task = self.execute_with_resilience(
+                task_func=self._process_single_template_safe,
+                task_id=task_id,
+                timeout=180.0,  # 3분 타임아웃
+                max_retries=1,
+                template_req=template_req,
+                image_urls=image_urls,
+                image_locations=image_locations,
+                template_index=template_index,
+                total_templates=len(batch_templates) + batch_idx * self.batch_size,
+                layout_recommendations=layout_recommendations
+            )
+            batch_tasks.append(task)
+        
+        # 배치 내 모든 작업 병렬 실행
+        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        
+        # 결과 정리
+        distributions = []
+        responses = []
+        
+        for result in batch_results:
+            if isinstance(result, Exception):
+                print(f"⚠️ 배치 작업 실패: {result}")
+                continue
+            
+            if isinstance(result, dict):
+                if result.get("status") == "fallback":
+                    distributions.append(result)
+                elif "template_dist" in result:
+                    distributions.append(result["template_dist"])
+                    responses.extend(result.get("agent_responses", []))
+        
+        return {"distributions": distributions, "responses": responses}
 
-        if not assigned_images:
-            return ({
-                "template": template_name,
-                "images": [],
-                "layout_strategy": "no_images"
-            }, [])
-
-        print(f"🖼️ {template_name}: {len(assigned_images)}개 이미지 배치 설계 중... (비동기)")
-
-        # 해당 이미지 수에 맞는 레이아웃 추천 가져오기
-        relevant_layouts = [
-            layout for layout in layout_recommendations
-            if len(layout.get('image_info', [])) == len(assigned_images)
-        ]
-
-        if not relevant_layouts and layout_recommendations:
-            relevant_layouts = [min(layout_recommendations,
-                                  key=lambda x: abs(len(x.get('image_info', [])) - len(assigned_images)))]
-
-        # 1단계: 레이아웃 분석 (비동기 태스크)
-        layout_analysis_task = Task(
-            description=f"""
-다음 이미지들과 매거진 레이아웃 데이터를 분석하여 최적의 이미지 배치 전략을 수립하세요:
-
-**배치할 이미지들:**
-{self._format_image_data(assigned_images, image_locations)}
-
-**참고할 매거진 레이아웃 데이터:**
-{self._format_layout_recommendations(relevant_layouts)}
-
-**템플릿 정보:**
-- 템플릿명: {template_name}
-- 이미지 요구사항: {template_req.get('image_requirements', {})}
-
-**분석 요구사항:**
-1. **레이아웃 패턴 분석**
-- 이미지 배치의 그리드 구조 및 비율
-- 주요 이미지와 보조 이미지의 역할 분담
-- 이미지 간 시각적 균형과 흐름
-
-2. **이미지 특성 매칭**
-- 각 이미지의 특성과 레이아웃 위치의 적합성
-- 이미지 크기와 중요도에 따른 배치 우선순위
-- 색감과 구도의 조화를 고려한 배치
-
-3. **시각적 임팩트 최적화**
-- 독자의 시선 흐름을 고려한 이미지 순서
-- 스토리텔링을 강화하는 이미지 조합
-- 매거진 전체의 시각적 일관성 유지
-
-**출력 형식:**
-레이아웃 전략: [선택된 레이아웃 패턴과 특징]
-주요 이미지: [메인으로 사용할 이미지와 배치 위치]
-보조 이미지: [서브로 사용할 이미지들과 역할]
-배치 순서: [이미지들의 최적 배치 순서]
-시각 효과: [기대되는 시각적 효과와 임팩트]
-""",
-            agent=layout_specialist,
-            expected_output="벡터 데이터 기반 이미지 배치 전략"
-        )
-
-        # 2단계: 이미지 배치 실행 (비동기 태스크)
-        image_coordination_task = Task(
-            description=f"""
-레이아웃 분석 결과를 바탕으로 이미지들을 최적으로 배치하고 조합하세요:
-
-**배치 지침:**
-1. 분석된 레이아웃 패턴에 따른 정확한 이미지 배치
-2. 각 이미지의 특성을 살린 최적 위치 선정
-3. 전체적인 시각적 균형과 조화 고려
-4. 독자의 감정적 몰입을 위한 스토리텔링 강화
-5. 매거진 브랜드 일관성 유지
-
-**품질 요구사항:**
-- 실제 매거진에서 볼 수 있는 수준의 전문적 배치
-- 이미지 간 시너지 효과 극대화
-- 독자의 시선을 자연스럽게 유도하는 배치
-- 콘텐츠와 이미지의 완벽한 조화
-
-**출력:** 최종 이미지 배치 결과 (이미지 URL과 배치 정보)
-""",
-            agent=visual_coordinator,
-            expected_output="최적화된 이미지 배치 결과",
-            context=[layout_analysis_task]
-        )
-
-        # Crew 실행 및 응답 수집 (비동기)
-        crew = Crew(
-            agents=[layout_specialist, visual_coordinator],
-            tasks=[layout_analysis_task, image_coordination_task],
-            verbose=True
-        )
-
+    async def _process_single_template_safe(self, template_req: Dict, image_urls: List[str],
+                                          image_locations: List[str], template_index: int,
+                                          total_templates: int, layout_recommendations: List[Dict]) -> Dict:
+        """안전한 단일 템플릿 처리"""
         try:
-            # 비동기 Crew 실행
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, crew.kickoff
+            template_name = template_req["template"]
+            
+            # 해당 템플릿에 할당할 이미지들 결정
+            assigned_images = self._assign_images_to_template(
+                image_urls, image_locations, template_index, total_templates
             )
 
-            # 에이전트 응답 수집 및 저장 (비동기)
-            layout_strategy = str(layout_analysis_task.output) if hasattr(layout_analysis_task, 'output') else ""
-            coordination_result = str(result.raw) if hasattr(result, 'raw') else str(result)
+            if not assigned_images:
+                return {
+                    "template_dist": {
+                        "template": template_name,
+                        "images": [],
+                        "layout_strategy": "no_images",
+                        "coordination_result": "이미지 없음",
+                        "layout_source": "no_images"
+                    },
+                    "agent_responses": []
+                }
+
+            print(f"🖼️ {template_name}: {len(assigned_images)}개 이미지 배치 설계 중... (안전 모드)")
+
+            # 해당 이미지 수에 맞는 레이아웃 추천 가져오기
+            relevant_layouts = [
+                layout for layout in layout_recommendations
+                if len(layout.get('image_info', [])) == len(assigned_images)
+            ]
+
+            if not relevant_layouts and layout_recommendations:
+                relevant_layouts = [min(layout_recommendations,
+                                      key=lambda x: abs(len(x.get('image_info', [])) - len(assigned_images)))]
+
+            # 에이전트 생성 (매번 새로 생성하여 상태 격리)
+            layout_specialist = self.create_image_layout_agent()
+            visual_coordinator = self.create_visual_coordinator_agent()
+
+            # CrewAI 실행
+            crew_result = await self._execute_crew_safe(
+                layout_specialist, visual_coordinator, template_name,
+                assigned_images, image_locations, relevant_layouts
+            )
+
+            # 응답 수집 및 저장
+            layout_strategy = crew_result.get("layout_strategy", "기본 배치 전략")
+            coordination_result = crew_result.get("coordination_result", "기본 순서 배치")
 
             # 비동기 로깅
             layout_response_id, coordination_response_id = await asyncio.gather(
@@ -311,7 +483,7 @@ class BindingAgent:
                 self._log_coordination_response_async(template_name, layout_strategy, coordination_result)
             )
 
-            # 응답 수집 데이터 저장
+            # 응답 수집 데이터
             agent_responses = [{
                 "template": template_name,
                 "layout_specialist_response": {
@@ -335,34 +507,288 @@ class BindingAgent:
                 "agent_responses": {
                     "layout_specialist_id": layout_response_id,
                     "visual_coordinator_id": coordination_response_id
-                }
+                },
+                "safe_processed": True
             }
 
-            print(f"✅ {template_name} 이미지 배치 완료: {len(assigned_images)}개 (비동기 응답 수집 완료)")
-            return (template_dist, agent_responses)
+            print(f"✅ {template_name} 안전 처리 완료: {len(assigned_images)}개")
+            return {
+                "template_dist": template_dist,
+                "agent_responses": agent_responses
+            }
 
         except Exception as e:
-            print(f"⚠️ {template_name} 이미지 배치 실패: {e}")
+            print(f"⚠️ 템플릿 {template_req.get('template', 'unknown')} 안전 처리 실패: {e}")
+            error_response_id = await self._log_error_response_async(
+                template_req.get('template', 'unknown'), str(e)
+            )
             
-            # 에러 응답 저장 (비동기)
-            error_response_id = await self._log_error_response_async(template_name, str(e))
+            return {
+                "template_dist": {
+                    "template": template_req.get('template', 'unknown'),
+                    "images": self._assign_images_to_template(
+                        image_urls, image_locations, template_index, total_templates
+                    ),
+                    "layout_strategy": "에러로 인한 기본 배치",
+                    "coordination_result": "기본 순서 배치",
+                    "layout_source": "error_fallback",
+                    "error_response_id": error_response_id
+                },
+                "agent_responses": []
+            }
 
-            # 폴백: 기본 배치
+    async def _execute_crew_safe(self, layout_specialist: Agent, visual_coordinator: Agent,
+                               template_name: str, assigned_images: List[str],
+                               image_locations: List[str], relevant_layouts: List[Dict]) -> Dict:
+        """안전한 CrewAI 실행"""
+        try:
+            # 간소화된 태스크 생성
+            layout_analysis_task = Task(
+                description=f"""
+다음 이미지들과 매거진 레이아웃 데이터를 분석하여 최적의 이미지 배치 전략을 수립하세요:
+
+**배치할 이미지들:**
+{self._format_image_data(assigned_images, image_locations)}
+
+**참고할 매거진 레이아웃 데이터:**
+{self._format_layout_recommendations(relevant_layouts)}
+
+**템플릿 정보:**
+- 템플릿명: {template_name}
+
+**출력 형식:**
+레이아웃 전략: [선택된 레이아웃 패턴과 특징]
+주요 이미지: [메인으로 사용할 이미지와 배치 위치]
+배치 순서: [이미지들의 최적 배치 순서]
+""",
+                agent=layout_specialist,
+                expected_output="벡터 데이터 기반 이미지 배치 전략"
+            )
+
+            image_coordination_task = Task(
+                description=f"""
+레이아웃 분석 결과를 바탕으로 이미지들을 최적으로 배치하고 조합하세요:
+
+**배치 지침:**
+1. 분석된 레이아웃 패턴에 따른 정확한 이미지 배치
+2. 각 이미지의 특성을 살린 최적 위치 선정
+3. 전체적인 시각적 균형과 조화 고려
+
+**출력:** 최종 이미지 배치 결과 (이미지 URL과 배치 정보)
+""",
+                agent=visual_coordinator,
+                expected_output="최적화된 이미지 배치 결과",
+                context=[layout_analysis_task]
+            )
+
+            # 순차 실행 (병렬 실행으로 인한 복잡성 제거)
+            print(f"🔄 {template_name} CrewAI 안전 실행 시작...")
+            
+            analysis_result = await asyncio.get_event_loop().run_in_executor(
+                None, self._execute_single_task, layout_analysis_task
+            )
+            
+            coordination_result = await asyncio.get_event_loop().run_in_executor(
+                None, self._execute_single_task, image_coordination_task
+            )
+
+            print(f"✅ {template_name} CrewAI 안전 실행 완료")
+
+            return {
+                "layout_strategy": str(analysis_result),
+                "coordination_result": str(coordination_result)
+            }
+
+        except Exception as e:
+            print(f"⚠️ {template_name} CrewAI 안전 실행 실패: {e}")
+            return {
+                "layout_strategy": f"CrewAI 실행 실패로 인한 기본 배치 ({len(assigned_images)}개 이미지)",
+                "coordination_result": "기본 순서 배치"
+            }
+
+    def _execute_single_task(self, task: Task) -> str:
+        """단일 태스크 실행"""
+        try:
+            # 간단한 Crew 생성 및 실행
+            crew = Crew(
+                agents=[task.agent],
+                tasks=[task],
+                verbose=False
+            )
+            result = crew.kickoff()
+            return str(result)
+        except Exception as e:
+            print(f"⚠️ 단일 태스크 실행 실패: {e}")
+            return f"태스크 실행 실패: {str(e)}"
+
+    # 기존 _process_images_async_mode 메서드 유지 (호환성을 위해)
+    async def _process_images_async_mode(self, image_urls: List[str], image_locations: List[str], template_requirements: List[Dict]) -> Dict:
+        """비동기 모드 이미지 처리 (기존 호환성 유지)"""
+        print("⚠️ 기존 async_mode 호출됨 - batch_mode로 리다이렉트")
+        return await self._process_images_batch_mode(image_urls, image_locations, template_requirements)
+
+    async def _process_images_sync_mode(self, image_urls: List[str], image_locations: List[str], template_requirements: List[Dict]) -> Dict:
+        """동기 모드 이미지 처리 (run_in_executor 사용)"""
+        print(f"🔄 BindingAgent 동기 모드: 처리할 이미지 {len(image_urls)}개, 템플릿 {len(template_requirements)}개")
+
+        # 동기 버전 메서드들을 executor에서 실행
+        loop = asyncio.get_event_loop()
+
+        # 기본 데이터 준비 (동기)
+        layout_recommendations = await loop.run_in_executor(
+            None, self._get_layout_recommendations_sync, image_urls, template_requirements
+        )
+
+        # 템플릿별 처리 (동기)
+        template_distributions = await loop.run_in_executor(
+            None, self._process_all_templates_sync,
+            image_urls, image_locations, template_requirements, layout_recommendations
+        )
+
+        # 최종 분배 결과 생성
+        final_distribution = await loop.run_in_executor(
+            None, self._create_final_distribution_sync, template_distributions
+        )
+
+        # 동기 모드 로깅
+        final_response_id = await self._log_sync_mode_response_async(
+            image_urls, template_requirements, final_distribution, template_distributions
+        )
+
+        print(f"✅ BindingAgent 동기 완료: {len(image_urls)}개 이미지를 {len(template_requirements)}개 템플릿에 배치")
+        return {
+            "image_distribution": final_distribution,
+            "template_distributions": template_distributions,
+            "layout_recommendations": layout_recommendations,
+            "vector_enhanced": True,
+            "agent_responses": [],
+            "final_response_id": final_response_id,
+            "execution_mode": "sync_fallback",
+            "recursion_fallback": True
+        }
+
+    async def _process_remaining_templates_sync(self, remaining_requirements: List[Dict],
+                                              image_urls: List[str], image_locations: List[str],
+                                              layout_recommendations: List[Dict]) -> List[Dict]:
+        """나머지 템플릿들을 동기 모드로 처리"""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self._process_all_templates_sync,
+            image_urls, image_locations, remaining_requirements, layout_recommendations
+        )
+
+    # 기존 _process_single_template_async 메서드 유지 (호환성을 위해)
+    async def _process_single_template_async(self, template_req: Dict, image_urls: List[str],
+                                           image_locations: List[str], template_index: int,
+                                           total_templates: int, layout_recommendations: List[Dict],
+                                           layout_specialist: Agent, visual_coordinator: Agent) -> tuple:
+        """단일 템플릿 처리 (기존 호환성 유지) - 안전 모드로 리다이렉트"""
+        print("⚠️ 기존 single_template_async 호출됨 - safe 모드로 리다이렉트")
+        
+        result = await self._process_single_template_safe(
+            template_req, image_urls, image_locations, template_index, total_templates, layout_recommendations
+        )
+        
+        # 기존 반환 형식에 맞게 변환
+        template_dist = result.get("template_dist", {})
+        agent_responses = result.get("agent_responses", [])
+        
+        return (template_dist, agent_responses)
+
+    # 모든 기존 동기 메서드들과 유틸리티 메서드들 유지
+    def _get_layout_recommendations_sync(self, image_urls: List[str], template_requirements: List[Dict]) -> List[Dict]:
+        """이미지 개수별 레이아웃 추천 가져오기 (동기 버전)"""
+        total_images = len(image_urls)
+        if total_images <= 3:
+            query = "minimal clean layout single image focus simple elegant"
+        elif total_images <= 6:
+            query = "multiple images grid layout balanced composition"
+        elif total_images <= 10:
+            query = "gallery style layout many images organized grid"
+        else:
+            query = "complex magazine layout multiple images rich visual content"
+
+        recommendations = self.vector_manager.search_similar_layouts(query, "magazine_layout", top_k=5)
+        print(f"📊 이미지 {total_images}개에 대한 레이아웃 추천 {len(recommendations)}개 획득 (동기)")
+        return recommendations
+
+    def _process_all_templates_sync(self, image_urls: List[str], image_locations: List[str],
+                                  template_requirements: List[Dict], layout_recommendations: List[Dict]) -> List[Dict]:
+        """모든 템플릿을 동기 모드로 처리"""
+        template_distributions = []
+
+        for i, template_req in enumerate(template_requirements):
+            template_name = template_req["template"]
+            assigned_images = self._assign_images_to_template(
+                image_urls, image_locations, i, len(template_requirements)
+            )
+
+            # 해당 이미지 수에 맞는 레이아웃 추천 가져오기
+            relevant_layouts = [
+                layout for layout in layout_recommendations
+                if len(layout.get('image_info', [])) == len(assigned_images)
+            ]
+
+            if not relevant_layouts and layout_recommendations:
+                relevant_layouts = [min(layout_recommendations,
+                                      key=lambda x: abs(len(x.get('image_info', [])) - len(assigned_images)))]
+
             template_dist = {
                 "template": template_name,
                 "images": assigned_images,
-                "layout_strategy": "기본 배치",
-                "coordination_result": "기본 순서 배치",
-                "layout_source": "default",
-                "error_response_id": error_response_id
+                "layout_strategy": f"동기 모드 기본 배치 ({len(assigned_images)}개 이미지)",
+                "coordination_result": "동기 모드 순서 배치",
+                "layout_source": relevant_layouts[0].get("pdf_name", "sync_default") if relevant_layouts else "sync_default",
+                "sync_processed": True
             }
 
-            return (template_dist, [])
+            template_distributions.append(template_dist)
+            print(f"✅ {template_name} 동기 처리 완료: {len(assigned_images)}개 이미지")
+
+        return template_distributions
+
+    def _create_final_distribution_sync(self, template_distributions: List[Dict]) -> Dict:
+        """최종 이미지 분배 결과 생성 (동기 버전)"""
+        return {dist["template"]: dist["images"] for dist in template_distributions}
+
+    async def _log_sync_mode_response_async(self, image_urls: List[str], template_requirements: List[Dict],
+                                          final_distribution: Dict, template_distributions: List[Dict]) -> str:
+        """동기 모드 응답 로깅 (비동기)"""
+        return await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: self.logger.log_agent_real_output(
+                agent_name="BindingAgent_SyncMode",
+                agent_role="동기 모드 이미지 배치 에이전트",
+                task_description=f"동기 모드로 {len(image_urls)}개 이미지를 {len(template_requirements)}개 템플릿에 배치",
+                final_answer=f"동기 모드 이미지 배치 완료: {len(template_distributions)}개 템플릿 처리",
+                reasoning_process="재귀 깊이 초과로 인한 동기 모드 전환 후 안전한 이미지 배치 실행",
+                execution_steps=[
+                    "재귀 깊이 감지",
+                    "동기 모드 전환",
+                    "레이아웃 추천 수집",
+                    "템플릿별 이미지 할당",
+                    "최종 분배 결과 생성"
+                ],
+                raw_input={
+                    "image_urls": image_urls,
+                    "template_requirements": template_requirements
+                },
+                raw_output={
+                    "final_distribution": final_distribution,
+                    "template_distributions": template_distributions
+                },
+                performance_metrics={
+                    "sync_mode_used": True,
+                    "recursion_fallback": True,
+                    "templates_processed": len(template_distributions),
+                    "images_processed": len(image_urls),
+                    "safe_execution": True
+                }
+            )
+        )
 
     async def _get_layout_recommendations_by_image_count_async(self, image_urls: List[str], template_requirements: List[Dict]) -> List[Dict]:
-        """이미지 개수별 레이아웃 추천 가져오기 """
+        """이미지 개수별 레이아웃 추천 가져오기 (비동기)"""
         total_images = len(image_urls)
-        
         if total_images <= 3:
             query = "minimal clean layout single image focus simple elegant"
         elif total_images <= 6:
@@ -374,14 +800,14 @@ class BindingAgent:
 
         # 비동기 벡터 검색
         recommendations = await asyncio.get_event_loop().run_in_executor(
-            None, 
+            None,
             lambda: self.vector_manager.search_similar_layouts(query, "magazine_layout", top_k=5)
         )
 
         print(f"📊 이미지 {total_images}개에 대한 레이아웃 추천 {len(recommendations)}개 획득 (비동기)")
         return recommendations
 
-    async def _log_layout_response_async(self, template_name: str, assigned_images: List[str], 
+    async def _log_layout_response_async(self, template_name: str, assigned_images: List[str],
                                        relevant_layouts: List[Dict], layout_strategy: str) -> str:
         """레이아웃 분석 에이전트 응답 저장 (비동기)"""
         return await asyncio.get_event_loop().run_in_executor(
@@ -411,9 +837,9 @@ class BindingAgent:
             )
         )
 
-    async def _log_coordination_response_async(self, template_name: str, layout_strategy: str, 
+    async def _log_coordination_response_async(self, template_name: str, layout_strategy: str,
                                              coordination_result: str) -> str:
-        """비주얼 코디네이터 에이전트 응답 저장 """
+        """비주얼 코디네이터 에이전트 응답 저장 (비동기)"""
         return await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: self.logger.log_agent_real_output(
@@ -462,7 +888,7 @@ class BindingAgent:
             lambda: {dist["template"]: dist["images"] for dist in template_distributions}
         )
 
-    async def _log_final_response_async(self, input_data: Dict, final_distribution: Dict, 
+    async def _log_final_response_async(self, input_data: Dict, final_distribution: Dict,
                                       template_distributions: List[Dict], all_agent_responses: List[Dict]) -> str:
         """전체 BindingAgent 프로세스 응답 저장 (비동기)"""
         return await asyncio.get_event_loop().run_in_executor(
@@ -472,11 +898,12 @@ class BindingAgent:
                 agent_role="PDF 벡터 데이터 기반 이미지 배치 에이전트",
                 task_description=f"{input_data['total_images']}개 이미지를 {input_data['total_templates']}개 템플릿에 배치",
                 final_answer=str(final_distribution),
-                reasoning_process=f"비동기 다중 에이전트 협업으로 {len(template_distributions)}개 템플릿 처리 완료",
+                reasoning_process=f"개선된 배치 처리 시스템으로 안전한 {len(template_distributions)}개 템플릿 처리 완료",
                 execution_steps=[
-                    "비동기 레이아웃 추천 수집",
-                    "병렬 이미지 할당",
-                    "비동기 템플릿별 배치 설계",
+                    "재귀 깊이 체크",
+                    "배치 기반 처리 모드 선택",
+                    "레이아웃 추천 수집",
+                    "템플릿 배치별 처리",
                     "최종 분배 결과 생성"
                 ],
                 raw_input=input_data,
@@ -490,7 +917,9 @@ class BindingAgent:
                     "total_templates_processed": input_data['total_templates'],
                     "successful_templates": len([t for t in template_distributions if "error_response_id" not in t]),
                     "agent_responses_collected": len(all_agent_responses),
-                    "async_processing": True
+                    "recursion_depth_check": True,
+                    "safe_execution": True,
+                    "batch_processing": True
                 }
             )
         )
@@ -574,11 +1003,7 @@ class BindingAgent:
 
         return ", ".join(structure_analysis) if structure_analysis else "기본 레이아웃"
 
-    def _create_final_distribution(self, template_distributions: List[Dict]) -> Dict:
-        """최종 이미지 분배 결과 생성 (동기 버전 - 호환성 유지)"""
-        final_distribution = {}
-        for dist in template_distributions:
-            template_name = dist["template"]
-            images = dist["images"]
-            final_distribution[template_name] = images
-        return final_distribution
+    # 동기 버전 메서드 (호환성 보장)
+    def process_images_sync(self, image_urls: List[str], image_locations: List[str], template_requirements: List[Dict]) -> Dict:
+        """동기 버전 이미지 처리 (호환성 유지)"""
+        return asyncio.run(self.process_images(image_urls, image_locations, template_requirements))

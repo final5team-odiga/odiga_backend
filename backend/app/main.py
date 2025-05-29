@@ -1,3 +1,6 @@
+import sys
+sys.setrecursionlimit(5000) 
+
 import asyncio
 import nest_asyncio
 from dotenv import load_dotenv
