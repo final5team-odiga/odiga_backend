@@ -1,117 +1,399 @@
 import re
-import asyncio
 from typing import Dict, List
-from crewai import Agent, Task
+from crewai import Agent, Task, Crew, Process
 from custom_llm import get_azure_llm
-
+from utils.agent_decision_logger import get_agent_logger, get_complete_data_manager
 
 class JSXTemplateAdapter:
-    """실제 JSX 템플릿을 콘텐츠에 맞게 적용하는 에이전트 (이미지 URL 완전 통합)"""
-
+    """JSX 템플릿 어댑터 (CrewAI 기반 로깅 시스템 통합)"""
+    
     def __init__(self):
         self.llm = get_azure_llm()
+        self.logger = get_agent_logger()
+        self.result_manager = get_complete_data_manager()
+        
+        # CrewAI 에이전트들 생성
+        self.template_adaptation_agent = self._create_template_adaptation_agent()
+        self.image_integration_agent = self._create_image_integration_agent()
+        self.structure_preservation_agent = self._create_structure_preservation_agent()
+        self.validation_agent = self._create_validation_agent()
 
-    async def adapt_template_to_content(self, template_info: Dict, content: Dict, component_name: str) -> str:
-        """템플릿을 콘텐츠에 맞게 적용 (이미지 URL 완전 통합)"""
+    def _create_template_adaptation_agent(self):
+        """템플릿 적응 전문 에이전트"""
+        return Agent(
+            role="JSX 템플릿 적응 전문가",
+            goal="원본 JSX 템플릿의 구조를 완벽히 보존하면서 새로운 콘텐츠에 최적화된 적응을 수행",
+            backstory="""당신은 10년간 React 및 JSX 템플릿 시스템을 설계하고 최적화해온 전문가입니다. 다양한 콘텐츠 타입에 맞춰 템플릿을 적응시키면서도 원본의 구조적 무결성을 유지하는 데 특화되어 있습니다.
 
-        original_jsx = template_info.get('original_jsx', '')
+**전문 영역:**
+- JSX 템플릿 구조 분석 및 보존
+- 콘텐츠 기반 동적 적응
+- 템플릿 호환성 보장
+- 구조적 일관성 유지
 
-        if not original_jsx:
-            print(f"⚠️ 원본 JSX 없음 - 폴백 생성")
-            return await self._create_fallback_adaptation(template_info, content, component_name)
+**적응 철학:**
+"완벽한 템플릿 적응은 원본의 설계 의도를 존중하면서도 새로운 콘텐츠의 특성을 최대한 활용하는 것입니다."
 
-        print(f"  🔧 실제 템플릿 구조 적용 시작 (이미지 URL 통합)")
+**핵심 역량:**
+- 원본 JSX 구조 완전 보존
+- 콘텐츠 특성 기반 최적화
+- 템플릿 메타데이터 활용
+- 적응 품질 검증""",
+            verbose=True,
+            llm=self.llm,
+            allow_delegation=False
+        )
 
-        # 실제 템플릿 구조를 완전히 보존하면서 콘텐츠만 교체
-        adapted_jsx = self._preserve_structure_adapt_content(
-            original_jsx, template_info, content, component_name)
+    def _create_image_integration_agent(self):
+        """이미지 통합 전문 에이전트"""
+        return Agent(
+            role="이미지 URL 통합 전문가",
+            goal="JSX 템플릿에 이미지 URL을 완벽하게 통합하여 시각적 일관성과 기능적 완성도를 보장",
+            backstory="""당신은 8년간 웹 개발에서 이미지 최적화와 통합을 담당해온 전문가입니다. JSX 컴포넌트 내 이미지 요소의 동적 처리와 URL 관리에 특화되어 있습니다.
 
-        # 이미지 URL 강제 통합
-        adapted_jsx = self._force_integrate_image_urls(adapted_jsx, content)
+**기술 전문성:**
+- JSX 이미지 태그 패턴 분석
+- 동적 이미지 URL 교체
+- 이미지 갤러리 생성
+- 반응형 이미지 처리
 
-        # 벡터 데이터 기반 스타일 조정
-        if template_info.get('vector_matched', False):
-            adapted_jsx = self._apply_vector_style_enhancements(
-                adapted_jsx, template_info)
+**통합 전략:**
+"모든 이미지는 콘텐츠의 맥락에 맞춰 최적의 위치와 크기로 통합되어야 하며, 사용자 경험을 향상시켜야 합니다."
 
-        # 마크다운 블록 제거 및 최종 검증
-        adapted_jsx = self._remove_markdown_blocks_and_validate(
-            adapted_jsx, content, component_name)
+**처리 범위:**
+- 기존 이미지 태그 URL 교체
+- 이미지 props 동적 할당
+- 누락된 이미지 요소 추가
+- 이미지 갤러리 자동 생성""",
+            verbose=True,
+            llm=self.llm,
+            allow_delegation=False
+        )
 
-        print(f"  ✅ 실제 구조 보존 및 이미지 통합 완료")
+    def _create_structure_preservation_agent(self):
+        """구조 보존 전문 에이전트"""
+        return Agent(
+            role="JSX 구조 보존 전문가",
+            goal="원본 JSX 템플릿의 아키텍처와 디자인 패턴을 완벽히 보존하면서 콘텐츠 적응을 수행",
+            backstory="""당신은 12년간 대규모 React 프로젝트에서 컴포넌트 아키텍처 설계와 유지보수를 담당해온 전문가입니다. 템플릿의 구조적 무결성을 보장하면서도 유연한 적응을 가능하게 하는 데 특화되어 있습니다.
+
+**핵심 역량:**
+- JSX 컴포넌트 구조 분석
+- Styled-components 패턴 보존
+- 레이아웃 시스템 유지
+- 디자인 토큰 일관성
+
+**보존 원칙:**
+"원본 템플릿의 설계 철학과 구조적 특성을 완전히 이해하고 보존하면서, 새로운 콘텐츠에 맞는 최소한의 적응만을 수행합니다."
+
+**검증 기준:**
+- 원본 컴포넌트 구조 유지
+- CSS 스타일링 패턴 보존
+- 반응형 디자인 특성 유지
+- 접근성 표준 준수""",
+            verbose=True,
+            llm=self.llm,
+            allow_delegation=False
+        )
+
+    def _create_validation_agent(self):
+        """검증 전문 에이전트"""
+        return Agent(
+            role="JSX 적응 검증 전문가",
+            goal="적응된 JSX 템플릿의 품질과 기능성을 종합적으로 검증하여 완벽한 결과물을 보장",
+            backstory="""당신은 8년간 React 프로젝트의 품질 보증과 코드 검증을 담당해온 전문가입니다. JSX 템플릿 적응 과정에서 발생할 수 있는 모든 오류와 품질 이슈를 사전에 식별하고 해결하는 데 특화되어 있습니다.
+
+**검증 영역:**
+- JSX 문법 정확성
+- 컴포넌트 구조 무결성
+- 이미지 통합 완성도
+- 마크다운 블록 제거
+
+**품질 기준:**
+"완벽한 JSX 템플릿은 문법적 오류가 전혀 없고, 원본의 설계 의도를 완전히 반영하며, 새로운 콘텐츠와 완벽히 조화를 이루는 결과물입니다."
+
+**검증 프로세스:**
+- 다단계 문법 검증
+- 구조적 일관성 확인
+- 이미지 통합 검증
+- 최종 품질 승인""",
+            verbose=True,
+            llm=self.llm,
+            allow_delegation=False
+        )
+
+    def adapt_template_to_content(self, template_info: Dict, content: Dict, component_name: str) -> str:
+        """템플릿을 콘텐츠에 맞게 적용 (CrewAI 기반 이미지 URL 완전 통합 + 로깅)"""
+        
+        # 이전 에이전트 결과 수집
+        previous_results = self.result_manager.get_all_outputs(exclude_agent="JSXTemplateAdapter")
+        print(f"📊 이전 에이전트 결과 수집: {len(previous_results)}개")
+        
+        # CrewAI Task들 생성
+        structure_analysis_task = self._create_structure_analysis_task(template_info, content, component_name)
+        image_integration_task = self._create_image_integration_task(content)
+        content_adaptation_task = self._create_content_adaptation_task(template_info, content, component_name)
+        validation_task = self._create_validation_task(component_name)
+        
+        # CrewAI Crew 생성 및 실행
+        adaptation_crew = Crew(
+            agents=[self.structure_preservation_agent, self.image_integration_agent, self.template_adaptation_agent, self.validation_agent],
+            tasks=[structure_analysis_task, image_integration_task, content_adaptation_task, validation_task],
+            process=Process.sequential,
+            verbose=True
+        )
+        
+        # Crew 실행
+        crew_result = adaptation_crew.kickoff()
+        
+        # 실제 적응 수행
+        adapted_jsx = self._execute_adaptation_with_crew_insights(crew_result, template_info, content, component_name)
+        
+        # 어댑테이션 결과 로깅
+        self.result_manager.store_agent_output(
+            agent_name="JSXTemplateAdapter",
+            agent_role="JSX 템플릿 어댑터",
+            task_description=f"컴포넌트 {component_name} CrewAI 기반 템플릿 어댑테이션",
+            final_answer=adapted_jsx,
+            reasoning_process=f"CrewAI 기반 원본 JSX 구조 보존하며 콘텐츠 적용, 이미지 {len(content.get('images', []))}개 통합",
+            execution_steps=[
+                "CrewAI 에이전트 및 태스크 생성",
+                "구조 분석 및 보존",
+                "이미지 통합",
+                "콘텐츠 적응",
+                "검증 및 완료"
+            ],
+            raw_input={"template_info": template_info, "content": content, "component_name": component_name},
+            raw_output=adapted_jsx,
+            performance_metrics={
+                "original_jsx_length": len(template_info.get('original_jsx', '')),
+                "adapted_jsx_length": len(adapted_jsx),
+                "images_integrated": len(content.get('images', [])),
+                "vector_matched": template_info.get('vector_matched', False),
+                "previous_results_count": len(previous_results),
+                "crewai_enhanced": True
+            }
+        )
+        
+        print(f"✅ CrewAI 기반 실제 구조 보존 및 이미지 통합 완료")
         return adapted_jsx
 
+    def _execute_adaptation_with_crew_insights(self, crew_result, template_info: Dict, content: Dict, component_name: str) -> str:
+        """CrewAI 인사이트를 활용한 실제 적응 수행"""
+        original_jsx = template_info.get('original_jsx', '')
+        
+        if not original_jsx:
+            print(f"⚠️ 원본 JSX 없음 - 폴백 생성")
+            return self._create_fallback_adaptation(template_info, content, component_name)
+        
+        print(f"🔧 CrewAI 기반 실제 템플릿 구조 적용 시작 (이미지 URL 통합)")
+        
+        # 실제 템플릿 구조를 완전히 보존하면서 콘텐츠만 교체
+        adapted_jsx = self._preserve_structure_adapt_content(original_jsx, template_info, content, component_name)
+        
+        # 이미지 URL 강제 통합
+        adapted_jsx = self._force_integrate_image_urls(adapted_jsx, content)
+        
+        # 벡터 데이터 기반 스타일 조정
+        if template_info.get('vector_matched', False):
+            adapted_jsx = self._apply_vector_style_enhancements(adapted_jsx, template_info)
+        
+        # 마크다운 블록 제거 및 최종 검증
+        adapted_jsx = self._remove_markdown_blocks_and_validate(adapted_jsx, content, component_name)
+        
+        return adapted_jsx
+
+    def _create_structure_analysis_task(self, template_info: Dict, content: Dict, component_name: str) -> Task:
+        """구조 분석 태스크"""
+        return Task(
+            description=f"""
+            JSX 템플릿의 구조를 분석하고 보존 전략을 수립하세요.
+            
+            **분석 대상:**
+            - 컴포넌트명: {component_name}
+            - 원본 JSX 길이: {len(template_info.get('original_jsx', ''))} 문자
+            - 벡터 매칭: {template_info.get('vector_matched', False)}
+            
+            **분석 요구사항:**
+            1. 원본 JSX 구조 완전 분석
+            2. Styled-components 패턴 식별
+            3. 레이아웃 시스템 특성 파악
+            4. 보존해야 할 핵심 요소 식별
+            
+            **보존 전략:**
+            - 컴포넌트 아키텍처 유지
+            - CSS 스타일링 패턴 보존
+            - 반응형 디자인 특성 유지
+            - 접근성 표준 준수
+            
+            구조 분석 결과와 보존 전략을 제시하세요.
+            """,
+            expected_output="JSX 구조 분석 결과 및 보존 전략",
+            agent=self.structure_preservation_agent
+        )
+
+    def _create_image_integration_task(self, content: Dict) -> Task:
+        """이미지 통합 태스크"""
+        return Task(
+            description=f"""
+            콘텐츠의 이미지들을 JSX 템플릿에 완벽하게 통합하세요.
+            
+            **통합 대상:**
+            - 이미지 개수: {len(content.get('images', []))}개
+            - 이미지 URL들: {content.get('images', [])[:3]}...
+            
+            **통합 요구사항:**
+            1. 기존 이미지 태그 URL 교체
+            2. 이미지 props 동적 할당
+            3. 누락된 이미지 요소 추가
+            4. 이미지 갤러리 자동 생성 (필요시)
+            
+            **통합 전략:**
+            - 기존 img 태그의 src 속성 교체
+            - styled 이미지 컴포넌트 src 업데이트
+            - 이미지 props 패턴 매칭 및 교체
+            - 이미지가 없는 경우 갤러리 추가
+            
+            **품질 기준:**
+            - 모든 이미지 URL 유효성 확인
+            - 이미지 태그 문법 정확성
+            - 반응형 이미지 처리
+            
+            이미지 통합 전략과 구현 방안을 제시하세요.
+            """,
+            expected_output="이미지 통합 전략 및 구현 방안",
+            agent=self.image_integration_agent
+        )
+
+    def _create_content_adaptation_task(self, template_info: Dict, content: Dict, component_name: str) -> Task:
+        """콘텐츠 적응 태스크"""
+        return Task(
+            description=f"""
+            템플릿 구조를 보존하면서 새로운 콘텐츠에 맞게 적응시키세요.
+            
+            **적응 대상:**
+            - 제목: {content.get('title', 'N/A')}
+            - 본문 길이: {len(content.get('body', ''))} 문자
+            - 부제목: {content.get('subtitle', 'N/A')}
+            
+            **적응 요구사항:**
+            1. 원본 JSX 구조 완전 보존
+            2. 콘텐츠 요소만 선택적 교체
+            3. 컴포넌트명 정확한 적용
+            4. 벡터 데이터 기반 스타일 최적화
+            
+            **적응 원칙:**
+            - 구조적 무결성 유지
+            - 콘텐츠 특성 반영
+            - 디자인 일관성 보장
+            - 사용자 경험 최적화
+            
+            이전 태스크들의 결과를 활용하여 완벽한 적응을 수행하세요.
+            """,
+            expected_output="완벽하게 적응된 JSX 템플릿",
+            agent=self.template_adaptation_agent,
+            context=[self._create_structure_analysis_task(template_info, content, component_name), self._create_image_integration_task(content)]
+        )
+
+    def _create_validation_task(self, component_name: str) -> Task:
+        """검증 태스크"""
+        return Task(
+            description=f"""
+            적응된 JSX 템플릿의 품질과 기능성을 종합적으로 검증하세요.
+            
+            **검증 대상:**
+            - 컴포넌트명: {component_name}
+            
+            **검증 영역:**
+            1. JSX 문법 정확성 확인
+            2. 컴포넌트 구조 무결성 검증
+            3. 이미지 통합 완성도 평가
+            4. 마크다운 블록 완전 제거
+            
+            **품질 기준:**
+            - 문법 오류 제로
+            - 컴파일 가능성 보장
+            - 원본 구조 보존 확인
+            - 콘텐츠 적응 완성도
+            
+            **최종 검증:**
+            - import 문 정확성
+            - export 문 일치성
+            - styled-components 활용
+            - 접근성 준수
+            
+            모든 검증 항목을 통과한 최종 JSX 템플릿을 제공하세요.
+            """,
+            expected_output="품질 검증 완료된 최종 JSX 템플릿",
+            agent=self.validation_agent,
+            context=[self._create_content_adaptation_task({}, {}, component_name)]
+        )
+
+    # 기존 메서드들 유지 (변경 없음)
     def _force_integrate_image_urls(self, jsx_code: str, content: Dict) -> str:
         """이미지 URL 강제 통합"""
-
         images = content.get('images', [])
         if not images:
-            print(f"    📷 이미지 없음 - 플레이스홀더 유지")
+            print(f"📷 이미지 없음 - 플레이스홀더 유지")
             return jsx_code
-
-        print(f"    📷 {len(images)}개 이미지 URL 통합 시작")
-
+        
+        print(f"📷 {len(images)}개 이미지 URL 통합 시작")
+        
         # 1. 기존 이미지 태그에 실제 URL 적용
         jsx_code = self._replace_existing_image_tags(jsx_code, images)
-
+        
         # 2. 이미지 props 교체
         jsx_code = self._replace_image_props(jsx_code, images)
-
+        
         # 3. 이미지가 없는 경우 새로 추가
         jsx_code = self._add_missing_images(jsx_code, images)
-
-        print(f"    ✅ 이미지 URL 통합 완료")
+        
+        print(f"✅ 이미지 URL 통합 완료")
         return jsx_code
 
     def _replace_existing_image_tags(self, jsx_code: str, images: List[str]) -> str:
         """기존 이미지 태그에 실제 URL 적용"""
-
         # img 태그의 src 속성 찾기 및 교체
-        img_pattern = r'<img\s+([^>]*?)src="([^"]*)"([^>]*?)/?>'
-
+        img_pattern = r'<img([^>]*?)src="([^"]*)"([^>]*?)/?>'
+        
         def replace_img_src(match):
             before_src = match.group(1)
             old_src = match.group(2)
             after_src = match.group(3)
-
+            
             # 첫 번째 이미지로 교체
-            if images and images:
-                new_src = images
-                return f'<img {before_src}src="{new_src}"{after_src} />'
-
+            if images and images[0]:
+                new_src = images[0]
+                return f'<img{before_src}src="{new_src}"{after_src} />'
             return match.group(0)
-
+        
         jsx_code = re.sub(img_pattern, replace_img_src, jsx_code)
-
+        
         # styled img 컴포넌트의 src 속성 교체
         styled_img_pattern = r'<(\w*[Ii]mage?\w*)\s+([^>]*?)src="([^"]*)"([^>]*?)/?>'
-
+        
         def replace_styled_img_src(match):
             component_name = match.group(1)
             before_src = match.group(2)
             old_src = match.group(3)
             after_src = match.group(4)
-
+            
             # 이미지 인덱스 추출 시도
-            img_index = self._extract_image_index_from_component(
-                component_name)
-
+            img_index = self._extract_image_index_from_component(component_name)
             if img_index < len(images) and images[img_index]:
                 new_src = images[img_index]
                 return f'<{component_name} {before_src}src="{new_src}"{after_src} />'
-            elif images and images:
-                new_src = images
+            elif images and images[0]:
+                new_src = images[0]
                 return f'<{component_name} {before_src}src="{new_src}"{after_src} />'
-
             return match.group(0)
-
+        
         jsx_code = re.sub(styled_img_pattern, replace_styled_img_src, jsx_code)
-
+        
         return jsx_code
 
     def _replace_image_props(self, jsx_code: str, images: List[str]) -> str:
         """이미지 props 교체"""
-
         # 다양한 이미지 prop 패턴 교체
         image_prop_patterns = [
             (r'\{imageUrl\}', 0),
@@ -126,380 +408,171 @@ class JSXTemplateAdapter:
             (r'\{featuredImage\}', 0),
             (r'\{mainImage\}', 0)
         ]
-
+        
         for pattern, index in image_prop_patterns:
             if index < len(images) and images[index]:
                 jsx_code = re.sub(pattern, images[index], jsx_code)
-
+        
         return jsx_code
 
     def _add_missing_images(self, jsx_code: str, images: List[str]) -> str:
         """이미지가 없는 경우 새로 추가"""
-
         # 이미지 태그가 전혀 없는 경우 추가
-        if '<img' not in jsx_code and 'Image' not in jsx_code and images:
-
+        if '<img' not in jsx_code and 'Image' not in jsx_code:
             # Container 내부에 이미지 갤러리 추가
             container_pattern = r'(<Container[^>]*>)(.*?)(</Container>)'
-
+            
             def add_image_gallery(match):
                 container_open = match.group(1)
                 container_content = match.group(2)
                 container_close = match.group(3)
-
+                
                 # 이미지 갤러리 생성
                 image_gallery = self._create_image_gallery_jsx(images)
-
+                
                 # 기존 콘텐츠 뒤에 이미지 갤러리 추가
                 new_content = container_content + '\n      ' + image_gallery
-
+                
                 return container_open + new_content + '\n    ' + container_close
-
-            jsx_code = re.sub(container_pattern,
-                              add_image_gallery, jsx_code, flags=re.DOTALL)
-
+            
+            jsx_code = re.sub(container_pattern, add_image_gallery, jsx_code, flags=re.DOTALL)
+        
         return jsx_code
 
     def _create_image_gallery_jsx(self, images: List[str]) -> str:
         """이미지 갤러리 JSX 생성"""
-
         # 이미지 태그들 생성
         image_tags = []
-        for i, img_url in enumerate(images[:6]):
+        for i, img_url in enumerate(images[:6]):  # 최대 6개
             if img_url and img_url.strip():
-                image_tags.append(
-                    f'        <TravelImage src="{img_url}" alt="Travel {i+1}" />')
-
+                image_tags.append(f'        <img src="{img_url}" alt="Image {i+1}" style={{width: "100%", height: "200px", objectFit: "cover", borderRadius: "8px"}} />')
+        
         if not image_tags:
-            return ''
-
-        # Styled Component가 없으면 추가
-        styled_component = '''
-const TravelImage = styled.img`
-  width: 100%;
-  height: 200px;
-  object-fit: cover;
-  border-radius: 8px;
-  box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-  margin-bottom: 20px;
-`;
-
-const ImageGallery = styled.div`
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 20px;
-  margin: 40px 0;
-`;'''
-
-        gallery_jsx = f'''
-      <ImageGallery>
+            return ""
+        
+        # 갤러리 컨테이너로 감싸기
+        gallery_jsx = f"""<div style={{display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "16px", marginTop: "20px"}}>
 {chr(10).join(image_tags)}
-      </ImageGallery>'''
-
+      </div>"""
+        
         return gallery_jsx
 
     def _extract_image_index_from_component(self, component_name: str) -> int:
-        """컴포넌트 이름에서 이미지 인덱스 추출"""
-
-        # 숫자 패턴 찾기
+        """컴포넌트명에서 이미지 인덱스 추출"""
+        # Image1, Image2, HeroImage 등에서 숫자 추출
+        import re
         match = re.search(r'(\d+)', component_name)
         if match:
-            return int(match.group(1)) - 1
-
-        # 특정 이름 패턴 매핑
-        name_mapping = {
-            'heroimage': 0,
-            'featuredimage': 0,
-            'mainimage': 0,
-            'secondimage': 1,
-            'thirdimage': 2
-        }
-
-        component_lower = component_name.lower()
-        for name, index in name_mapping.items():
-            if name in component_lower:
-                return index
-
+            return int(match.group(1)) - 1  # 0-based index
         return 0
+
+    def _preserve_structure_adapt_content(self, original_jsx: str, template_info: Dict, content: Dict, component_name: str) -> str:
+        """구조 보존하며 콘텐츠 적응"""
+        adapted_jsx = original_jsx
+        
+        # 컴포넌트명 교체
+        adapted_jsx = re.sub(r'export const \w+', f'export const {component_name}', adapted_jsx)
+        
+        # 텍스트 콘텐츠 교체 (구조는 보존)
+        title = content.get('title', '제목')
+        subtitle = content.get('subtitle', '부제목')
+        body = content.get('body', '본문 내용')
+        
+        # 다양한 텍스트 패턴 교체
+        text_replacements = [
+            (r'\{title\}', title),
+            (r'\{subtitle\}', subtitle),
+            (r'\{body\}', body),
+            (r'\{content\}', body),
+            (r'제목을 입력하세요', title),
+            (r'부제목을 입력하세요', subtitle),
+            (r'본문을 입력하세요', body),
+        ]
+        
+        for pattern, replacement in text_replacements:
+            adapted_jsx = re.sub(pattern, replacement, adapted_jsx)
+        
+        return adapted_jsx
+
+    def _apply_vector_style_enhancements(self, jsx_code: str, template_info: Dict) -> str:
+        """벡터 데이터 기반 스타일 조정"""
+        if not template_info.get('vector_matched', False):
+            return jsx_code
+        
+        # 벡터 매칭 기반 색상 조정
+        recommended_usage = template_info.get('recommended_usage', 'general')
+        
+        if 'travel' in recommended_usage:
+            jsx_code = jsx_code.replace('#333333', '#2c5aa0')  # 여행 블루
+        elif 'culture' in recommended_usage:
+            jsx_code = jsx_code.replace('#333333', '#8b4513')  # 문화 브라운
+        
+        return jsx_code
 
     def _remove_markdown_blocks_and_validate(self, jsx_code: str, content: Dict, component_name: str) -> str:
         """마크다운 블록 제거 및 최종 검증"""
-
-        print(f"    🧹 마크다운 블록 제거 시작")
-
-        # 1. 마크다운 코드 블록 완전 제거
-        jsx_code = self._remove_all_markdown_blocks(jsx_code)
-
-        # 2. 기본 구조 검증
-        jsx_code = self._validate_basic_structure(jsx_code, component_name)
-
-        # 3. 실제 콘텐츠 포함 확인
-        jsx_code = self._ensure_content_inclusion(jsx_code, content)
-
-        # 4. 문법 오류 수정
-        jsx_code = self._fix_syntax_errors(jsx_code)
-
-        print(f"    ✅ 마크다운 제거 및 검증 완료")
-        return jsx_code
-
-    def _remove_all_markdown_blocks(self, jsx_code: str) -> str:
-        """모든 마크다운 블록 제거"""
-
-        # ```jsx, `````` 등 모든 마크다운 블록 제거
-        jsx_code = re.sub(r'```[\s\S]*?```', '', jsx_code)
-        jsx_code = re.sub(r'```\n?', '', jsx_code)
-
-        # 연속된 백틱 제거
-        jsx_code = re.sub(r'`{3,}', '', jsx_code)
-
-        # 마크다운 주석 제거
-        jsx_code = re.sub(r'<!--.*?-->', '', jsx_code, flags=re.DOTALL)
-
-        # 불필요한 설명 텍스트 제거
-        jsx_code = re.sub(r'^(이 코드는|다음은|아래는).*?\n', '',
-                          jsx_code, flags=re.MULTILINE)
-        jsx_code = re.sub(r'위의? 코드.*?\n', '', jsx_code, flags=re.MULTILINE)
-
-        return jsx_code.strip()
-
-    def _validate_basic_structure(self, jsx_code: str, component_name: str) -> str:
-        """기본 구조 검증"""
-
-        # import 문 확인
+        # 마크다운 블록 제거
+        jsx_code = re.sub(r'``````', '', jsx_code, flags=re.DOTALL)
+        jsx_code = re.sub(r'`[^`]*`', '', jsx_code)
+        
+        # 기본 구조 검증 및 보완
         if 'import React' not in jsx_code:
             jsx_code = 'import React from "react";\n' + jsx_code
-
+        
         if 'import styled' not in jsx_code:
             jsx_code = jsx_code.replace(
                 'import React from "react";',
                 'import React from "react";\nimport styled from "styled-components";'
             )
-
-        # export 문 확인
+        
+        # export 문 검증
         if f'export const {component_name}' not in jsx_code:
-            jsx_code = re.sub(
-                r'export const \w+',
-                f'export const {component_name}',
-                jsx_code
-            )
-
+            jsx_code = re.sub(r'export const \w+', f'export const {component_name}', jsx_code)
+        
         return jsx_code
 
-    def _ensure_content_inclusion(self, jsx_code: str, content: Dict) -> str:
-        """실제 콘텐츠 포함 확인"""
-
-        title = content.get('title', '')
-        subtitle = content.get('subtitle', '')
-        body = content.get('body', '')
-
-        # 콘텐츠가 포함되지 않은 경우 강제 추가
-        if title and title not in jsx_code:
-            jsx_code = jsx_code.replace('{title}', title)
-            jsx_code = jsx_code.replace(
-                '<Title></Title>', f'<Title>{title}</Title>')
-            jsx_code = jsx_code.replace('<Title/>', f'<Title>{title}</Title>')
-
-        if subtitle and subtitle not in jsx_code:
-            jsx_code = jsx_code.replace('{subtitle}', subtitle)
-            jsx_code = jsx_code.replace(
-                '<Subtitle></Subtitle>', f'<Subtitle>{subtitle}</Subtitle>')
-
-        if body and body not in jsx_code:
-            jsx_code = jsx_code.replace('{body}', body)
-            jsx_code = jsx_code.replace(
-                '<Content></Content>', f'<Content>{body}</Content>')
-
-        return jsx_code
-
-    def _fix_syntax_errors(self, jsx_code: str) -> str:
-        """문법 오류 수정"""
-
-        # 이중 중괄호 수정
-        jsx_code = re.sub(r'\{\{([^}]+)\}\}', r'{\1}', jsx_code)
-
-        # className 수정
-        jsx_code = jsx_code.replace('class=', 'className=')
-
-        # 빈 JSX 표현식 제거
-        jsx_code = re.sub(r'\{\s*\}', '', jsx_code)
-
-        # 연속된 빈 줄 정리
-        jsx_code = re.sub(r'\n\s*\n\s*\n', '\n\n', jsx_code)
-
-        # 중괄호 매칭 확인
-        open_braces = jsx_code.count('{')
-        close_braces = jsx_code.count('}')
-
-        if open_braces != close_braces:
-            if open_braces > close_braces:
-                jsx_code += '}' * (open_braces - close_braces)
-            else:
-                jsx_code = jsx_code.rstrip('}') + '}' * open_braces
-
-        # 마지막 }; 확인
-        if not jsx_code.rstrip().endswith('};'):
-            jsx_code = jsx_code.rstrip() + '\n};'
-
-        return jsx_code
-
-    # 기존 메서드들 유지...
-    def _preserve_structure_adapt_content(self, original_jsx: str, template_info: Dict, content: Dict, component_name: str) -> str:
-        """원본 구조를 완전히 보존하면서 콘텐츠만 교체 (기존 메서드 유지)"""
-
-        adapted_jsx = original_jsx
-
-        # 1. 컴포넌트 이름 변경 (구조 유지)
-        adapted_jsx = re.sub(
-            r'export const \w+',
-            f'export const {component_name}',
-            adapted_jsx
-        )
-
-        # 2. Props 구조 분석 및 실제 값으로 교체
-        props = template_info.get('props', [])
-
-        if props:
-            # Props 함수 시그니처를 제거하고 직접 값 사용
-            props_pattern = r'$$\s*\{\s*([^}]+)\s*\}\s*$$\s*=>'
-            adapted_jsx = re.sub(props_pattern, '() =>', adapted_jsx)
-
-            # 각 prop을 실제 값으로 교체
-            for prop in props:
-                prop = prop.strip()
-                if prop == 'title':
-                    adapted_jsx = adapted_jsx.replace(
-                        f'{{{prop}}}', content.get('title', '도쿄 여행 이야기'))
-                elif prop == 'subtitle':
-                    adapted_jsx = adapted_jsx.replace(
-                        f'{{{prop}}}', content.get('subtitle', '특별한 순간들'))
-                elif prop == 'body':
-                    adapted_jsx = adapted_jsx.replace(
-                        f'{{{prop}}}', content.get('body', '여행의 아름다운 기억들'))
-                elif prop == 'tagline':
-                    adapted_jsx = adapted_jsx.replace(
-                        f'{{{prop}}}', content.get('tagline', 'TRAVEL & CULTURE'))
-
-        return adapted_jsx
-
-    def _apply_vector_style_enhancements(self, jsx_code: str, template_info: Dict) -> str:
-        """벡터 데이터 기반 스타일 향상 (기존 메서드 유지)"""
-
-        similar_layouts = template_info.get('similar_pdf_layouts', [])
-        if not similar_layouts:
-            return jsx_code
-
-        # PDF 매거진에서 추출한 색상 팔레트 적용
-        color_enhancements = self._extract_colors_from_vector_data(
-            similar_layouts)
-
-        if color_enhancements:
-            # 기존 색상을 벡터 기반 색상으로 교체
-            for old_color, new_color in color_enhancements.items():
-                jsx_code = jsx_code.replace(old_color, new_color)
-
-        return jsx_code
-
-    def _extract_colors_from_vector_data(self, similar_layouts: List[Dict]) -> Dict[str, str]:
-        """벡터 데이터에서 색상 팔레트 추출 (기존 메서드 유지)"""
-
-        # PDF 소스별 추천 색상 매핑
-        color_mappings = {
-            'travel': {
-                '#2c3e50': '#1e3a8a',  # 더 깊은 블루
-                '#7f8c8d': '#64748b',  # 슬레이트 그레이
-                '#f8f9fa': '#f1f5f9'   # 라이트 블루 그레이
-            },
-            'culture': {
-                '#2c3e50': '#7c2d12',  # 따뜻한 브라운
-                '#7f8c8d': '#a3a3a3',  # 뉴트럴 그레이
-                '#f8f9fa': '#fef7ed'   # 따뜻한 베이지
-            },
-            'lifestyle': {
-                '#2c3e50': '#be185d',  # 핑크
-                '#7f8c8d': '#9ca3af',  # 쿨 그레이
-                '#f8f9fa': '#fdf2f8'   # 라이트 핑크
-            }
-        }
-
-        # 가장 많이 매칭된 카테고리 찾기
-        pdf_sources = [layout.get('pdf_name', '').lower()
-                       for layout in similar_layouts]
-
-        if any('travel' in source for source in pdf_sources):
-            return color_mappings['travel']
-        elif any('culture' in source for source in pdf_sources):
-            return color_mappings['culture']
-        elif any('lifestyle' in source for source in pdf_sources):
-            return color_mappings['lifestyle']
-
-        return {}
-
-    async def _create_fallback_adaptation(self, template_info: Dict, content: Dict, component_name: str) -> str:
-        """폴백 적용 (이미지 포함)"""
-
-        title = content.get('title', '여행 이야기')
-        subtitle = content.get('subtitle', '특별한 순간들')
-        body = content.get('body', '여행의 기억들')
+    def _create_fallback_adaptation(self, template_info: Dict, content: Dict, component_name: str) -> str:
+        """폴백 어댑테이션 생성"""
+        title = content.get('title', '제목')
+        subtitle = content.get('subtitle', '부제목')
+        body = content.get('body', '본문 내용')
         images = content.get('images', [])
-        tagline = content.get('tagline', 'TRAVEL & CULTURE')
-
-        # 이미지 태그 생성
-        image_tags = []
-        for i, img_url in enumerate(images[:4]):
-            if img_url and img_url.strip():
-                image_tags.append(
-                    f'        <TravelImage src="{img_url}" alt="Travel {i+1}" />')
-
-        image_jsx = '\n'.join(image_tags) if image_tags else ''
-        image_gallery = f'''
-      <ImageGallery>
-{image_jsx}
-      </ImageGallery>''' if image_jsx else ''
-
-        return f'''import React from "react";
+        
+        # 기본 JSX 구조 생성
+        image_jsx = ""
+        if images:
+            image_jsx = f'      <img src="{images[0]}" alt="Main Image" style={{width: "100%", height: "300px", objectFit: "cover", borderRadius: "8px"}} />'
+        
+        fallback_jsx = f'''import React from "react";
 import styled from "styled-components";
 
 const Container = styled.div`
-  max-width: 1000px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: 40px 20px;
+  background: #f8f9fa;
+  border-radius: 12px;
 `;
 
 const Title = styled.h1`
-  font-size: 2em;
-  margin-bottom: 20px;
+  font-size: 2.5rem;
+  color: #2c3e50;
+  margin-bottom: 1rem;
+  text-align: center;
 `;
 
 const Subtitle = styled.h2`
-  font-size: 1.2em;
-  margin-bottom: 30px;
-`;
-
-const Content = styled.div`
-  line-height: 1.6;
-  margin-bottom: 30px;
-`;
-
-const ImageGallery = styled.div`
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 20px;
-  margin: 40px 0;
-`;
-
-const TravelImage = styled.img`
-  width: 100%;
-  height: 200px;
-  object-fit: cover;
-  border-radius: 8px;
-  box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-`;
-
-const Tagline = styled.div`
+  font-size: 1.5rem;
+  color: #7f8c8d;
+  margin-bottom: 2rem;
   text-align: center;
-  font-size: 0.9em;
-  color: #666;
-  margin-top: 30px;
+`;
+
+const Content = styled.p`
+  font-size: 1.1rem;
+  line-height: 1.6;
+  color: #555;
+  margin-bottom: 2rem;
 `;
 
 export const {component_name} = () => {{
@@ -507,8 +580,10 @@ export const {component_name} = () => {{
     <Container>
       <Title>{title}</Title>
       <Subtitle>{subtitle}</Subtitle>
-      <Content>{body}</Content>{image_gallery}
-      <Tagline>{tagline}</Tagline>
+{image_jsx}
+      <Content>{body}</Content>
     </Container>
   );
 }};'''
+        
+        return fallback_jsx

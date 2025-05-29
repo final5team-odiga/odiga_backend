@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import Dict, List
 from crewai import Agent, Task
 from custom_llm import get_azure_llm
 

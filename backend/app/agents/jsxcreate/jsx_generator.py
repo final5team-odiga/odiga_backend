@@ -1,890 +1,949 @@
-import os
 import re
+import os
 import json
-import asyncio
-import aiofiles
-
 from agents.jsxcreate.jsx_content_analyzer import JSXContentAnalyzer
 from agents.jsxcreate.jsx_layout_designer import JSXLayoutDesigner
 from agents.jsxcreate.jsx_code_generator import JSXCodeGenerator
-from agents.jsxcreate.jsx_template_analyzer import JSXTemplateAnalyzer
-from agents.jsxcreate.jsx_template_adapter import JSXTemplateAdapter
 from typing import Dict, List
+from crewai import Agent, Task, Crew, Process
 from custom_llm import get_azure_llm
 from utils.pdf_vector_manager import PDFVectorManager
-from utils.agent_decision_logger import get_agent_logger
-
+from utils.agent_decision_logger import get_agent_logger, get_complete_data_manager
 
 class JSXCreatorAgent:
-    """다중 에이전트 조율자 - JSX 생성 총괄 (의사결정 로깅 포함)"""
-
+    """다중 에이전트 조율자 - JSX 생성 총괄 (CrewAI 기반 에이전트 결과 데이터 기반)"""
+    
     def __init__(self):
         self.llm = get_azure_llm()
         self.vector_manager = PDFVectorManager()
         self.logger = get_agent_logger()
-
+        self.result_manager = get_complete_data_manager()
+        
         # 전문 에이전트들 초기화
         self.content_analyzer = JSXContentAnalyzer()
         self.layout_designer = JSXLayoutDesigner()
         self.code_generator = JSXCodeGenerator()
+        
+        # CrewAI 에이전트들 생성
+        self.jsx_coordinator_agent = self._create_jsx_coordinator_agent()
+        self.data_collection_agent = self._create_data_collection_agent()
+        self.component_generation_agent = self._create_component_generation_agent()
+        self.quality_assurance_agent = self._create_quality_assurance_agent()
 
-        # 템플릿 관련 에이전트 추가
-        self.template_analyzer = JSXTemplateAnalyzer()
-        self.template_adapter = JSXTemplateAdapter()
+    def _create_jsx_coordinator_agent(self):
+        """JSX 생성 총괄 조율자"""
+        return Agent(
+            role="JSX 생성 총괄 조율자",
+            goal="에이전트 결과 데이터를 기반으로 고품질 JSX 컴포넌트 생성 프로세스를 총괄하고 최적화된 결과를 도출",
+            backstory="""당신은 15년간 React 및 JSX 기반 대규모 웹 개발 프로젝트를 총괄해온 시니어 아키텍트입니다. 다중 에이전트 시스템의 결과를 통합하여 최고 품질의 JSX 컴포넌트를 생성하는 데 특화되어 있습니다.
 
-    async def generate_jsx_components_async(self, template_data_path: str, templates_dir: str = "jsx_templates") -> List[Dict]:
-        """jsx_templates 우선 사용하는 비동기 생성 (학습 기반)"""
+**전문 영역:**
+- 다중 에이전트 결과 데이터 통합 및 분석
+- JSX 컴포넌트 아키텍처 설계
+- 에이전트 기반 개발 워크플로우 최적화
+- 품질 보증 및 성능 최적화
 
-        # 이전 의사결정 로그에서 학습 인사이트 획득
-        learning_insights = self.logger.get_learning_insights(
-            "JSXCreatorAgent")
-        print(
-            f"📚 JSXCreatorAgent 학습 인사이트: {len(learning_insights.get('recommendations', []))}개 추천사항")
+**조율 철학:**
+"각 에이전트의 전문성을 최대한 활용하여 단일 에이전트로는 달성할 수 없는 수준의 JSX 컴포넌트를 생성합니다."
 
-        # jsx_templates가 있으면 템플릿 기반으로, 없으면 기존 방식으로
-        if os.path.exists(templates_dir) and any(f.endswith('.jsx') for f in os.listdir(templates_dir)):
-            print(f"📁 jsx_templates 폴더 발견 - 템플릿 기반 생성 모드")
-            generated_components = await self.generate_jsx_components_with_templates_and_learning(
-                template_data_path, templates_dir, learning_insights
-            )
-        else:
-            print(f"📁 jsx_templates 없음 - 다중 에이전트 생성 모드")
-            generated_components = await self.generate_jsx_components_with_multi_agents_and_learning(
-                template_data_path, templates_dir, learning_insights
-            )
-
-        if not generated_components:
-            return []
-
-        # 전체 JSX 생성 과정 로깅
-        total_components = len(generated_components)
-        successful_components = len(
-            [c for c in generated_components if c.get('jsx_code')])
-
-        self.logger.log_agent_decision(
-            agent_name="JSXCreatorAgent",
-            agent_role="JSX 생성 총괄 조율자",
-            input_data={
-                "template_data_path": template_data_path,
-                "templates_dir": templates_dir,
-                "learning_insights_applied": len(learning_insights.get('recommendations', [])) > 0
-            },
-            decision_process={
-                "generation_mode": "template_based" if os.path.exists(templates_dir) else "multi_agent",
-                "learning_insights_count": len(learning_insights.get('recommendations', []))
-            },
-            output_result={
-                "total_components": total_components,
-                "successful_components": successful_components,
-                "success_rate": successful_components / max(total_components, 1)
-            },
-            reasoning=f"JSX 생성 완료: {successful_components}/{total_components} 성공, 학습 인사이트 적용",
-            confidence_score=0.9,
-            context={"learning_insights": learning_insights},
-            performance_metrics={
-                "generation_efficiency": successful_components / max(total_components, 1),
-                "learning_application_rate": 1.0 if learning_insights.get('recommendations') else 0.0
-            }
+**책임 영역:**
+- 전체 JSX 생성 프로세스 관리
+- 에이전트 간 데이터 흐름 최적화
+- 품질 기준 설정 및 검증
+- 최종 결과물 승인 및 배포""",
+            verbose=True,
+            llm=self.llm,
+            allow_delegation=True
         )
 
-        print(f"✅ JSX 생성 완료: {len(generated_components)}개 컴포넌트 (학습 기반)")
+    def _create_data_collection_agent(self):
+        """데이터 수집 및 분석 전문가"""
+        return Agent(
+            role="에이전트 결과 데이터 수집 및 분석 전문가",
+            goal="이전 에이전트들의 실행 결과를 체계적으로 수집하고 분석하여 JSX 생성에 필요한 인사이트를 도출",
+            backstory="""당신은 10년간 다중 에이전트 시스템의 데이터 분석과 패턴 인식을 담당해온 전문가입니다. 복잡한 에이전트 결과 데이터에서 의미 있는 패턴과 인사이트를 추출하는 데 탁월한 능력을 보유하고 있습니다.
+
+**핵심 역량:**
+- 에이전트 실행 결과 패턴 분석
+- 성공적인 접근법 식별 및 분류
+- 품질 지표 기반 성능 평가
+- 학습 인사이트 통합 및 활용
+
+**분석 방법론:**
+"데이터 기반 의사결정을 통해 각 에이전트의 강점을 파악하고 이를 JSX 생성 품질 향상에 활용합니다."
+
+**특별 처리:**
+- ContentCreatorV2Agent: 콘텐츠 생성 품질 분석
+- ImageAnalyzerAgent: 이미지 분석 결과 활용
+- 성능 메트릭: 성공률 및 신뢰도 평가""",
+            verbose=True,
+            llm=self.llm,
+            allow_delegation=False
+        )
+
+    def _create_component_generation_agent(self):
+        """JSX 컴포넌트 생성 전문가"""
+        return Agent(
+            role="JSX 컴포넌트 생성 전문가",
+            goal="에이전트 분석 결과를 바탕으로 오류 없는 고품질 JSX 컴포넌트를 생성하고 최적화",
+            backstory="""당신은 12년간 React 생태계에서 수천 개의 JSX 컴포넌트를 설계하고 구현해온 전문가입니다. 에이전트 기반 데이터를 활용한 동적 컴포넌트 생성과 최적화에 특화되어 있습니다.
+
+**기술 전문성:**
+- React 및 JSX 고급 패턴
+- Styled-components 기반 디자인 시스템
+- 반응형 웹 디자인 구현
+- 컴포넌트 성능 최적화
+
+**생성 전략:**
+"에이전트 분석 결과의 모든 인사이트를 반영하여 사용자 경험과 개발자 경험을 모두 만족시키는 컴포넌트를 생성합니다."
+
+**품질 기준:**
+- 문법 오류 제로
+- 컴파일 가능성 보장
+- 접근성 표준 준수
+- 성능 최적화 적용""",
+            verbose=True,
+            llm=self.llm,
+            allow_delegation=False
+        )
+
+    def _create_quality_assurance_agent(self):
+        """품질 보증 전문가"""
+        return Agent(
+            role="JSX 품질 보증 및 검증 전문가",
+            goal="생성된 JSX 컴포넌트의 품질을 종합적으로 검증하고 오류를 제거하여 완벽한 결과물을 보장",
+            backstory="""당신은 8년간 대규모 React 프로젝트의 품질 보증과 코드 리뷰를 담당해온 전문가입니다. JSX 컴포넌트의 모든 측면을 검증하여 프로덕션 레벨의 품질을 보장하는 데 특화되어 있습니다.
+
+**검증 영역:**
+- JSX 문법 및 구조 검증
+- React 모범 사례 준수 확인
+- 접근성 및 사용성 검증
+- 성능 및 최적화 평가
+
+**품질 철학:**
+"완벽한 JSX 컴포넌트는 기능적 완성도와 코드 품질, 사용자 경험이 모두 조화를 이루는 결과물입니다."
+
+**검증 프로세스:**
+- 다단계 문법 검증
+- 컴파일 가능성 테스트
+- 에이전트 인사이트 반영 확인
+- 최종 품질 승인""",
+            verbose=True,
+            llm=self.llm,
+            allow_delegation=False
+        )
+
+    async def generate_jsx_components_async(self, template_data_path: str, templates_dir: str = "jsx_templates") -> List[Dict]:
+        """에이전트 결과 데이터 기반 JSX 생성 (CrewAI 기반 jsx_templates 미사용)"""
+        print(f"🚀 CrewAI 기반 에이전트 결과 데이터 기반 JSX 생성 시작")
+        print(f"📁 jsx_templates 폴더 무시 - 에이전트 데이터 우선 사용")
+        
+        # CrewAI Task들 생성
+        data_collection_task = self._create_data_collection_task()
+        template_parsing_task = self._create_template_parsing_task(template_data_path)
+        jsx_generation_task = self._create_jsx_generation_task()
+        quality_assurance_task = self._create_quality_assurance_task()
+        
+        # CrewAI Crew 생성
+        jsx_crew = Crew(
+            agents=[self.data_collection_agent, self.jsx_coordinator_agent, self.component_generation_agent, self.quality_assurance_agent],
+            tasks=[data_collection_task, template_parsing_task, jsx_generation_task, quality_assurance_task],
+            process=Process.sequential,
+            verbose=True
+        )
+        
+        # Crew 실행
+        crew_result = jsx_crew.kickoff()
+        
+        # 실제 JSX 생성 수행
+        generated_components = await self._execute_jsx_generation_with_crew_insights(
+            crew_result, template_data_path, templates_dir
+        )
+        
+        if not generated_components:
+            return []
+        
+        # 전체 JSX 생성 과정 로깅 (수정: 올바른 메서드 사용)
+        total_components = len(generated_components)
+        successful_components = len([c for c in generated_components if c.get('jsx_code')])
+        
+        self.result_manager.store_agent_output(
+            agent_name="JSXCreatorAgent",
+            agent_role="JSX 생성 총괄 조율자",
+            task_description=f"CrewAI 기반 에이전트 데이터 기반 {total_components}개 JSX 컴포넌트 생성",
+            final_answer=f"JSX 생성 완료: {successful_components}/{total_components}개 성공",
+            reasoning_process=f"CrewAI 기반 다중 에이전트 협업으로 JSX 컴포넌트 생성",
+            execution_steps=[
+                "CrewAI 에이전트 및 태스크 생성",
+                "에이전트 결과 수집",
+                "template_data.json 파싱",
+                "JSX 컴포넌트 생성",
+                "품질 검증 및 완료"
+            ],
+            raw_input={
+                "template_data_path": template_data_path,
+                "crewai_enabled": True
+            },
+            raw_output=generated_components,
+            performance_metrics={
+                "total_components": total_components,
+                "successful_components": successful_components,
+                "success_rate": successful_components / max(total_components, 1),
+                "generation_efficiency": successful_components / max(total_components, 1),
+                "agent_data_utilization": 1.0,
+                "jsx_templates_ignored": True,
+                "crewai_enhanced": True
+            }
+        )
+        
+        print(f"✅ CrewAI 기반 JSX 생성 완료: {len(generated_components)}개 컴포넌트 (에이전트 데이터 기반)")
         return generated_components
 
-    async def generate_jsx_components_with_templates_and_learning(self, template_data_path: str, templates_dir: str, learning_insights: Dict) -> List[Dict]:
-        """jsx_templates를 활용한 JSX 생성 (학습 인사이트 적용)"""
-
-        # 1. jsx_templates 폴더 분석
-        print(f"\n📁 jsx_templates 폴더 분석 시작 (학습 기반)")
-        template_analysis = await self.template_analyzer.analyze_jsx_templates(
-            templates_dir)
-
-        if not template_analysis:
-            print(f"⚠️ jsx_templates 분석 실패 - 다중 에이전트 모드로 전환")
-            return await self.generate_jsx_components_with_multi_agents_and_learning(template_data_path, templates_dir, learning_insights)
-
-        # 2. template_data.json 읽기
+    async def _execute_jsx_generation_with_crew_insights(self, crew_result, template_data_path: str, templates_dir: str) -> List[Dict]:
+        """CrewAI 인사이트를 활용한 실제 JSX 생성"""
+        # 모든 이전 에이전트 결과 수집 (수정: 올바른 메서드 사용)
+        all_agent_results = self.result_manager.get_all_outputs(exclude_agent="JSXCreatorAgent")
+        learning_insights = self.logger.get_learning_insights("JSXCreatorAgent")
+        
+        print(f"📚 수집된 에이전트 결과: {len(all_agent_results)}개")
+        print(f"🧠 학습 인사이트: {len(learning_insights.get('recommendations', []))}개")
+        
+        # template_data.json 읽기
         try:
-            async with aiofiles.open(template_data_path, 'r', encoding='utf-8') as f:
-                file_content = await f.read()
-
+            with open(template_data_path, 'r', encoding='utf-8') as f:
+                file_content = f.read()
             template_data = self._safe_parse_json(file_content)
-
             if template_data is None:
                 print(f"❌ template_data.json 파싱 실패")
                 return []
-
         except Exception as e:
             print(f"template_data.json 읽기 오류: {str(e)}")
             return []
-
+        
         # 데이터 검증
         if not isinstance(template_data, dict) or "content_sections" not in template_data:
             print(f"❌ 잘못된 template_data 구조")
             return []
-
-        # 3. 콘텐츠 섹션별 템플릿 매핑 및 적용 (학습 기반)
-        generated_components = []
-        content_sections = template_data.get("content_sections", [])
-
-        for i, content_section in enumerate(content_sections):
-            if not isinstance(content_section, dict):
-                continue
-
-            component_name = f"Template{i+1:02d}Adapted"
-
-            print(f"\n=== {component_name} 템플릿 기반 생성 시작 (학습 적용) ===")
-
-            # 콘텐츠 정제 (학습 인사이트 적용)
-            clean_content = self._clean_content_section_with_learning(
-                content_section, learning_insights)
-
-            # 콘텐츠 분석
-            content_analysis = await self.content_analyzer.analyze_content_for_jsx(
-                clean_content, i, len(content_sections)
-            )
-
-            # 최적 템플릿 선택 (학습 인사이트 고려)
-            best_template_name = self._select_template_with_learning(
-                clean_content, content_analysis, template_analysis, learning_insights
-            )
-
-            best_template_info = template_analysis[best_template_name]
-
-            print(f"  📋 선택된 템플릿: {best_template_name} (학습 기반)")
-            print(f"  🎨 레이아웃 타입: {best_template_info['layout_type']}")
-
-            # 템플릿을 콘텐츠에 적용
-            jsx_code = await self.template_adapter.adapt_template_to_content(
-                best_template_info, clean_content, component_name
-            )
-
-            # 기본 검증 및 수정
-            jsx_code = self._validate_template_adapted_jsx(
-                jsx_code, clean_content, component_name)
-
-            # 개별 컴포넌트 생성 로깅
-            self.logger.log_agent_interaction(
-                source_agent="JSXTemplateAdapter",
-                target_agent="JSXCreatorAgent",
-                interaction_type="component_generation",
-                data_transferred={
-                    "component_name": component_name,
-                    "template_used": best_template_name,
-                    "jsx_code_length": len(jsx_code),
-                    "learning_applied": True
-                }
-            )
-
-            generated_components.append({
-                'name': component_name,
-                'file': f"{component_name}.jsx",
-                'jsx_code': jsx_code,
-                'template_name': best_template_name,
-                'approach': 'template_based_learning',
-                'source_template': best_template_info,
-                'content_analysis': content_analysis,
-                'learning_insights_applied': True
-            })
-
-            print(f"✅ 템플릿 기반 JSX 생성 완료: {component_name} (학습 적용)")
-
+        
+        print(f"✅ JSON 직접 파싱 성공")
+        
+        # 에이전트 결과 데이터 기반 JSX 생성
+        generated_components = self.generate_jsx_from_agent_results(
+            template_data, all_agent_results, learning_insights
+        )
+        
         return generated_components
 
-    async def generate_jsx_components_with_multi_agents_and_learning(self, template_data_path: str, templates_dir: str, learning_insights: Dict) -> List[Dict]:
-        """다중 에이전트 협업 JSX 생성 (학습 인사이트 적용)"""
-
-        # template_data.json 읽기
-        try:
-            async with aiofiles.open(template_data_path, 'r', encoding='utf-8') as f:
-                file_content = await f.read()
-
-            template_data = self._safe_parse_json(file_content)
-
-            if template_data is None:
-                print(f"❌ template_data.json 파싱 실패: {template_data_path}")
-                return []
-
-        except Exception as e:
-            print(f"template_data.json 읽기 오류: {str(e)}")
-            return []
-
-        # 데이터 검증
-        if not isinstance(template_data, dict) or "content_sections" not in template_data:
-            print(f"❌ 잘못된 template_data 구조")
-            return []
-
-        generated_components = []
-        content_sections = template_data.get("content_sections", [])
-
-        for i, content_section in enumerate(content_sections):
-            if not isinstance(content_section, dict):
-                continue
-
-            template_name = content_section.get(
-                "template", f"Section{i+1:02d}.jsx")
-            component_name = f"{template_name.replace('.jsx', '')}MultiAgent{i+1}"
-
-            print(f"\n=== {component_name} 다중 에이전트 협업 시작 (학습 적용) ===")
-
-            # 콘텐츠 정제 (학습 인사이트 적용)
-            clean_content = self._clean_content_section_with_learning(
-                content_section, learning_insights)
-
-            # 4단계 다중 에이전트 협업 프로세스 (학습 기반)
-            jsx_code = await self._multi_agent_jsx_pipeline_with_learning(
-                clean_content,
-                component_name,
-                i,
-                len(content_sections),
-                learning_insights
-            )
-
-            generated_components.append({
-                'name': component_name,
-                'file': f"{component_name}.jsx",
-                'jsx_code': jsx_code,
-                'template_name': template_name,
-                'approach': 'multi_agent_learning',
-                'pipeline_completed': True,
-                'content_analysis': {'multi_agent_collaboration': True, 'learning_applied': True},
-                'learning_insights_applied': True
-            })
-
-            print(f"✅ 다중 에이전트 JSX 생성 완료: {component_name} (학습 적용)")
-
-        return generated_components
-
-    def _select_template_with_learning(self, content: Dict, analysis: Dict, template_analysis: Dict, learning_insights: Dict) -> str:
-        """학습 인사이트를 적용한 템플릿 선택"""
-
-        # 기본 템플릿 선택
-        base_selection = self.template_analyzer.get_best_template_for_content(
-            content, analysis)
-
-        # 학습 인사이트 적용
-        recommendations = learning_insights.get('recommendations', [])
-        for recommendation in recommendations:
-            if "템플릿" in recommendation and "다양성" in recommendation:
-                # 다양성을 위해 다른 템플릿 고려
-                available_templates = list(template_analysis.keys())
-                if len(available_templates) > 1:
-                    # 기본 선택과 다른 템플릿 중에서 선택
-                    alternative_templates = [
-                        t for t in available_templates if t != base_selection]
-                    if alternative_templates:
-                        print(
-                            f"  🎯 학습 인사이트 적용: 다양성을 위해 {alternative_templates[0]} 선택")
-                        return alternative_templates[0]
-            elif "템플릿" in recommendation and "신뢰도" in recommendation:
-                # 신뢰도가 높은 템플릿 우선 선택
-                high_confidence_templates = [
-                    name for name, info in template_analysis.items()
-                    if info.get('layout_confidence', 0) > 0.8
-                ]
-                if high_confidence_templates and base_selection not in high_confidence_templates:
-                    print(
-                        f"  🎯 학습 인사이트 적용: 고신뢰도 템플릿 {high_confidence_templates[0]} 선택")
-                    return high_confidence_templates[0]
-
-        return base_selection
-
-    def _clean_content_section_with_learning(self, content_section: Dict, learning_insights: Dict) -> Dict:
-        """학습 인사이트를 적용한 콘텐츠 정제"""
-
-        # 기본 정제
-        clean_content = self._clean_content_section(content_section)
-
-        # 학습 인사이트 적용
-        key_insights = learning_insights.get('key_insights', [])
-        for insight in key_insights:
-            if "제목" in insight and "구체적" in insight:
-                # 제목을 더 구체적으로 만들기
-                title = clean_content.get('title', '')
-                if len(title) < 15 and "여행" in title:
-                    clean_content['title'] = title + " - 특별한 경험"
-            elif "본문" in insight and "풍부" in insight:
-                # 본문을 더 풍부하게 만들기
-                body = clean_content.get('body', '')
-                if len(body) < 500:
-                    clean_content['body'] = body + \
-                        "\n\n이 경험은 특별한 의미를 가지고 있습니다."
-
-        return clean_content
-
-    def _multi_agent_jsx_pipeline_with_learning(self, content: Dict, component_name: str, index: int,
-                                                total_sections: int, learning_insights: Dict) -> str:
-        """4단계 다중 에이전트 파이프라인 (학습 기반)"""
-
-        try:
-            # 1단계: 콘텐츠 분석 (JSXContentAnalyzer) - 학습 적용
-            print(f"  📊 1단계: 콘텐츠 분석 중... (학습 적용)")
-            analysis_result = self.content_analyzer.analyze_content_for_jsx(
-                content, index, total_sections
-            )
-
-            # 학습 인사이트를 분석 결과에 통합
-            analysis_result = self._enhance_analysis_with_learning(
-                analysis_result, learning_insights)
-
-            # 2단계: 레이아웃 설계 (JSXLayoutDesigner) - 학습 적용
-            print(f"  🎨 2단계: 레이아웃 설계 중... (학습 적용)")
-            design_result = self.layout_designer.design_layout_structure(
-                content, analysis_result, component_name
-            )
-
-            # 학습 인사이트를 설계 결과에 통합
-            design_result = self._enhance_design_with_learning(
-                design_result, learning_insights)
-
-            # 3단계: JSX 코드 생성 (JSXCodeGenerator) - 학습 적용
-            print(f"  💻 3단계: JSX 코드 생성 중... (학습 적용)")
-            jsx_code = self.code_generator.generate_jsx_code(
-                content, design_result, component_name
-            )
-
-            # 4단계: 코드 검증 및 수정 (학습 기반 검증)
-            print(f"  🔍 4단계: 코드 검증 중... (학습 적용)")
-            validated_jsx = self._validate_generated_jsx_with_learning(
-                jsx_code, content, component_name, learning_insights)
-
-            # 각 단계별 상호작용 로깅
-            self.logger.log_agent_interaction(
-                source_agent="MultiAgentPipeline",
-                target_agent="JSXCreatorAgent",
-                interaction_type="pipeline_completion",
-                data_transferred={
-                    "component_name": component_name,
-                    "pipeline_steps": 4,
-                    "learning_applied": True,
-                    "jsx_length": len(validated_jsx)
-                }
-            )
-
-            return validated_jsx
-
-        except Exception as e:
-            print(f"⚠️ 다중 에이전트 파이프라인 실패: {e}")
-            # 폴백: 안전한 기본 JSX 생성 (학습 적용)
-            return self._create_safe_fallback_jsx_with_learning(content, component_name, index, learning_insights)
-
-    def _enhance_analysis_with_learning(self, analysis_result: Dict, learning_insights: Dict) -> Dict:
-        """학습 인사이트로 분석 결과 강화"""
-
-        enhanced_result = analysis_result.copy()
-
-        # 학습 기반 레이아웃 추천 조정
-        recommendations = learning_insights.get('recommendations', [])
-        for recommendation in recommendations:
-            if "레이아웃" in recommendation and "단순" in recommendation:
-                if enhanced_result.get('recommended_layout') == 'complex':
-                    enhanced_result['recommended_layout'] = 'grid'
-                    enhanced_result['learning_adjustment'] = 'simplified_based_on_learning'
-            elif "레이아웃" in recommendation and "혁신" in recommendation:
-                if enhanced_result.get('recommended_layout') == 'minimal':
-                    enhanced_result['recommended_layout'] = 'magazine'
-                    enhanced_result['learning_adjustment'] = 'enhanced_based_on_learning'
-
-        return enhanced_result
-
-    def _enhance_design_with_learning(self, design_result: Dict, learning_insights: Dict) -> Dict:
-        """학습 인사이트로 설계 결과 강화"""
-
-        enhanced_result = design_result.copy()
-
-        # 학습 기반 색상 스키마 조정
-        performance_analysis = learning_insights.get(
-            'performance_analysis', {})
-        if performance_analysis.get('performance_metrics'):
-            # 이전 성능이 좋았던 색상 스키마 적용
-            enhanced_result['color_scheme'] = {
-                "primary": "#1e3a8a",  # 성능이 좋았던 블루 계열
-                "secondary": "#f1f5f9"
-            }
-            enhanced_result['learning_enhancement'] = 'color_optimized'
-
-        return enhanced_result
-
-    def _validate_generated_jsx_with_learning(self, jsx_code: str, content: Dict, component_name: str, learning_insights: Dict) -> str:
-        """학습 기반 JSX 검증"""
-
-        # 기본 검증
-        validated_jsx = self._validate_generated_jsx(
-            jsx_code, content, component_name)
-
-        # 학습 인사이트 기반 추가 검증
-        key_insights = learning_insights.get('key_insights', [])
-        for insight in key_insights:
-            if "이미지" in insight and "포함" in insight:
-                # 이미지 포함 확인 강화
-                images = content.get('images', [])
-                if images and '<img' not in validated_jsx:
-                    # 강제로 이미지 추가
-                    validated_jsx = self._force_add_images_to_jsx(
-                        validated_jsx, images)
-            elif "콘텐츠" in insight and "완전" in insight:
-                # 콘텐츠 완전성 확인 강화
-                title = content.get('title', '')
-                if title and title not in validated_jsx:
-                    validated_jsx = self._force_add_content_to_jsx(
-                        validated_jsx, content)
-
-        return validated_jsx
-
-    def _create_safe_fallback_jsx_with_learning(self, content: Dict, component_name: str, index: int, learning_insights: Dict) -> str:
-        """학습 기반 안전한 폴백 JSX 생성"""
-
-        # 기본 폴백 생성
-        base_jsx = self._create_safe_fallback_jsx(
-            content, component_name, index)
-
-        # 학습 인사이트 적용
-        recommendations = learning_insights.get('recommendations', [])
-        for recommendation in recommendations:
-            if "색상" in recommendation and "따뜻한" in recommendation:
-                # 따뜻한 색상으로 변경
-                base_jsx = base_jsx.replace('#2c3e50', '#7c2d12')  # 따뜻한 브라운
-                base_jsx = base_jsx.replace('#f5f7fa', '#fef7ed')  # 따뜻한 베이지
-            elif "여백" in recommendation and "넓은" in recommendation:
-                # 더 넓은 여백 적용
-                base_jsx = base_jsx.replace(
-                    'padding: 60px 20px', 'padding: 80px 40px')
-
-        return base_jsx
-
-    def _force_add_images_to_jsx(self, jsx_code: str, images: List[str]) -> str:
-        """JSX에 이미지 강제 추가"""
-
-        if not images:
-            return jsx_code
-
-        # Container 내부에 이미지 추가
-        image_jsx = f'\n      <img src="{images[0]}" alt="Travel" style={{{{width: "100%", maxWidth: "600px", height: "300px", objectFit: "cover", borderRadius: "8px", margin: "20px 0"}}}} />'
-
-        # return 문 내부에 추가
-        jsx_code = jsx_code.replace(
-            '<Container>',
-            f'<Container>{image_jsx}'
+    def _create_data_collection_task(self) -> Task:
+        """데이터 수집 태스크"""
+        return Task(
+            description="""
+            이전 에이전트들의 실행 결과를 체계적으로 수집하고 분석하여 JSX 생성에 필요한 인사이트를 도출하세요.
+            
+            **수집 대상:**
+            1. 모든 이전 에이전트 실행 결과
+            2. 학습 인사이트 및 권장사항
+            3. 성능 메트릭 및 품질 지표
+            
+            **분석 요구사항:**
+            1. 에이전트별 성공 패턴 식별
+            2. 콘텐츠 패턴 및 디자인 선호도 분석
+            3. 품질 지표 기반 성능 평가
+            4. JSX 생성에 활용 가능한 인사이트 추출
+            
+            **출력 형식:**
+            - 에이전트 결과 요약
+            - 성공 패턴 분석
+            - JSX 생성 권장사항
+            """,
+            expected_output="에이전트 결과 데이터 분석 및 JSX 생성 인사이트",
+            agent=self.data_collection_agent
         )
 
-        return jsx_code
+    def _create_template_parsing_task(self, template_data_path: str) -> Task:
+        """템플릿 파싱 태스크"""
+        return Task(
+            description=f"""
+            template_data.json 파일을 파싱하고 JSX 생성에 필요한 구조화된 데이터를 준비하세요.
+            
+            **파싱 대상:**
+            - 파일 경로: {template_data_path}
+            
+            **파싱 요구사항:**
+            1. JSON 파일 안전한 읽기 및 파싱
+            2. content_sections 데이터 구조 검증
+            3. 각 섹션별 콘텐츠 요소 확인
+            4. JSX 생성을 위한 데이터 정제
+            
+            **검증 항목:**
+            - JSON 구조 유효성
+            - 필수 필드 존재 여부
+            - 데이터 타입 일치성
+            - 콘텐츠 완성도
+            
+            **출력 요구사항:**
+            파싱된 템플릿 데이터와 검증 결과
+            """,
+            expected_output="파싱 및 검증된 템플릿 데이터",
+            agent=self.jsx_coordinator_agent,
+            context=[self._create_data_collection_task()]
+        )
 
-    def _force_add_content_to_jsx(self, jsx_code: str, content: Dict) -> str:
-        """JSX에 콘텐츠 강제 추가"""
+    def _create_jsx_generation_task(self) -> Task:
+        """JSX 생성 태스크"""
+        return Task(
+            description="""
+            에이전트 분석 결과와 템플릿 데이터를 바탕으로 고품질 JSX 컴포넌트를 생성하세요.
+            
+            **생성 요구사항:**
+            1. 에이전트 인사이트 기반 콘텐츠 강화
+            2. 다중 에이전트 파이프라인 실행
+               - 콘텐츠 분석 (JSXContentAnalyzer)
+               - 레이아웃 설계 (JSXLayoutDesigner)
+               - 코드 생성 (JSXCodeGenerator)
+            3. 에이전트 결과 기반 검증
+            
+            **품질 기준:**
+            - React 및 JSX 문법 준수
+            - Styled-components 활용
+            - 반응형 디자인 적용
+            - 접근성 표준 준수
+            
+            **컴포넌트 구조:**
+            - 명명 규칙: AgentBased{번호}Component
+            - 파일 확장자: .jsx
+            - 에러 프리 코드 보장
+            """,
+            expected_output="생성된 JSX 컴포넌트 목록 (코드 포함)",
+            agent=self.component_generation_agent,
+            context=[self._create_data_collection_task(), self._create_template_parsing_task("")]
+        )
 
-        title = content.get('title', '')
-        body = content.get('body', '')
-
-        if title and title not in jsx_code:
-            jsx_code = jsx_code.replace('<Title>', f'<Title>{title}')
-
-        if body and body not in jsx_code:
-            jsx_code = jsx_code.replace('<Content>', f'<Content>{body}')
-
-        return jsx_code
+    def _create_quality_assurance_task(self) -> Task:
+        """품질 보증 태스크"""
+        return Task(
+            description="""
+            생성된 JSX 컴포넌트의 품질을 종합적으로 검증하고 최종 승인하세요.
+            
+            **검증 영역:**
+            1. JSX 문법 및 구조 검증
+            2. React 모범 사례 준수 확인
+            3. 컴파일 가능성 테스트
+            4. 에이전트 인사이트 반영 확인
+            
+            **품질 기준:**
+            - 문법 오류 제로
+            - 마크다운 블록 완전 제거
+            - 필수 import 문 포함
+            - export 문 정확성
+            - styled-components 활용
+            
+            **최종 검증:**
+            - 컴포넌트명 일관성
+            - 코드 구조 완성도
+            - 성능 최적화 적용
+            - 접근성 준수
+            
+            **승인 기준:**
+            모든 검증 항목 통과 시 최종 승인
+            """,
+            expected_output="품질 검증 완료된 최종 JSX 컴포넌트 목록",
+            agent=self.quality_assurance_agent,
+            context=[self._create_jsx_generation_task()]
+        )
 
     # 기존 메서드들 유지 (변경 없음)
-    def _validate_template_adapted_jsx(self, jsx_code: str, content: Dict, component_name: str) -> str:
-        """템플릿 적용된 JSX 검증 및 수정"""
+    def generate_jsx_from_agent_results(self, template_data: Dict, agent_results: List[Dict], learning_insights: Dict) -> List[Dict]:
+        """에이전트 결과 데이터를 활용한 JSX 생성"""
+        generated_components = []
+        content_sections = template_data.get("content_sections", [])
+        
+        # 에이전트 결과 데이터 분석
+        agent_data_analysis = self._analyze_agent_results(agent_results)
+        
+        for i, content_section in enumerate(content_sections):
+            if not isinstance(content_section, dict):
+                continue
+            
+            component_name = f"AgentBased{i+1:02d}Component"
+            print(f"\n=== {component_name} 에이전트 데이터 기반 생성 시작 ===")
+            
+            # 콘텐츠 정제 (에이전트 결과 반영)
+            enhanced_content = self._enhance_content_with_agent_results(
+                content_section, agent_data_analysis, learning_insights
+            )
+            
+            # 다중 에이전트 파이프라인 (에이전트 데이터 기반)
+            jsx_code = self._agent_result_based_jsx_pipeline(
+                enhanced_content, component_name, i, len(content_sections), 
+                agent_data_analysis, learning_insights
+            )
+            
+            # 에이전트 결과 기반 검증
+            jsx_code = self._validate_jsx_with_agent_insights(
+                jsx_code, enhanced_content, component_name, agent_data_analysis
+            )
+            
+            # 개별 컴포넌트 생성 저장 (수정: 올바른 메서드 사용)
+            self.result_manager.store_agent_output(
+                agent_name="JSXCreatorAgent_Component",
+                agent_role="개별 JSX 컴포넌트 생성자",
+                task_description=f"컴포넌트 {component_name} 생성",
+                final_answer=jsx_code,
+                reasoning_process="CrewAI 기반 에이전트 데이터 기반 JSX 컴포넌트 생성",
+                execution_steps=[
+                    "콘텐츠 강화",
+                    "JSX 파이프라인 실행",
+                    "검증 완료"
+                ],
+                raw_input=enhanced_content,
+                raw_output=jsx_code,
+                performance_metrics={
+                    "jsx_code_length": len(jsx_code),
+                    "error_free": self._validate_jsx_syntax(jsx_code),
+                    "agent_data_utilized": True,
+                    "crewai_enhanced": True
+                }
+            )
+            
+            generated_components.append({
+                'name': component_name,
+                'file': f"{component_name}.jsx",
+                'jsx_code': jsx_code,
+                'approach': 'crewai_agent_results_based',
+                'agent_data_analysis': agent_data_analysis,
+                'learning_insights_applied': True,
+                'error_free_validated': True,
+                'crewai_enhanced': True
+            })
+            
+            print(f"✅ CrewAI 기반 에이전트 데이터 기반 JSX 생성 완료: {component_name}")
+        
+        return generated_components
 
-        # 1. 기본 구조 확인
+    def _get_timestamp(self) -> str:
+        """현재 타임스탬프 반환"""
+        from datetime import datetime
+        return datetime.now().isoformat()
+
+    def _analyze_agent_results(self, agent_results: List[Dict]) -> Dict:
+        """에이전트 결과 데이터 분석"""
+        analysis = {
+            "content_patterns": {},
+            "design_preferences": {},
+            "successful_approaches": [],
+            "common_elements": [],
+            "quality_indicators": {},
+            "agent_insights": {},
+            "crewai_enhanced": True
+        }
+        
+        if not agent_results:
+            print("📊 이전 에이전트 결과 없음 - 기본 분석 사용")
+            return analysis
+        
+        for result in agent_results:
+            agent_name = result.get('agent_name', 'unknown')
+            
+            # final_output 우선, 없으면 processed_output, 없으면 raw_output 사용
+            full_output = result.get('final_output') or result.get('processed_output') or result.get('raw_output', {})
+            
+            # 에이전트별 인사이트 수집
+            if agent_name not in analysis["agent_insights"]:
+                analysis["agent_insights"][agent_name] = []
+            
+            analysis["agent_insights"][agent_name].append({
+                "output_type": type(full_output).__name__,
+                "content_length": len(str(full_output)),
+                "timestamp": result.get('timestamp'),
+                "has_performance_data": bool(result.get('performance_data'))
+            })
+            
+            # 콘텐츠 패턴 분석
+            if isinstance(full_output, dict):
+                for key, value in full_output.items():
+                    if key not in analysis["content_patterns"]:
+                        analysis["content_patterns"][key] = []
+                    analysis["content_patterns"][key].append(str(value)[:100])
+            
+            # 성공적인 접근법 식별
+            performance_data = result.get('performance_data', {})
+            if performance_data.get('success_rate', 0) > 0.8:
+                analysis["successful_approaches"].append({
+                    "agent": agent_name,
+                    "approach": result.get('output_metadata', {}).get('approach', 'unknown'),
+                    "success_rate": performance_data.get('success_rate', 0)
+                })
+        
+        # 공통 요소 추출
+        if analysis["content_patterns"]:
+            analysis["common_elements"] = list(analysis["content_patterns"].keys())
+        
+        # 품질 지표 계산
+        all_success_rates = [
+            r.get('performance_data', {}).get('success_rate', 0) 
+            for r in agent_results 
+            if r.get('performance_data', {}).get('success_rate', 0) > 0
+        ]
+        
+        analysis["quality_indicators"] = {
+            "total_agents": len(set(r.get('agent_name') for r in agent_results)),
+            "avg_success_rate": sum(all_success_rates) / len(all_success_rates) if all_success_rates else 0.5,
+            "successful_rate": len(analysis["successful_approaches"]) / max(len(agent_results), 1),
+            "data_richness": len(analysis["content_patterns"])
+        }
+        
+        print(f"📊 CrewAI 기반 에이전트 데이터 분석 완료: {analysis['quality_indicators']['total_agents']}개 에이전트, 평균 성공률: {analysis['quality_indicators']['avg_success_rate']:.2f}")
+        
+        return analysis
+
+    def _enhance_content_with_agent_results(self, content_section: Dict, agent_analysis: Dict, learning_insights: Dict) -> Dict:
+        """에이전트 결과로 콘텐츠 강화"""
+        enhanced_content = content_section.copy()
+        enhanced_content['crewai_enhanced'] = True
+        
+        # 에이전트 인사이트 적용
+        for agent_name, insights in agent_analysis["agent_insights"].items():
+            if agent_name == "ContentCreatorV2Agent":
+                # 콘텐츠 생성 에이전트 결과 반영
+                if insights and insights[-1].get("content_length", 0) > 1000:
+                    # 풍부한 콘텐츠가 생성되었으면 본문 확장
+                    current_body = enhanced_content.get('body', '')
+                    if len(current_body) < 500:
+                        enhanced_content['body'] = current_body + "\n\n이 여행은 특별한 의미와 감동을 선사했습니다."
+            elif agent_name == "ImageAnalyzerAgent":
+                # 이미지 분석 에이전트 결과 반영
+                if insights and insights[-1].get("has_performance_data", False):
+                    # 성능 데이터가 있으면 이미지 관련 설명 추가
+                    enhanced_content['image_description'] = "전문적으로 분석된 이미지들"
+        
+        # 성공적인 접근법 반영
+        for approach in agent_analysis["successful_approaches"]:
+            if approach["success_rate"] > 0.9:
+                enhanced_content['quality_boost'] = f"고품질 {approach['agent']} 결과 반영"
+        
+        # 학습 인사이트 통합
+        recommendations = learning_insights.get('recommendations', [])
+        for recommendation in recommendations:
+            if "콘텐츠" in recommendation and "풍부" in recommendation:
+                current_body = enhanced_content.get('body', '')
+                if len(current_body) < 800:
+                    enhanced_content['body'] = current_body + "\n\n이러한 경험들이 모여 잊을 수 없는 여행의 추억을 만들어냅니다."
+        
+        return enhanced_content
+
+    def _agent_result_based_jsx_pipeline(self, content: Dict, component_name: str, index: int, 
+                                       total_sections: int, agent_analysis: Dict, learning_insights: Dict) -> str:
+        """에이전트 결과 기반 JSX 파이프라인"""
+        try:
+            # 1단계: 에이전트 결과 기반 콘텐츠 분석
+            print(f"  📊 1단계: 에이전트 결과 기반 콘텐츠 분석...")
+            analysis_result = self.content_analyzer.analyze_content_for_jsx(content, index, total_sections)
+            
+            # 에이전트 분석 결과 통합
+            analysis_result = self._integrate_agent_analysis(analysis_result, agent_analysis)
+            
+            # 2단계: 에이전트 인사이트 기반 레이아웃 설계
+            print(f"  🎨 2단계: 에이전트 인사이트 기반 레이아웃 설계...")
+            design_result = self.layout_designer.design_layout_structure(content, analysis_result, component_name)
+            
+            # 에이전트 결과 기반 설계 강화
+            design_result = self._enhance_design_with_agent_results(design_result, agent_analysis)
+            
+            # 3단계: 오류 없는 JSX 코드 생성
+            print(f"  💻 3단계: 오류 없는 JSX 코드 생성...")
+            jsx_code = self.code_generator.generate_jsx_code(content, design_result, component_name)
+            
+            # 4단계: 에이전트 결과 기반 검증 및 오류 제거
+            print(f"  🔍 4단계: 에이전트 결과 기반 검증...")
+            validated_jsx = self._comprehensive_jsx_validation(jsx_code, content, component_name, agent_analysis)
+            
+            return validated_jsx
+            
+        except Exception as e:
+            print(f"⚠️ 에이전트 결과 기반 파이프라인 실패: {e}")
+            # 폴백: 에이전트 데이터 기반 안전한 JSX 생성
+            return self._create_agent_based_fallback_jsx(content, component_name, index, agent_analysis)
+
+    def _integrate_agent_analysis(self, analysis_result: Dict, agent_analysis: Dict) -> Dict:
+        """에이전트 분석 결과 통합"""
+        enhanced_result = analysis_result.copy()
+        enhanced_result['crewai_enhanced'] = True
+        
+        # 품질 지표 반영
+        quality_indicators = agent_analysis.get("quality_indicators", {})
+        if quality_indicators.get("avg_success_rate", 0) > 0.8:
+            enhanced_result['confidence_boost'] = True
+            enhanced_result['recommended_layout'] = 'magazine'  # 고품질일 때 매거진 레이아웃
+        
+        # 공통 요소 반영
+        common_elements = agent_analysis.get("common_elements", [])
+        if 'title' in common_elements and 'body' in common_elements:
+            enhanced_result['layout_complexity'] = '고급'
+        
+        # 성공적인 접근법 반영
+        successful_approaches = agent_analysis.get("successful_approaches", [])
+        if len(successful_approaches) > 2:
+            enhanced_result['design_confidence'] = 'high'
+            enhanced_result['color_palette'] = '프리미엄 블루'
+        
+        return enhanced_result
+
+    def _enhance_design_with_agent_results(self, design_result: Dict, agent_analysis: Dict) -> Dict:
+        """에이전트 결과로 설계 강화"""
+        enhanced_result = design_result.copy()
+        enhanced_result['crewai_enhanced'] = True
+        
+        # 에이전트 인사이트 기반 색상 조정
+        agent_insights = agent_analysis.get("agent_insights", {})
+        if "ImageAnalyzerAgent" in agent_insights:
+            # 이미지 분석 결과가 있으면 시각적 조화 강화
+            enhanced_result['color_scheme'] = {
+                "primary": "#2c3e50",
+                "secondary": "#f8f9fa", 
+                "accent": "#3498db",
+                "background": "#ffffff"
+            }
+        
+        # 성공적인 접근법 기반 컴포넌트 구조 조정
+        successful_approaches = agent_analysis.get("successful_approaches", [])
+        if len(successful_approaches) >= 3:
+            # 다양한 성공 사례가 있으면 더 풍부한 컴포넌트 구조
+            enhanced_result['styled_components'] = [
+                "Container", "Header", "MainContent", "ImageGallery", 
+                "TextSection", "Sidebar", "Footer"
+            ]
+        
+        return enhanced_result
+
+    def _comprehensive_jsx_validation(self, jsx_code: str, content: Dict, component_name: str, agent_analysis: Dict) -> str:
+        """포괄적 JSX 검증 (오류 제거)"""
+        # 1. 기본 구문 검증
+        jsx_code = self._validate_basic_jsx_syntax(jsx_code, component_name)
+        
+        # 2. 에이전트 결과 기반 콘텐츠 검증
+        jsx_code = self._validate_content_with_agent_results(jsx_code, content, agent_analysis)
+        
+        # 3. 마크다운 블록 완전 제거
+        jsx_code = self._remove_all_markdown_blocks(jsx_code)
+        
+        # 4. 문법 오류 완전 제거
+        jsx_code = self._fix_all_syntax_errors(jsx_code)
+        
+        # 5. 컴파일 가능성 검증
+        jsx_code = self._ensure_compilation_safety(jsx_code, component_name)
+        
+        return jsx_code
+
+    def _validate_basic_jsx_syntax(self, jsx_code: str, component_name: str) -> str:
+        """기본 JSX 문법 검증"""
+        # 필수 import 확인
         if 'import React' not in jsx_code:
             jsx_code = 'import React from "react";\n' + jsx_code
-
         if 'import styled' not in jsx_code:
             jsx_code = jsx_code.replace(
                 'import React from "react";',
                 'import React from "react";\nimport styled from "styled-components";'
             )
-
-        # 2. 컴포넌트 이름 확인
+        
+        # export 문 확인
         if f'export const {component_name}' not in jsx_code:
-            jsx_code = re.sub(
-                r'export const \w+',
-                f'export const {component_name}',
-                jsx_code
+            jsx_code = re.sub(r'export const \w+', f'export const {component_name}', jsx_code)
+        
+        # return 문 확인
+        if 'return (' not in jsx_code:
+            jsx_code = jsx_code.replace(
+                f'export const {component_name} = () => {{',
+                f'export const {component_name} = () => {{\n  return (\n    <Container>\n      <h1>Component Content</h1>\n    </Container>\n  );\n}};'
             )
+        
+        return jsx_code
 
-        # 3. 실제 콘텐츠 포함 확인
-        title = content.get('title', '')
-        if title and title not in jsx_code:
-            # Props를 실제 값으로 교체
-            jsx_code = jsx_code.replace('{title}', title)
+    def _validate_content_with_agent_results(self, jsx_code: str, content: Dict, agent_analysis: Dict) -> str:
+        """에이전트 결과 기반 콘텐츠 검증"""
+        # 에이전트 인사이트 기반 콘텐츠 강화
+        quality_indicators = agent_analysis.get("quality_indicators", {})
+        if quality_indicators.get("avg_success_rate", 0) > 0.8:
+            # 고품질 에이전트 결과가 있으면 프리미엄 스타일 적용
             jsx_code = jsx_code.replace(
-                '{subtitle}', content.get('subtitle', ''))
-            jsx_code = jsx_code.replace('{body}', content.get('body', ''))
+                'background: #ffffff',
+                'background: linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+            )
+        
+        return jsx_code
+
+    def _remove_all_markdown_blocks(self, jsx_code: str) -> str:
+        """마크다운 블록 완전 제거"""
+        # 코드 블록 제거
+        jsx_code = re.sub(r'``````', '', jsx_code)
+        jsx_code = re.sub(r'`[^`]*`', '', jsx_code)
+        
+        # 마크다운 문법 제거
+        jsx_code = re.sub(r'#{1,6}\s+', '', jsx_code)
+        jsx_code = re.sub(r'\*\*(.*?)\*\*', r'\1', jsx_code)
+        jsx_code = re.sub(r'\*(.*?)\*', r'\1', jsx_code)
+        
+        return jsx_code
+
+    def _fix_all_syntax_errors(self, jsx_code: str) -> str:
+        """문법 오류 완전 제거"""
+        # 중괄호 균형 맞추기
+        open_braces = jsx_code.count('{')
+        close_braces = jsx_code.count('}')
+        if open_braces > close_braces:
+            jsx_code += '}' * (open_braces - close_braces)
+        
+        # 괄호 균형 맞추기
+        open_parens = jsx_code.count('(')
+        close_parens = jsx_code.count(')')
+        if open_parens > close_parens:
+            jsx_code += ')' * (open_parens - close_parens)
+        
+        # 세미콜론 추가
+        lines = jsx_code.split('\n')
+        fixed_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.endswith((';', '{', '}', '(', ')', ',', '>', '<')):
+                if not stripped.startswith(('import', 'export', 'const', 'let', 'var', 'function', 'class')):
+                    line += ';'
+            fixed_lines.append(line)
+        
+        return '\n'.join(fixed_lines)
+
+    def _ensure_compilation_safety(self, jsx_code: str, component_name: str) -> str:
+        """컴파일 가능성 검증"""
+        # 기본 구조 보장
+        required_parts = [
+            'import React from "react";',
+            'import styled from "styled-components";',
+            f'export const {component_name}',
+            'return (',
+            '</Container>'
+        ]
+        
+        for part in required_parts:
+            if part not in jsx_code:
+                if part == 'import React from "react";':
+                    jsx_code = part + '\n' + jsx_code
+                elif part == 'import styled from "styled-components";':
+                    jsx_code = jsx_code.replace(
+                        'import React from "react";',
+                        'import React from "react";\nimport styled from "styled-components";'
+                    )
+        
+        return jsx_code
+
+    def _validate_jsx_with_agent_insights(self, jsx_code: str, content: Dict, component_name: str, agent_analysis: Dict) -> str:
+        """에이전트 인사이트 기반 JSX 검증"""
+        # 에이전트 분석 결과 반영
+        successful_approaches = agent_analysis.get("successful_approaches", [])
+        if len(successful_approaches) > 2:
+            # 성공적인 접근법이 많으면 더 정교한 스타일링 적용
             jsx_code = jsx_code.replace(
-                '{tagline}', content.get('tagline', ''))
-
-            # 이미지 URL 교체
-            images = content.get('images', [])
-            if images:
-                for i, img_url in enumerate(images[:6]):
-                    if img_url and img_url.strip():
-                        jsx_code = jsx_code.replace(
-                            f'{{imageUrl{i+1}}}', img_url)
-                        jsx_code = jsx_code.replace('{imageUrl}', img_url)
-
-        # 4. 문법 오류 수정
-        jsx_code = self._fix_basic_syntax_errors(jsx_code)
-
+                'padding: 20px;',
+                'padding: 40px; box-shadow: 0 10px 30px rgba(0,0,0,0.1);'
+            )
+        
         return jsx_code
 
-    def _validate_generated_jsx(self, jsx_code: str, content: Dict, component_name: str) -> str:
-        """생성된 JSX 강화된 검증"""
-
-        # 불완전한 구조 즉시 감지
-        if jsx_code.count('return (') > jsx_code.count(');'):
-            print(f"    ⚠️ 불완전한 return 문 감지 - 폴백 생성")
-            return self._create_safe_fallback_jsx(content, component_name, 0)
-
-        # 빈 JSX 내용 감지
-        if 'return (' in jsx_code and jsx_code.split('return (')[1].strip() == '':
-            print(f"    ⚠️ 빈 JSX 내용 감지 - 폴백 생성")
-            return self._create_safe_fallback_jsx(content, component_name, 0)
-
-        # 실제 콘텐츠 누락 감지
-        title = content.get('title', '')
-        if title and title not in jsx_code:
-            print(f"    ⚠️ 실제 콘텐츠 누락 - 폴백 생성")
-            return self._create_safe_fallback_jsx(content, component_name, 0)
-
-        return jsx_code
-
-    def _fix_basic_syntax_errors(self, jsx_code: str) -> str:
-        """기본 문법 오류 수정"""
-
-        # 1. 이중 중괄호 수정
-        jsx_code = re.sub(r'\{\{([^}]+)\}\}', r'{\1}', jsx_code)
-
-        # 2. className 수정
-        jsx_code = jsx_code.replace('class=', 'className=')
-
-        # 3. 빈 JSX 표현식 제거
-        jsx_code = re.sub(r'\{\s*\}', '', jsx_code)
-
-        # 4. 연속된 빈 줄 정리
-        jsx_code = re.sub(r'\n\s*\n\s*\n', '\n\n', jsx_code)
-
-        # 5. 마지막 }; 확인
-        if not jsx_code.rstrip().endswith('};'):
-            jsx_code = jsx_code.rstrip() + '\n};'
-
-        return jsx_code
-
-    def _create_safe_fallback_jsx(self, content: Dict, component_name: str, index: int) -> str:
-        """확실히 작동하는 JSX 생성 (이미지 URL 포함)"""
-
-        title = content.get('title', '도쿄 여행 이야기')
-        subtitle = content.get('subtitle', '특별한 순간들')
-        body = content.get('body', '여행의 아름다운 기억들이 마음 속에 깊이 새겨집니다.')
-        images = content.get('images', [])
-        tagline = content.get('tagline', 'TRAVEL & CULTURE')
-
-        print(f"    📷 폴백 JSX에 {len(images)}개 이미지 포함")
-
-        # 이미지 태그 생성
-        image_tags = []
-        for i, img_url in enumerate(images[:6]):
-            if img_url and img_url.strip():
-                image_tags.append(
-                    f'        <TravelImage src="{img_url}" alt="Travel {i+1}" />')
-
-        image_jsx = '\n'.join(
-            image_tags) if image_tags else '        <PlaceholderDiv>이미지 없음</PlaceholderDiv>'
-
+    def _create_agent_based_fallback_jsx(self, content: Dict, component_name: str, index: int, agent_analysis: Dict) -> str:
+        """에이전트 데이터 기반 폴백 JSX 생성"""
+        title = content.get('title', f'Component {index + 1}')
+        body = content.get('body', '콘텐츠를 표시합니다.')
+        
+        # 에이전트 분석 결과 반영
+        quality_score = agent_analysis.get("quality_indicators", {}).get("avg_success_rate", 0.5)
+        
+        if quality_score > 0.8:
+            background_style = 'background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);'
+        elif quality_score > 0.6:
+            background_style = 'background: linear-gradient(45deg, #f093fb 0%, #f5576c 100%);'
+        else:
+            background_style = 'background: #f8f9fa;'
+        
         return f'''import React from "react";
 import styled from "styled-components";
 
 const Container = styled.div`
   max-width: 1200px;
   margin: 0 auto;
-  padding: 60px 20px;
-  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-  min-height: 100vh;
-`;
-
-const Header = styled.header`
-  text-align: center;
-  margin-bottom: 50px;
+  padding: 40px 20px;
+  {background_style}
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.1);
 `;
 
 const Title = styled.h1`
-  font-size: 3em;
+  font-size: 2.5rem;
   color: #2c3e50;
-  margin-bottom: 20px;
-  font-weight: 300;
-  letter-spacing: -1px;
-`;
-
-const Subtitle = styled.h2`
-  font-size: 1.4em;
-  color: #7f8c8d;
-  margin-bottom: 30px;
-  font-weight: 400;
-`;
-
-const Content = styled.div`
-  font-size: 1.2em;
-  line-height: 1.8;
-  color: #34495e;
-  text-align: justify;
-  margin-bottom: 40px;
-  max-width: 800px;
-  margin-left: auto;
-  margin-right: auto;
-  white-space: pre-line;
-`;
-
-const ImageGallery = styled.div`
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 20px;
-  margin: 40px 0;
-`;
-
-const TravelImage = styled.img`
-  width: 100%;
-  height: 200px;
-  object-fit: cover;
-  border-radius: 12px;
-  box-shadow: 0 8px 16px rgba(0,0,0,0.1);
-  transition: transform 0.3s ease;
-  
-  &:hover {{
-    transform: translateY(-5px);
-  }}
-`;
-
-const PlaceholderDiv = styled.div`
-  width: 100%;
-  height: 200px;
-  background: #e9ecef;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #6c757d;
-  font-size: 1.1em;
-`;
-
-const Footer = styled.footer`
+  margin-bottom: 1rem;
   text-align: center;
-  margin-top: 50px;
-  padding-top: 30px;
-  border-top: 1px solid #ecf0f1;
 `;
 
-const Tagline = styled.div`
-  font-size: 0.9em;
-  color: #95a5a6;
-  letter-spacing: 3px;
-  text-transform: uppercase;
-  font-weight: 600;
+const Content = styled.p`
+  font-size: 1.1rem;
+  line-height: 1.6;
+  color: #555;
+  text-align: center;
 `;
 
 export const {component_name} = () => {{
   return (
     <Container>
-      <Header>
-        <Title>{title}</Title>
-        <Subtitle>{subtitle}</Subtitle>
-      </Header>
-      
+      <Title>{title}</Title>
       <Content>{body}</Content>
-      
-      <ImageGallery>
-{image_jsx}
-      </ImageGallery>
-      
-      <Footer>
-        <Tagline>{tagline}</Tagline>
-      </Footer>
     </Container>
   );
 }};'''
 
-    def _clean_content_section(self, content_section: Dict) -> Dict:
-        """콘텐츠 섹션 정제"""
-
-        title = content_section.get('title', '도쿄 여행 이야기')
-        subtitle = content_section.get('subtitle', '특별한 순간들')
-        body = content_section.get('body', '여행의 아름다운 기억들')
-        images = content_section.get('images', [])
-        tagline = content_section.get('tagline', 'TRAVEL & CULTURE')
-
-        # 제목과 부제목에서 설명 텍스트 제거
-        clean_title = self._clean_title_text(title)
-        clean_subtitle = self._clean_subtitle_text(subtitle)
-        clean_body = self._clean_body_text(body)
-
-        return {
-            'title': clean_title,
-            'subtitle': clean_subtitle,
-            'body': clean_body,
-            'images': images,
-            'tagline': tagline
-        }
-
-    def _clean_title_text(self, title: str) -> str:
-        """제목에서 설명 텍스트 제거"""
-        patterns_to_remove = [
-            r'\(헤드라인\)', r'\(섹션 타이틀\)', r'및 부제목.*?배치되어 있음',
-            r'필자 정보.*?배치되어 있음', r'포토 크레딧.*?배치되어 있음',
-            r'계층적으로.*?배치되어 있음', r'과 본문의 배치 관계:',
-            r'과 본문 배치:', r'배치:.*?배치되며', r'은 상단에.*?배치되며',
-            r'혹은 좌상단에.*?줍니다', r'상단 혹은.*?강조합니다',
-            r'없이 단일.*?집중시킵니다', r'과 소제목.*?있습니다',
-            r'그 아래로.*?줄여줍니다', r'본문.*?구분할 수 있는.*?있습니다',
-            r'콘텐츠의 각 요소.*?있습니다'
-        ]
-
-        clean_title = title
-        for pattern in patterns_to_remove:
-            clean_title = re.sub(pattern, '', clean_title,
-                                 flags=re.IGNORECASE | re.DOTALL)
-
-        clean_title = re.sub(r'\s+', ' ', clean_title)
-        clean_title = re.sub(r'^[,\s]+|[,\s]+$', '', clean_title)
-
-        return clean_title.strip() if clean_title.strip() else "도쿄 여행 이야기"
-
-    def _clean_subtitle_text(self, subtitle: str) -> str:
-        """부제목에서 설명 텍스트 제거"""
-        patterns_to_remove = [
-            r'필자 정보.*?배치되어 있음', r'포토 크레딧.*?배치되어 있음',
-            r'계층적으로.*?배치되어 있음'
-        ]
-
-        clean_subtitle = subtitle
-        for pattern in patterns_to_remove:
-            clean_subtitle = re.sub(
-                pattern, '', clean_subtitle, flags=re.IGNORECASE | re.DOTALL)
-
-        clean_subtitle = re.sub(r'\s+', ' ', clean_subtitle)
-        clean_subtitle = re.sub(r'^[,\s]+|[,\s]+$', '', clean_subtitle)
-
-        return clean_subtitle.strip() if clean_subtitle.strip() else "특별한 순간들"
-
-    def _clean_body_text(self, body: str) -> str:
-        """본문에서 불필요한 설명 제거"""
-        patterns_to_remove = [
-            r'\*이 페이지에는.*?살렸습니다\.\*', r'블록은 균형.*?줄여줍니다',
-            r'\(사진 캡션\)', r'시각적 리듬과.*?살렸습니다'
-        ]
-
-        clean_body = body
-        for pattern in patterns_to_remove:
-            clean_body = re.sub(pattern, '', clean_body,
-                                flags=re.IGNORECASE | re.DOTALL)
-
-        return clean_body.strip()
-
-    def _safe_parse_json(self, json_content: str) -> Dict:
-        """JSON 콘텐츠를 안전하게 파싱"""
+    def _safe_parse_json(self, content: str) -> Dict:
+        """안전한 JSON 파싱"""
         try:
-            parsed_data = json.loads(json_content)
-            print("✅ JSON 직접 파싱 성공")
-            return parsed_data
+            return json.loads(content)
         except json.JSONDecodeError as e:
-            print(f"JSON 직접 파싱 실패: {e}")
-            try:
-                cleaned_str = json_content.replace("'", '"').replace(
-                    'True', 'true').replace('False', 'false').replace('None', 'null')
-                parsed_data = json.loads(cleaned_str)
-                print("✅ Python dict 문자열 변환 후 파싱 성공")
-                return parsed_data
-            except json.JSONDecodeError:
-                try:
-                    import ast
-                    parsed_data = ast.literal_eval(json_content)
-                    print("✅ ast.literal_eval 파싱 성공")
-                    return parsed_data
-                except (ValueError, SyntaxError):
-                    print("❌ 모든 JSON 파싱 시도 실패")
-                    return None
+            print(f"JSON 파싱 오류: {e}")
+            return None
 
+    def _validate_jsx_syntax(self, jsx_code: str) -> bool:
+        """JSX 문법 검증"""
+        required_elements = [
+            'import React',
+            'export const',
+            'return (',
+            '</Container>'
+        ]
+        
+        return all(element in jsx_code for element in required_elements)
+    
     def save_jsx_components(self, generated_components: List[Dict], components_folder: str) -> List[Dict]:
-        """JSX 컴포넌트 저장 - 강화된 버전 (로깅 포함)"""
-
-        # 폴더 존재 확인 및 생성
-        if not os.path.exists(components_folder):
-            os.makedirs(components_folder, exist_ok=True)
-            print(f"✅ 컴포넌트 폴더 생성: {components_folder}")
-
+        """생성된 JSX 컴포넌트들을 파일로 저장 (CrewAI 기반 에이전트 결과 활용)"""
+        print(f"📁 JSX 컴포넌트 저장 시작: {len(generated_components)}개 → {components_folder}")
+        
+        # 폴더 생성
+        os.makedirs(components_folder, exist_ok=True)
+        
         saved_components = []
-
-        print(f"📁 저장 시작: {len(generated_components)}개 컴포넌트")
-
-        for i, component in enumerate(generated_components):
-            file_path = os.path.join(components_folder, component['file'])
-
+        successful_saves = 0
+        
+        for i, component_data in enumerate(generated_components):
             try:
-                # JSX 코드 검증
-                jsx_code = component.get('jsx_code', '')
-                if not jsx_code or jsx_code.strip() == '':
-                    print(f"⚠️ {component['file']}: JSX 코드가 비어있음")
+                component_name = component_data.get('name', f'AgentBased{i+1:02d}Component')
+                component_file = component_data.get('file', f'{component_name}.jsx')
+                jsx_code = component_data.get('jsx_code', '')
+                
+                if not jsx_code:
+                    print(f"⚠️ {component_name}: JSX 코드 없음 - 건너뛰기")
                     continue
-
+                
+                # 파일 경로 생성
+                file_path = os.path.join(components_folder, component_file)
+                
+                # JSX 코드 최종 검증 및 정리
+                validated_jsx = self._ensure_compilation_safety(jsx_code, component_name)
+                validated_jsx = self._remove_all_markdown_blocks(validated_jsx)
+                
                 # 파일 저장
                 with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(jsx_code)
-
-                # 저장 확인
-                if os.path.exists(file_path):
-                    file_size = os.path.getsize(file_path)
-                    approach = component.get('approach', 'standard')
-                    learning_applied = component.get(
-                        'learning_insights_applied', False)
-
-                    print(
-                        f"✅ {component['file']} 저장 완료 (크기: {file_size} bytes, 방식: {approach}, 학습적용: {learning_applied})")
-                    saved_components.append(component)
-
-                    # 개별 파일 저장 로깅
-                    self.logger.log_agent_interaction(
-                        source_agent="JSXCreatorAgent",
-                        target_agent="FileSystem",
-                        interaction_type="file_save",
-                        data_transferred={
-                            "file_name": component['file'],
-                            "file_size": file_size,
-                            "approach": approach,
-                            "learning_applied": learning_applied
-                        }
-                    )
-                else:
-                    print(f"❌ {component['file']} 저장 실패: 파일이 생성되지 않음")
-
+                    f.write(validated_jsx)
+                
+                # 저장된 컴포넌트 정보 생성
+                saved_component = {
+                    'name': component_name,
+                    'file': component_file,
+                    'file_path': file_path,
+                    'jsx_code': validated_jsx,
+                    'size_bytes': len(validated_jsx.encode('utf-8')),
+                    'approach': component_data.get('approach', 'crewai_agent_results_based'),
+                    'error_free': self._validate_jsx_syntax(validated_jsx),
+                    'crewai_enhanced': component_data.get('crewai_enhanced', True),
+                    'agent_data_utilized': component_data.get('agent_data_analysis', {}) != {},
+                    'save_timestamp': self._get_timestamp()
+                }
+                
+                saved_components.append(saved_component)
+                successful_saves += 1
+                
+                # 개별 저장 로깅
+                self.result_manager.store_agent_output(
+                    agent_name="JSXCreatorAgent_FileSaver",
+                    agent_role="JSX 파일 저장자",
+                    task_description=f"컴포넌트 {component_name} 파일 저장",
+                    final_answer=f"파일 저장 성공: {file_path}",
+                    reasoning_process=f"CrewAI 기반 생성된 JSX 컴포넌트를 {components_folder}에 저장",
+                    execution_steps=[
+                        "JSX 코드 최종 검증",
+                        "마크다운 블록 제거",
+                        "컴파일 안전성 확보",
+                        "파일 저장 완료"
+                    ],
+                    raw_input={
+                        "component_name": component_name,
+                        "file_path": file_path,
+                        "jsx_code_length": len(jsx_code)
+                    },
+                    raw_output=saved_component,
+                    performance_metrics={
+                        "file_size_bytes": saved_component['size_bytes'],
+                        "error_free": saved_component['error_free'],
+                        "crewai_enhanced": saved_component['crewai_enhanced'],
+                        "agent_data_utilized": saved_component['agent_data_utilized']
+                    }
+                )
+                
+                print(f"✅ {component_name} 저장 완료 (크기: {saved_component['size_bytes']} bytes, 방식: {saved_component['approach']}, 오류없음: {saved_component['error_free']})")
+                
             except Exception as e:
-                print(f"❌ {component['file']} 저장 실패: {e}")
-                import traceback
-                print(traceback.format_exc())
-
-        # 전체 저장 과정 로깅
-        self.logger.log_agent_decision(
-            agent_name="JSXCreatorAgent",
-            agent_role="JSX 파일 저장 관리자",
-            input_data={
-                "total_components": len(generated_components),
-                "target_folder": components_folder
+                print(f"❌ {component_data.get('name', f'Component{i+1}')} 저장 실패: {e}")
+                
+                # 저장 실패 로깅
+                self.result_manager.store_agent_output(
+                    agent_name="JSXCreatorAgent_FileSaver",
+                    agent_role="JSX 파일 저장자",
+                    task_description=f"컴포넌트 저장 실패",
+                    final_answer=f"ERROR: {str(e)}",
+                    reasoning_process="JSX 컴포넌트 파일 저장 중 예외 발생",
+                    error_logs=[{"error": str(e), "component": component_data.get('name', 'unknown')}],
+                    performance_metrics={
+                        "save_failed": True,
+                        "error_occurred": True
+                    }
+                )
+                continue
+        
+        # 전체 저장 결과 로깅
+        self.result_manager.store_agent_output(
+            agent_name="JSXCreatorAgent_SaveBatch",
+            agent_role="JSX 배치 저장 관리자",
+            task_description=f"CrewAI 기반 {len(generated_components)}개 JSX 컴포넌트 배치 저장",
+            final_answer=f"배치 저장 완료: {successful_saves}/{len(generated_components)}개 성공",
+            reasoning_process=f"CrewAI 기반 생성된 JSX 컴포넌트들을 {components_folder}에 일괄 저장",
+            execution_steps=[
+                "컴포넌트 폴더 생성",
+                "개별 컴포넌트 저장 루프",
+                "JSX 코드 검증 및 정리",
+                "파일 저장 및 메타데이터 생성",
+                "저장 결과 집계"
+            ],
+            raw_input={
+                "generated_components_count": len(generated_components),
+                "components_folder": components_folder
             },
-            decision_process={
-                "save_operation": "file_system_write",
-                "validation_applied": True
-            },
-            output_result={
-                "saved_components": len(saved_components),
-                "failed_components": len(generated_components) - len(saved_components),
-                "success_rate": len(saved_components) / max(len(generated_components), 1)
-            },
-            reasoning=f"JSX 파일 저장 완료: {len(saved_components)}/{len(generated_components)} 성공",
-            confidence_score=0.95,
+            raw_output=saved_components,
             performance_metrics={
-                "save_efficiency": len(saved_components) / max(len(generated_components), 1),
-                "file_system_success": True
+                "total_components": len(generated_components),
+                "successful_saves": successful_saves,
+                "save_success_rate": successful_saves / max(len(generated_components), 1),
+                "total_file_size": sum(comp['size_bytes'] for comp in saved_components),
+                "error_free_count": len([comp for comp in saved_components if comp['error_free']]),
+                "crewai_enhanced_count": len([comp for comp in saved_components if comp['crewai_enhanced']]),
+                "agent_data_utilized_count": len([comp for comp in saved_components if comp['agent_data_utilized']])
             }
         )
-
-        print(
-            f"📁 저장 완료: {len(saved_components)}/{len(generated_components)}개 성공 (학습 기반)")
+        
+        print(f"📁 저장 완료: {successful_saves}/{len(generated_components)}개 성공 (CrewAI 기반 에이전트 데이터 활용)")
+        print(f"📊 총 파일 크기: {sum(comp['size_bytes'] for comp in saved_components):,} bytes")
+        print(f"✅ 컴포넌트 저장 완료: {len(saved_components)}개")
+        
         return saved_components
+

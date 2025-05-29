@@ -6,87 +6,411 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
 
 @dataclass
-class AgentDecision:
-    """에이전트 의사결정 로그"""
+class AgentOutput:
+    """에이전트 응답 데이터 """
     agent_name: str
     agent_role: str
-    decision_id: str
+    output_id: str
     timestamp: str
-    input_data: Dict
-    decision_process: Dict
-    output_result: Dict
-    reasoning: str
-    confidence_score: float
-    context: Dict
-    performance_metrics: Dict
-
-@dataclass
-class AgentInteraction:
-    """에이전트 간 상호작용 로그"""
-    interaction_id: str
-    source_agent: str
-    target_agent: str
-    interaction_type: str  # "handoff", "collaboration", "feedback"
-    data_transferred: Dict
-    success: bool
-    timestamp: str
-
-class AgentDecisionLogger:
-    """에이전트 의사결정 로깅 및 학습 시스템"""
     
-    def __init__(self, log_dir: str = "./agent_logs"):
-        self.log_dir = log_dir
+    # 에이전트 응답 (핵심 데이터만)
+    task_description: str
+    final_answer: str
+    reasoning_process: str
+    execution_steps: List[str]
+    
+    # 입출력 데이터
+    raw_input: Any
+    raw_output: Any
+    
+    # 성능 메트릭 (선택적)
+    performance_metrics: Dict
+    error_logs: List[Dict]
+
+class AgentOutputManager:
+    """에이전트 응답 전용 관리 시스템 (수정된 저장 구조)"""
+    
+    def __init__(self, storage_dir: str = "./agent_outputs"):
+        self.storage_dir = storage_dir
         self.current_session_id = self._generate_session_id()
-        self.decision_logs = []
-        self.interaction_logs = []
+        self.outputs = []  # 에이전트 응답만 저장
         
-        # 로그 디렉토리 생성
-        os.makedirs(log_dir, exist_ok=True)
+        # 저장 디렉토리 생성 (수정: 이중 저장 구조)
+        os.makedirs(storage_dir, exist_ok=True)
         
-        # 세션별 로그 파일 경로
-        self.session_log_path = os.path.join(log_dir, f"session_{self.current_session_id}.json")
-        self.cumulative_log_path = os.path.join(log_dir, "cumulative_decisions.json")
-        self.learning_insights_path = os.path.join(log_dir, "learning_insights.json")
+        # agent_outputs 폴더에 저장
+        self.outputs_dir = os.path.join(storage_dir, "outputs")
+        os.makedirs(self.outputs_dir, exist_ok=True)
+        
+        # 세션별 저장
+        self.session_path = os.path.join(self.outputs_dir, f"session_{self.current_session_id}")
+        os.makedirs(self.session_path, exist_ok=True)
+        
+        # 저장 파일 경로들
+        self.outputs_path = os.path.join(self.session_path, "agent_outputs.json")
+        self.summary_path = os.path.join(self.outputs_dir, "outputs_summary.json")
+        self.latest_path = os.path.join(storage_dir, "latest_outputs.json")
+        
     
     def _generate_session_id(self) -> str:
         """세션 ID 생성"""
-        return datetime.now().strftime("%Y%m%d_%H%M%S")
+        return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     
-    def log_agent_decision(self, 
+    def store_agent_output(self,
                           agent_name: str,
                           agent_role: str,
-                          input_data: Dict,
-                          decision_process: Dict,
-                          output_result: Dict,
-                          reasoning: str,
-                          confidence_score: float = 0.8,
-                          context: Dict = None,
-                          performance_metrics: Dict = None) -> str:
-        """에이전트 의사결정 로깅"""
+                          task_description: str,
+                          final_answer: str,
+                          reasoning_process: str = "",
+                          execution_steps: List[str] = None,
+                          raw_input: Any = None,
+                          raw_output: Any = None,
+                          performance_metrics: Dict = None,
+                          error_logs: List[Dict] = None) -> str:
+        """에이전트 응답 저장 (다중 위치 저장)"""
         
-        decision_id = f"{agent_name}_{int(time.time() * 1000)}"
+        output_id = f"{agent_name}_{int(time.time() * 1000000)}"
         
-        decision = AgentDecision(
+        agent_output = AgentOutput(
             agent_name=agent_name,
             agent_role=agent_role,
-            decision_id=decision_id,
+            output_id=output_id,
             timestamp=datetime.now().isoformat(),
-            input_data=input_data,
-            decision_process=decision_process,
-            output_result=output_result,
-            reasoning=reasoning,
-            confidence_score=confidence_score,
-            context=context or {},
-            performance_metrics=performance_metrics or {}
+            task_description=task_description,
+            final_answer=final_answer,
+            reasoning_process=reasoning_process,
+            execution_steps=execution_steps or [],
+            raw_input=self._safe_copy(raw_input),
+            raw_output=self._safe_copy(raw_output),
+            performance_metrics=performance_metrics or {},
+            error_logs=error_logs or []
         )
         
-        self.decision_logs.append(decision)
+        self.outputs.append(agent_output)
         
-        # 실시간 로그 저장
-        self._save_session_logs()
+        # 다중 위치 저장
+        self._save_outputs()
+        self._save_latest_outputs()
+        self._update_summary()
         
-        print(f"📝 {agent_name} 의사결정 로그 기록: {decision_id}")
-        return decision_id
+        print(f"📦 {agent_name} 응답 저장: {output_id}")
+        print(f"  - 세션 저장: {self.outputs_path}")
+        print(f"  - 최신 저장: {self.latest_path}")
+        
+        return output_id
+    
+    def _safe_copy(self, data: Any) -> Any:
+        """안전한 데이터 복사"""
+        try:
+            if data is None:
+                return None
+            if isinstance(data, (str, int, float, bool)):
+                return data
+            if isinstance(data, (list, tuple)):
+                return [self._safe_copy(item) for item in data]
+            if isinstance(data, dict):
+                return {key: self._safe_copy(value) for key, value in data.items()}
+            return str(data)  # 복잡한 객체는 문자열로 변환
+        except:
+            return str(data)
+    
+    def get_all_outputs(self, exclude_agent: str = None) -> List[Dict]:
+        """모든 에이전트 응답 조회"""
+        all_outputs = []
+        
+        for output in self.outputs:
+            if exclude_agent is None or output.agent_name != exclude_agent:
+                all_outputs.append(asdict(output))
+        
+        # 이전 세션 출력도 로드
+        previous_outputs = self._load_previous_outputs()
+        for output in previous_outputs:
+            if exclude_agent is None or output.get('agent_name') != exclude_agent:
+                if not any(o.get('output_id') == output.get('output_id') for o in all_outputs):
+                    all_outputs.append(output)
+        
+        return sorted(all_outputs, key=lambda x: x.get('timestamp', ''))
+    
+    def get_agent_output(self, agent_name: str, latest: bool = True) -> Optional[Dict]:
+        """특정 에이전트의 응답 조회"""
+        agent_outputs = [
+            asdict(output) for output in self.outputs
+            if output.agent_name == agent_name
+        ]
+        
+        if not agent_outputs:
+            # 이전 세션에서 조회
+            previous_outputs = self._load_previous_outputs()
+            agent_outputs = [o for o in previous_outputs if o.get('agent_name') == agent_name]
+        
+        if not agent_outputs:
+            return None
+        
+        if latest:
+            return sorted(agent_outputs, key=lambda x: x.get('timestamp', ''), reverse=True)[0]
+        else:
+            return agent_outputs
+    
+    def _save_outputs(self):
+        """세션별 응답 저장"""
+        outputs_data = {
+            "session_id": self.current_session_id,
+            "timestamp": datetime.now().isoformat(),
+            "agent_outputs": [asdict(output) for output in self.outputs],
+            "total_outputs": len(self.outputs),
+            "storage_info": {
+                "session_path": self.session_path,
+                "outputs_path": self.outputs_path
+            }
+        }
+        
+        with open(self.outputs_path, 'w', encoding='utf-8') as f:
+            json.dump(outputs_data, f, ensure_ascii=False, indent=2)
+    
+    def _save_latest_outputs(self):
+        """최신 출력을 agent_outputs 폴더 루트에 저장"""
+        latest_data = {
+            "last_updated": datetime.now().isoformat(),
+            "current_session_id": self.current_session_id,
+            "total_outputs_in_session": len(self.outputs),
+            "latest_outputs": [asdict(output) for output in self.outputs[-10:]],  # 최신 10개만
+            "storage_locations": {
+                "full_session_data": self.outputs_path,
+                "summary_data": self.summary_path,
+                "outputs_directory": self.outputs_dir
+            }
+        }
+        
+        with open(self.latest_path, 'w', encoding='utf-8') as f:
+            json.dump(latest_data, f, ensure_ascii=False, indent=2)
+    
+    def _update_summary(self):
+        """출력 요약 정보 업데이트"""
+        # 기존 요약 로드
+        existing_summary = self._load_summary()
+        
+        # 에이전트별 통계 계산
+        agent_stats = {}
+        for output in self.outputs:
+            agent_name = output.agent_name
+            if agent_name not in agent_stats:
+                agent_stats[agent_name] = {
+                    "count": 0,
+                    "total_answer_length": 0,
+                    "latest_timestamp": "",
+                    "latest_task": ""
+                }
+            
+            agent_stats[agent_name]["count"] += 1
+            agent_stats[agent_name]["total_answer_length"] += len(output.final_answer)
+            agent_stats[agent_name]["latest_timestamp"] = output.timestamp
+            agent_stats[agent_name]["latest_task"] = output.task_description[:100]
+        
+        # 요약 데이터 생성
+        summary_data = {
+            "last_updated": datetime.now().isoformat(),
+            "current_session": {
+                "session_id": self.current_session_id,
+                "total_outputs": len(self.outputs),
+                "agent_stats": agent_stats
+            },
+            "all_sessions": existing_summary.get("all_sessions", []) + [{
+                "session_id": self.current_session_id,
+                "output_count": len(self.outputs),
+                "timestamp": datetime.now().isoformat()
+            }],
+            "storage_info": {
+                "outputs_directory": self.outputs_dir,
+                "current_session_path": self.session_path,
+                "total_sessions": len(existing_summary.get("all_sessions", [])) + 1
+            }
+        }
+        
+        with open(self.summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary_data, f, ensure_ascii=False, indent=2)
+    
+    def _load_summary(self) -> Dict:
+        """기존 요약 데이터 로드"""
+        try:
+            with open(self.summary_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {"all_sessions": []}
+    
+    def _load_previous_outputs(self) -> List[Dict]:
+        """이전 세션 출력 로드"""
+        try:
+            with open(self.outputs_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get('agent_outputs', [])
+        except:
+            return []
+
+class AgentDecisionLogger:
+    """간소화된 에이전트 로거 (명확한 저장 구조)"""
+    
+    def __init__(self):
+        self.current_session_id = self._generate_session_id()
+        
+        # 응답 관리자 (agent_outputs 폴더 사용)
+        self.output_manager = AgentOutputManager("./agent_outputs") 
+        
+        
+    
+    def _generate_session_id(self) -> str:
+        """세션 ID 생성"""
+        return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    
+    def log_agent_real_output(self,
+                             agent_name: str,
+                             agent_role: str,
+                             task_description: str,
+                             final_answer: str,
+                             reasoning_process: str = "",
+                             execution_steps: List[str] = None,
+                             raw_input: Any = None,
+                             raw_output: Any = None,
+                             performance_metrics: Dict = None,
+                             error_logs: List[Dict] = None) -> str:
+        """에이전트 응답 로깅"""
+        
+        return self.output_manager.store_agent_output(
+            agent_name=agent_name,
+            agent_role=agent_role,
+            task_description=task_description,
+            final_answer=final_answer,
+            reasoning_process=reasoning_process,
+            execution_steps=execution_steps,
+            raw_input=raw_input,
+            raw_output=raw_output,
+            performance_metrics=performance_metrics,
+            error_logs=error_logs
+        )
+    
+    def get_all_previous_results(self, current_agent: str) -> List[Dict]:
+        """모든 이전 응답 조회"""
+        return self.output_manager.get_all_outputs(exclude_agent=current_agent)
+    
+    def get_previous_agent_result(self, agent_name: str, latest: bool = True) -> Optional[Dict]:
+        """이전 에이전트 응답 조회"""
+        return self.output_manager.get_agent_output(agent_name, latest)
+    
+    def get_learning_insights(self, target_agent: str) -> Dict:
+        """학습 인사이트 생성 (간소화)"""
+        all_outputs = self.output_manager.get_all_outputs()
+        
+        if not all_outputs:
+            return {
+                "insights": "이전 에이전트 응답이 없습니다.",
+                "patterns": [],
+                "recommendations": []
+            }
+        
+        # 간단한 패턴 분석
+        patterns = self._analyze_output_patterns(all_outputs)
+        recommendations = self._generate_recommendations(patterns, target_agent)
+        
+        return {
+            "target_agent": target_agent,
+            "analysis_timestamp": datetime.now().isoformat(),
+            "total_outputs_analyzed": len(all_outputs),
+            "patterns": patterns,
+            "recommendations": recommendations,
+            "key_insights": self._extract_insights(all_outputs, target_agent)
+        }
+    
+    def _analyze_output_patterns(self, outputs: List[Dict]) -> List[Dict]:
+        """응답 패턴 분석 (간소화)"""
+        patterns = []
+        
+        # 에이전트별 응답 길이 패턴
+        agent_answer_lengths = {}
+        for output in outputs:
+            agent_name = output.get('agent_name', 'unknown')
+            answer_length = len(output.get('final_answer', ''))
+            
+            if agent_name not in agent_answer_lengths:
+                agent_answer_lengths[agent_name] = []
+            agent_answer_lengths[agent_name].append(answer_length)
+        
+        patterns.append({
+            "type": "answer_length_patterns",
+            "description": "에이전트별 응답 길이 패턴",
+            "data": {
+                agent: {
+                    "avg_length": sum(lengths) / len(lengths),
+                    "max_length": max(lengths),
+                    "min_length": min(lengths)
+                }
+                for agent, lengths in agent_answer_lengths.items()
+            }
+        })
+        
+        return patterns
+    
+    def _generate_recommendations(self, patterns: List[Dict], target_agent: str) -> List[str]:
+        """추천사항 생성 (간소화)"""
+        recommendations = []
+        
+        for pattern in patterns:
+            if pattern["type"] == "answer_length_patterns":
+                data = pattern["data"]
+                if data:
+                    # 평균 응답 길이가 긴 에이전트 찾기
+                    best_agent = max(data.items(), key=lambda x: x[1]["avg_length"])
+                    recommendations.append(
+                        f"{target_agent}는 {best_agent[0]} 에이전트의 상세한 응답 스타일"
+                        f"(평균 {best_agent[1]['avg_length']:.0f}자)을 참고하세요."
+                    )
+        
+        return recommendations
+    
+    def _extract_insights(self, outputs: List[Dict], target_agent: str) -> List[str]:
+        """인사이트 추출 (간소화)"""
+        insights = []
+        
+        if not outputs:
+            return ["이전 에이전트 응답이 없어 인사이트를 제공할 수 없습니다."]
+        
+        # 최신 응답 분석
+        recent_outputs = sorted(outputs, key=lambda x: x.get('timestamp', ''), reverse=True)[:3]
+        
+        if recent_outputs:
+            latest_agent = recent_outputs[0].get('agent_name')
+            latest_answer = recent_outputs[0].get('final_answer', '')
+            insights.append(
+                f"가장 최근에 활동한 {latest_agent} 에이전트의 응답"
+                f"({len(latest_answer)}자)을 {target_agent}가 참고하세요."
+            )
+        
+        # 에러 없는 고품질 응답 식별
+        error_free_outputs = [o for o in outputs if not o.get('error_logs')]
+        if error_free_outputs:
+            insights.append(
+                f"에러 없는 고품질 응답 {len(error_free_outputs)}개를 발견했습니다. "
+                f"{target_agent}는 이들의 응답 패턴을 참고하세요."
+            )
+        
+        return insights
+    
+    # 호환성을 위한 기존 메서드들 (간소화)
+    def log_agent_decision(self, agent_name: str, agent_role: str, input_data: Dict,
+                          decision_process: Dict, output_result: Dict, reasoning: str,
+                          confidence_score: float = 0.8, context: Dict = None,
+                          performance_metrics: Dict = None) -> str:
+        """기존 호환성 메서드 (응답만 저장)"""
+        
+        return self.log_agent_real_output(
+            agent_name=agent_name,
+            agent_role=agent_role,
+            task_description=str(input_data),
+            final_answer=str(output_result),
+            reasoning_process=reasoning,
+            raw_input=input_data,
+            raw_output=output_result,
+            performance_metrics=performance_metrics,
+            decision_process=decision_process.get('steps', []),
+        )
     
     def log_agent_interaction(self,
                              source_agent: str,
@@ -94,316 +418,23 @@ class AgentDecisionLogger:
                              interaction_type: str,
                              data_transferred: Dict,
                              success: bool = True) -> str:
-        """에이전트 간 상호작용 로깅"""
+        """에이전트 간 상호작용 로깅 (간소화)"""
         
-        interaction_id = f"{source_agent}_to_{target_agent}_{int(time.time() * 1000)}"
-        
-        interaction = AgentInteraction(
-            interaction_id=interaction_id,
-            source_agent=source_agent,
-            target_agent=target_agent,
-            interaction_type=interaction_type,
-            data_transferred=data_transferred,
-            success=success,
-            timestamp=datetime.now().isoformat()
+        # 상호작용도 응답으로 저장
+        return self.log_agent_real_output(
+            agent_name=f"{source_agent}_to_{target_agent}",
+            agent_role="에이전트 상호작용",
+            task_description=f"{interaction_type} 상호작용",
+            final_answer=f"{source_agent}에서 {target_agent}로 데이터 전달",
+            reasoning_process=f"상호작용 타입: {interaction_type}",
+            raw_input={"source": source_agent, "target": target_agent},
+            raw_output=data_transferred,
+            performance_metrics={"success": success}
         )
-        
-        self.interaction_logs.append(interaction)
-        
-        # 실시간 로그 저장
-        self._save_session_logs()
-        
-        print(f"🔄 에이전트 상호작용 로그: {source_agent} → {target_agent} ({interaction_type})")
-        return interaction_id
-    
-    def get_previous_decisions(self, agent_name: str = None, limit: int = 10) -> List[Dict]:
-        """이전 의사결정 로그 조회"""
-        
-        # 누적 로그에서 이전 의사결정 로드
-        previous_decisions = self._load_cumulative_logs()
-        
-        if agent_name:
-            previous_decisions = [
-                decision for decision in previous_decisions 
-                if decision.get('agent_name') == agent_name
-            ]
-        
-        # 최신 순으로 정렬하여 제한된 수만 반환
-        return sorted(previous_decisions, key=lambda x: x.get('timestamp', ''), reverse=True)[:limit]
-    
-    def get_learning_insights(self, target_agent: str) -> Dict:
-        """특정 에이전트를 위한 학습 인사이트 생성"""
-        
-        previous_decisions = self.get_previous_decisions(limit=50)
-        
-        if not previous_decisions:
-            return {
-                "insights": "이전 의사결정 로그가 없습니다.",
-                "patterns": [],
-                "recommendations": []
-            }
-        
-        # 패턴 분석
-        patterns = self._analyze_decision_patterns(previous_decisions)
-        
-        # 성공/실패 분석
-        performance_analysis = self._analyze_performance_patterns(previous_decisions)
-        
-        # 추천사항 생성
-        recommendations = self._generate_recommendations(patterns, performance_analysis, target_agent)
-        
-        insights = {
-            "target_agent": target_agent,
-            "analysis_timestamp": datetime.now().isoformat(),
-            "total_decisions_analyzed": len(previous_decisions),
-            "patterns": patterns,
-            "performance_analysis": performance_analysis,
-            "recommendations": recommendations,
-            "key_insights": self._extract_key_insights(previous_decisions, target_agent)
-        }
-        
-        # 인사이트 저장
-        self._save_learning_insights(insights)
-        
-        return insights
-    
-    def _analyze_decision_patterns(self, decisions: List[Dict]) -> List[Dict]:
-        """의사결정 패턴 분석"""
-        
-        patterns = []
-        
-        # 에이전트별 의사결정 빈도
-        agent_frequency = {}
-        for decision in decisions:
-            agent_name = decision.get('agent_name', 'unknown')
-            agent_frequency[agent_name] = agent_frequency.get(agent_name, 0) + 1
-        
-        patterns.append({
-            "type": "agent_activity",
-            "description": "에이전트별 활동 빈도",
-            "data": agent_frequency
-        })
-        
-        # 신뢰도 점수 분포
-        confidence_scores = [d.get('confidence_score', 0) for d in decisions if d.get('confidence_score')]
-        if confidence_scores:
-            avg_confidence = sum(confidence_scores) / len(confidence_scores)
-            patterns.append({
-                "type": "confidence_distribution",
-                "description": "평균 신뢰도 점수",
-                "data": {
-                    "average": round(avg_confidence, 3),
-                    "min": min(confidence_scores),
-                    "max": max(confidence_scores),
-                    "count": len(confidence_scores)
-                }
-            })
-        
-        # 의사결정 시간 패턴
-        timestamps = [d.get('timestamp') for d in decisions if d.get('timestamp')]
-        if len(timestamps) > 1:
-            patterns.append({
-                "type": "temporal_pattern",
-                "description": "의사결정 시간 분포",
-                "data": {
-                    "first_decision": timestamps[-1],  # 가장 오래된 것
-                    "last_decision": timestamps[0],    # 가장 최근 것
-                    "total_span": len(timestamps)
-                }
-            })
-        
-        return patterns
-    
-    def _analyze_performance_patterns(self, decisions: List[Dict]) -> Dict:
-        """성능 패턴 분석"""
-        
-        performance_data = []
-        for decision in decisions:
-            metrics = decision.get('performance_metrics', {})
-            if metrics:
-                performance_data.append(metrics)
-        
-        if not performance_data:
-            return {"message": "성능 메트릭 데이터 없음"}
-        
-        # 성능 지표 평균 계산
-        avg_metrics = {}
-        for metrics in performance_data:
-            for key, value in metrics.items():
-                if isinstance(value, (int, float)):
-                    if key not in avg_metrics:
-                        avg_metrics[key] = []
-                    avg_metrics[key].append(value)
-        
-        # 평균값 계산
-        for key, values in avg_metrics.items():
-            avg_metrics[key] = {
-                "average": sum(values) / len(values),
-                "min": min(values),
-                "max": max(values),
-                "count": len(values)
-            }
-        
-        return {
-            "performance_metrics": avg_metrics,
-            "total_samples": len(performance_data)
-        }
-    
-    def _generate_recommendations(self, patterns: List[Dict], performance: Dict, target_agent: str) -> List[str]:
-        """추천사항 생성"""
-        
-        recommendations = []
-        
-        # 신뢰도 기반 추천
-        for pattern in patterns:
-            if pattern["type"] == "confidence_distribution":
-                avg_confidence = pattern["data"].get("average", 0)
-                if avg_confidence < 0.7:
-                    recommendations.append(
-                        f"{target_agent}는 이전 에이전트들의 낮은 신뢰도({avg_confidence:.2f})를 고려하여 "
-                        "더 신중한 검증 과정을 거쳐야 합니다."
-                    )
-                elif avg_confidence > 0.9:
-                    recommendations.append(
-                        f"이전 에이전트들의 높은 신뢰도({avg_confidence:.2f})를 바탕으로 "
-                        f"{target_agent}는 기존 결과를 적극 활용할 수 있습니다."
-                    )
-        
-        # 활동 패턴 기반 추천
-        for pattern in patterns:
-            if pattern["type"] == "agent_activity":
-                most_active_agent = max(pattern["data"].items(), key=lambda x: x[1])
-                recommendations.append(
-                    f"가장 활발했던 {most_active_agent[0]} 에이전트의 의사결정 패턴을 "
-                    f"{target_agent}가 참고하면 도움이 될 것입니다."
-                )
-        
-        # 성능 기반 추천
-        if performance.get("performance_metrics"):
-            recommendations.append(
-                f"{target_agent}는 이전 에이전트들의 성능 메트릭을 참고하여 "
-                "유사한 품질 수준을 유지하거나 개선해야 합니다."
-            )
-        
-        return recommendations
-    
-    def _extract_key_insights(self, decisions: List[Dict], target_agent: str) -> List[str]:
-        """핵심 인사이트 추출"""
-        
-        insights = []
-        
-        if not decisions:
-            return ["이전 의사결정 데이터가 없어 인사이트를 제공할 수 없습니다."]
-        
-        # 최근 의사결정 트렌드
-        recent_decisions = decisions[:5]  # 최근 5개
-        recent_agents = [d.get('agent_name') for d in recent_decisions]
-        
-        if recent_agents:
-            most_recent_agent = recent_agents[0]
-            insights.append(
-                f"가장 최근에 활동한 {most_recent_agent} 에이전트의 결과를 "
-                f"{target_agent}가 우선적으로 검토해야 합니다."
-            )
-        
-        # 성공 패턴 식별
-        high_confidence_decisions = [
-            d for d in decisions 
-            if d.get('confidence_score', 0) > 0.8
-        ]
-        
-        if high_confidence_decisions:
-            insights.append(
-                f"신뢰도가 높은 의사결정 {len(high_confidence_decisions)}개를 발견했습니다. "
-                f"{target_agent}는 이들의 접근 방식을 참고할 수 있습니다."
-            )
-        
-        # 일관성 분석
-        reasoning_patterns = [d.get('reasoning', '') for d in decisions if d.get('reasoning')]
-        if len(reasoning_patterns) > 3:
-            insights.append(
-                f"이전 에이전트들의 추론 패턴을 분석한 결과, "
-                f"{target_agent}는 일관된 논리적 접근을 유지해야 합니다."
-            )
-        
-        return insights
-    
-    def _save_session_logs(self):
-        """현재 세션 로그 저장"""
-        
-        session_data = {
-            "session_id": self.current_session_id,
-            "timestamp": datetime.now().isoformat(),
-            "decisions": [asdict(decision) for decision in self.decision_logs],
-            "interactions": [asdict(interaction) for interaction in self.interaction_logs]
-        }
-        
-        with open(self.session_log_path, 'w', encoding='utf-8') as f:
-            json.dump(session_data, f, ensure_ascii=False, indent=2)
-        
-        # 누적 로그에도 추가
-        self._update_cumulative_logs()
-    
-    def _update_cumulative_logs(self):
-        """누적 로그 업데이트"""
-        
-        # 기존 누적 로그 로드
-        cumulative_data = self._load_cumulative_logs()
-        
-        # 현재 세션의 의사결정 추가
-        for decision in self.decision_logs:
-            decision_dict = asdict(decision)
-            # 중복 방지
-            if not any(d.get('decision_id') == decision_dict['decision_id'] for d in cumulative_data):
-                cumulative_data.append(decision_dict)
-        
-        # 최신 100개만 유지 (메모리 관리)
-        cumulative_data = sorted(
-            cumulative_data, 
-            key=lambda x: x.get('timestamp', ''), 
-            reverse=True
-        )[:100]
-        
-        # 저장
-        with open(self.cumulative_log_path, 'w', encoding='utf-8') as f:
-            json.dump(cumulative_data, f, ensure_ascii=False, indent=2)
-    
-    def _load_cumulative_logs(self) -> List[Dict]:
-        """누적 로그 로드"""
-        
-        if not os.path.exists(self.cumulative_log_path):
-            return []
-        
-        try:
-            with open(self.cumulative_log_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return []
-    
-    def _save_learning_insights(self, insights: Dict):
-        """학습 인사이트 저장"""
-        
-        # 기존 인사이트 로드
-        existing_insights = []
-        if os.path.exists(self.learning_insights_path):
-            try:
-                with open(self.learning_insights_path, 'r', encoding='utf-8') as f:
-                    existing_insights = json.load(f)
-            except:
-                existing_insights = []
-        
-        # 새 인사이트 추가
-        existing_insights.append(insights)
-        
-        # 최신 10개만 유지
-        existing_insights = existing_insights[-10:]
-        
-        # 저장
-        with open(self.learning_insights_path, 'w', encoding='utf-8') as f:
-            json.dump(existing_insights, f, ensure_ascii=False, indent=2)
 
-# 전역 로거 인스턴스
+# 전역 인스턴스
 _global_logger = None
+_global_output_manager = None
 
 def get_agent_logger() -> AgentDecisionLogger:
     """전역 에이전트 로거 인스턴스 반환"""
@@ -411,3 +442,14 @@ def get_agent_logger() -> AgentDecisionLogger:
     if _global_logger is None:
         _global_logger = AgentDecisionLogger()
     return _global_logger
+
+def get_real_output_manager() -> AgentOutputManager:
+    """전역 응답 관리자 인스턴스 반환"""
+    global _global_output_manager
+    if _global_output_manager is None:
+        _global_output_manager = AgentOutputManager()
+    return _global_output_manager
+
+def get_complete_data_manager() -> AgentOutputManager:
+    """호환성을 위한 별칭"""
+    return get_real_output_manager()

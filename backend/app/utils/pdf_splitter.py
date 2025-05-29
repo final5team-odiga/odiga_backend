@@ -1,6 +1,5 @@
 import os
 from typing import List
-import PyPDF2
 from PyPDF2 import PdfReader, PdfWriter
 
 class PDFSplitter:

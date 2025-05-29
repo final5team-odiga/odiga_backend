@@ -1,4 +1,4 @@
-from crewai import Agent, Task
+from crewai import Agent
 from custom_llm import get_azure_llm
 import asyncio
 import aiohttp
@@ -87,7 +87,7 @@ class ImageAnalyzerAgent:
                     "temperature": 0.3,
                     "max_tokens": 500
                 }
-
+ 
                 api_url = f"{os.getenv('AZURE_API_BASE')}/openai/deployments/{os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME')}/chat/completions?api-version={os.getenv('AZURE_API_VERSION')}"
                 
                 async with session.post(api_url, json=payload, headers=headers) as response:
