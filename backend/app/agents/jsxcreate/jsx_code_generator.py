@@ -3,6 +3,8 @@ from crewai import Agent, Task
 from custom_llm import get_azure_llm
 from utils.agent_decision_logger import get_agent_logger, get_complete_data_manager
 import re
+import asyncio
+
 
 class JSXCodeGenerator:
     """JSX 코드 생성 전문 에이전트 (에이전트 결과 데이터 기반)"""
@@ -39,26 +41,30 @@ class JSXCodeGenerator:
             llm=self.llm
         )
 
-    def generate_jsx_code(self, content: Dict, design: Dict, component_name: str) -> str:
-        """에이전트 결과 데이터 기반 JSX 코드 생성 (수정된 로깅)"""
-        
+    async def generate_jsx_code(self, content: Dict, design: Dict, component_name: str) -> str:
+        """에이전트 결과 데이터 기반 JSX 코드 생성(비동기) (수정된 로깅)"""
+
         # 이전 에이전트 결과 수집 (수정: 올바른 메서드 사용)
-        previous_results = self.result_manager.get_all_outputs(exclude_agent="JSXCodeGenerator")
-        
+        previous_results = await self.result_manager.get_all_outputs(exclude_agent="JSXCodeGenerator")
+
         # BindingAgent와 OrgAgent 응답 특별 수집
-        binding_results = [r for r in previous_results if "BindingAgent" in r.get('agent_name', '')]
-        org_results = [r for r in previous_results if "OrgAgent" in r.get('agent_name', '')]
-        content_results = [r for r in previous_results if "ContentCreator" in r.get('agent_name', '')]
-        
+        binding_results = [
+            r for r in previous_results if "BindingAgent" in r.get('agent_name', '')]
+        org_results = [
+            r for r in previous_results if "OrgAgent" in r.get('agent_name', '')]
+        content_results = [
+            r for r in previous_results if "ContentCreator" in r.get('agent_name', '')]
+
         print(f"📊 이전 결과 수집: 전체 {len(previous_results)}개")
         print(f"  - BindingAgent: {len(binding_results)}개")
-        print(f"  - OrgAgent: {len(org_results)}개") 
+        print(f"  - OrgAgent: {len(org_results)}개")
         print(f"  - ContentCreator: {len(content_results)}개")
-        
+
         agent = self.create_agent()
 
         # 에이전트 결과 데이터 요약
-        agent_data_summary = self._summarize_agent_results(previous_results, binding_results, org_results, content_results)
+        agent_data_summary = self._summarize_agent_results(
+            previous_results, binding_results, org_results, content_results)
 
         generation_task = Task(
             description=f"""
@@ -120,14 +126,16 @@ class JSXCodeGenerator:
         )
 
         try:
-            result = agent.execute_task(generation_task)
+            # 비동기 태스크 실행 (agent.execute_task가 비동기 지원해야 함)
+            result = await agent.execute_task(generation_task)
             jsx_code = str(result)
 
             # 에이전트 결과 기반 후처리
-            jsx_code = self._post_process_with_agent_results(jsx_code, previous_results, binding_results, org_results, content_results, content, component_name)
+            jsx_code = self._post_process_with_agent_results(
+                jsx_code, previous_results, binding_results, org_results, content_results, content, component_name)
 
             # 결과 저장 (수정: 올바른 메서드 사용)
-            self.result_manager.store_agent_output(
+            await self.result_manager.store_agent_output(
                 agent_name="JSXCodeGenerator",
                 agent_role="JSX 코드 생성 전문가",
                 task_description=f"컴포넌트 {component_name} JSX 코드 생성",
@@ -139,7 +147,8 @@ class JSXCodeGenerator:
                     "JSX 코드 생성",
                     "후처리 및 검증"
                 ],
-                raw_input={"content": content, "design": design, "component_name": component_name},
+                raw_input={"content": content, "design": design,
+                           "component_name": component_name},
                 raw_output=jsx_code,
                 performance_metrics={
                     "agent_results_utilized": len(previous_results),
@@ -157,9 +166,9 @@ class JSXCodeGenerator:
 
         except Exception as e:
             print(f"⚠️ JSX 코드 생성 실패: {e}")
-            
-            # 에러 로깅
-            self.result_manager.store_agent_output(
+
+            # 에러 로깅(비동기)
+            await self.result_manager.store_agent_output(
                 agent_name="JSXCodeGenerator_Error",
                 agent_role="에러 처리",
                 task_description=f"컴포넌트 {component_name} 생성 중 에러 발생",
@@ -167,12 +176,12 @@ class JSXCodeGenerator:
                 reasoning_process="JSX 코드 생성 중 예외 발생",
                 error_logs=[{"error": str(e), "component": component_name}]
             )
-            
+
             return self._create_agent_based_fallback_jsx(content, design, component_name, previous_results)
 
     def _summarize_agent_results(self, previous_results: List[Dict], binding_results: List[Dict], org_results: List[Dict], content_results: List[Dict]) -> str:
         """에이전트 결과 데이터 요약 (모든 에이전트 포함)"""
-        
+
         if not previous_results:
             return "이전 에이전트 결과 없음 - 기본 패턴 사용"
 
@@ -190,22 +199,24 @@ class JSXCodeGenerator:
         for agent_name, results in agent_groups.items():
             latest_result = results[-1]  # 최신 결과
             answer_length = len(latest_result.get('final_answer', ''))
-            
-            summary_parts.append(f"- {agent_name}: {len(results)}개 결과, 최신 답변 길이: {answer_length}자")
+
+            summary_parts.append(
+                f"- {agent_name}: {len(results)}개 결과, 최신 답변 길이: {answer_length}자")
 
         # 특별 요약
         summary_parts.append(f"- BindingAgent 특별 수집: {len(binding_results)}개")
         summary_parts.append(f"- OrgAgent 특별 수집: {len(org_results)}개")
-        summary_parts.append(f"- ContentCreator 특별 수집: {len(content_results)}개")
+        summary_parts.append(
+            f"- ContentCreator 특별 수집: {len(content_results)}개")
 
         return "\n".join(summary_parts)
 
     def _extract_binding_insights(self, binding_results: List[Dict]) -> str:
         """BindingAgent 인사이트 추출"""
-        
+
         if not binding_results:
             return "BindingAgent 결과 없음"
-        
+
         insights = []
         for result in binding_results:
             answer = result.get('final_answer', '')
@@ -215,15 +226,15 @@ class JSXCodeGenerator:
                 insights.append("- 갤러리 스타일 이미지 배치")
             if '배치' in answer:
                 insights.append("- 전문적 이미지 배치 분석 완료")
-        
+
         return "\n".join(insights) if insights else "BindingAgent 일반적 이미지 처리"
 
     def _extract_org_insights(self, org_results: List[Dict]) -> str:
         """OrgAgent 인사이트 추출"""
-        
+
         if not org_results:
             return "OrgAgent 결과 없음"
-        
+
         insights = []
         for result in org_results:
             answer = result.get('final_answer', '')
@@ -233,32 +244,32 @@ class JSXCodeGenerator:
                 insights.append("- 전문적 레이아웃 구조 분석")
             if '매거진' in answer or 'magazine' in answer.lower():
                 insights.append("- 매거진 스타일 텍스트 편집")
-        
+
         return "\n".join(insights) if insights else "OrgAgent 일반적 텍스트 처리"
 
     def _extract_content_insights(self, content_results: List[Dict]) -> str:
         """ContentCreator 인사이트 추출"""
-        
+
         if not content_results:
             return "ContentCreator 결과 없음"
-        
+
         insights = []
         for result in content_results:
             answer = result.get('final_answer', '')
             performance = result.get('performance_metrics', {})
-            
+
             if len(answer) > 2000:
                 insights.append("- 풍부한 콘텐츠 생성 완료")
             if '여행' in answer and '매거진' in answer:
                 insights.append("- 여행 매거진 스타일 콘텐츠")
             if performance.get('content_richness', 0) > 1.5:
                 insights.append("- 고품질 콘텐츠 확장 성공")
-        
+
         return "\n".join(insights) if insights else "ContentCreator 일반적 콘텐츠 처리"
 
-    def _post_process_with_agent_results(self, jsx_code: str, previous_results: List[Dict], 
-                                       binding_results: List[Dict], org_results: List[Dict], 
-                                       content_results: List[Dict], content: Dict, component_name: str) -> str:
+    def _post_process_with_agent_results(self, jsx_code: str, previous_results: List[Dict],
+                                         binding_results: List[Dict], org_results: List[Dict],
+                                         content_results: List[Dict], content: Dict, component_name: str) -> str:
         """에이전트 결과로 JSX 후처리 (모든 에이전트 포함)"""
 
         # 1. 마크다운 블록 제거
@@ -268,13 +279,16 @@ class JSXCodeGenerator:
         jsx_code = self._validate_basic_structure(jsx_code, component_name)
 
         # 3. BindingAgent 결과 기반 이미지 강화
-        jsx_code = self._enhance_with_binding_results(jsx_code, binding_results, content)
+        jsx_code = self._enhance_with_binding_results(
+            jsx_code, binding_results, content)
 
         # 4. OrgAgent 결과 기반 텍스트 구조 강화
-        jsx_code = self._enhance_with_org_results(jsx_code, org_results, content)
+        jsx_code = self._enhance_with_org_results(
+            jsx_code, org_results, content)
 
         # 5. ContentCreator 결과 기반 콘텐츠 품질 강화
-        jsx_code = self._enhance_with_content_results(jsx_code, content_results, content)
+        jsx_code = self._enhance_with_content_results(
+            jsx_code, content_results, content)
 
         # 6. 이미지 URL 강제 포함
         jsx_code = self._ensure_image_urls(jsx_code, content)
@@ -286,14 +300,14 @@ class JSXCodeGenerator:
 
     def _enhance_with_content_results(self, jsx_code: str, content_results: List[Dict], content: Dict) -> str:
         """ContentCreator 결과로 콘텐츠 품질 강화"""
-        
+
         if not content_results:
             return jsx_code
-        
+
         latest_content = content_results[-1]
         content_answer = latest_content.get('final_answer', '')
         performance = latest_content.get('performance_metrics', {})
-        
+
         # 콘텐츠 품질에 따른 스타일 강화
         if len(content_answer) > 2000 or performance.get('content_richness', 0) > 1.5:
             # 고품질 콘텐츠일 때 프리미엄 스타일 적용
@@ -305,14 +319,14 @@ class JSXCodeGenerator:
                 'color: #2c3e50;',
                 'color: #ffffff;'
             )
-        
+
         if '여행' in content_answer and '매거진' in content_answer:
             # 여행 매거진 스타일 강화
             jsx_code = jsx_code.replace(
                 'border-radius: 12px;',
                 'border-radius: 16px;\n  box-shadow: 0 12px 24px rgba(0,0,0,0.15);'
             )
-        
+
         return jsx_code
 
     # 기존 유틸리티 메서드들 유지
@@ -320,7 +334,8 @@ class JSXCodeGenerator:
         """마크다운 블록 완전 제거"""
         jsx_code = re.sub(r'``````', '', jsx_code)
         jsx_code = re.sub(r'``````', '', jsx_code)
-        jsx_code = re.sub(r'^(이 코드는|다음은|아래는).*?\n', '', jsx_code, flags=re.MULTILINE)
+        jsx_code = re.sub(r'^(이 코드는|다음은|아래는).*?\n', '',
+                          jsx_code, flags=re.MULTILINE)
         return jsx_code.strip()
 
     def _validate_basic_structure(self, jsx_code: str, component_name: str) -> str:
@@ -335,19 +350,20 @@ class JSXCodeGenerator:
             )
 
         if f'export const {component_name}' not in jsx_code:
-            jsx_code = re.sub(r'export const \w+', f'export const {component_name}', jsx_code)
+            jsx_code = re.sub(r'export const \w+',
+                              f'export const {component_name}', jsx_code)
 
         return jsx_code
 
     def _enhance_with_binding_results(self, jsx_code: str, binding_results: List[Dict], content: Dict) -> str:
         """BindingAgent 결과로 이미지 강화"""
-        
+
         if not binding_results:
             return jsx_code
-        
+
         latest_binding = binding_results[-1]
         binding_answer = latest_binding.get('final_answer', '')
-        
+
         # 이미지 배치 전략 반영
         if '그리드' in binding_answer or 'grid' in binding_answer.lower():
             # 그리드 스타일 이미지 갤러리로 교체
@@ -355,25 +371,25 @@ class JSXCodeGenerator:
                 'display: flex;',
                 'display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));'
             )
-        
+
         if '갤러리' in binding_answer or 'gallery' in binding_answer.lower():
             # 갤러리 스타일 강화
             jsx_code = jsx_code.replace(
                 'gap: 20px;',
                 'gap: 15px;\n  padding: 20px;'
             )
-        
+
         return jsx_code
 
     def _enhance_with_org_results(self, jsx_code: str, org_results: List[Dict], content: Dict) -> str:
         """OrgAgent 결과로 텍스트 구조 강화"""
-        
+
         if not org_results:
             return jsx_code
-        
+
         latest_org = org_results[-1]
         org_answer = latest_org.get('final_answer', '')
-        
+
         # 텍스트 구조 개선
         if '매거진' in org_answer or 'magazine' in org_answer.lower():
             # 매거진 스타일 타이포그래피 강화
@@ -381,14 +397,14 @@ class JSXCodeGenerator:
                 'font-size: 3em;',
                 'font-size: 3.5em;\n  font-weight: 300;\n  letter-spacing: -1px;'
             )
-        
+
         if '구조' in org_answer or 'structure' in org_answer.lower():
             # 구조적 여백 개선
             jsx_code = jsx_code.replace(
                 'margin-bottom: 50px;',
                 'margin-bottom: 60px;\n  padding-bottom: 30px;\n  border-bottom: 1px solid #f0f0f0;'
             )
-        
+
         return jsx_code
 
     def _ensure_image_urls(self, jsx_code: str, content: Dict) -> str:
@@ -400,7 +416,8 @@ class JSXCodeGenerator:
         if '<img' not in jsx_code and 'Image' not in jsx_code:
             first_image = images[0] if images else ''
             image_jsx = f'\n      <img src="{first_image}" alt="Travel" style={{{{width: "100%", maxWidth: "600px", height: "300px", objectFit: "cover", borderRadius: "8px", margin: "20px 0"}}}} />'
-            jsx_code = jsx_code.replace('<Container>', f'<Container>{image_jsx}')
+            jsx_code = jsx_code.replace(
+                '<Container>', f'<Container>{image_jsx}')
 
         return jsx_code
 
@@ -443,7 +460,7 @@ class JSXCodeGenerator:
 
     def _create_agent_based_fallback_jsx(self, content: Dict, design: Dict, component_name: str, previous_results: List[Dict]) -> str:
         """에이전트 데이터 기반 폴백 JSX"""
-        
+
         title = content.get('title', '에이전트 협업 여행 이야기')
         subtitle = content.get('subtitle', '특별한 순간들')
         body = content.get('body', '다양한 AI 에이전트들이 협업하여 생성한 여행 콘텐츠입니다.')
@@ -452,15 +469,18 @@ class JSXCodeGenerator:
 
         # 에이전트 결과 반영
         if previous_results:
-            agent_count = len(set(r.get('agent_name') for r in previous_results))
+            agent_count = len(set(r.get('agent_name')
+                              for r in previous_results))
             body = f"{body}\n\n이 콘텐츠는 {agent_count}개의 전문 AI 에이전트가 협업하여 생성했습니다."
 
         image_tags = []
         for i, img_url in enumerate(images[:4]):
             if img_url and img_url.strip():
-                image_tags.append(f'        <TravelImage src="{img_url}" alt="Travel {i+1}" />')
+                image_tags.append(
+                    f'        <TravelImage src="{img_url}" alt="Travel {i+1}" />')
 
-        image_jsx = '\n'.join(image_tags) if image_tags else '        <PlaceholderDiv>에이전트 기반 콘텐츠</PlaceholderDiv>'
+        image_jsx = '\n'.join(
+            image_tags) if image_tags else '        <PlaceholderDiv>에이전트 기반 콘텐츠</PlaceholderDiv>'
 
         return f'''import React from "react";
 import styled from "styled-components";
