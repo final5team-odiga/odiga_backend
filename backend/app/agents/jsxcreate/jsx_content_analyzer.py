@@ -1,18 +1,20 @@
+import asyncio
 from typing import Dict, List
 from crewai import Agent, Task, Crew, Process
 from custom_llm import get_azure_llm
 from utils.pdf_vector_manager import PDFVectorManager
 from utils.agent_decision_logger import get_agent_logger, get_complete_data_manager
 
+
 class JSXContentAnalyzer:
     """콘텐츠 분석 전문 에이전트 (CrewAI 기반 에이전트 결과 데이터 통합)"""
-    
+
     def __init__(self):
         self.llm = get_azure_llm()
         self.vector_manager = PDFVectorManager()
         self.logger = get_agent_logger()
         self.result_manager = get_complete_data_manager()
-        
+
         # CrewAI 에이전트들 생성
         self.content_analysis_agent = self._create_content_analysis_agent()
         self.agent_result_analyzer = self._create_agent_result_analyzer()
@@ -96,41 +98,48 @@ class JSXContentAnalyzer:
             allow_delegation=False
         )
 
-    def analyze_content_for_jsx(self, content: Dict, section_index: int, total_sections: int) -> Dict:
+    async def analyze_content_for_jsx(self, content: Dict, section_index: int, total_sections: int) -> Dict:
         """JSX 생성을 위한 콘텐츠 분석 (CrewAI 기반 에이전트 결과 데이터 활용)"""
-        
+        # 비동기
         # 이전 에이전트 결과 수집 (수정: 올바른 메서드 사용)
-        previous_results = self.result_manager.get_all_outputs(exclude_agent="JSXContentAnalyzer")
-        
+        previous_results = await self.result_manager.get_all_outputs(exclude_agent="JSXContentAnalyzer")
+
         # BindingAgent와 OrgAgent 응답 특별 수집
-        binding_results = [r for r in previous_results if "BindingAgent" in r.get('agent_name', '')]
-        org_results = [r for r in previous_results if "OrgAgent" in r.get('agent_name', '')]
-        
-        print(f"📊 이전 결과 수집: 전체 {len(previous_results)}개, BindingAgent {len(binding_results)}개, OrgAgent {len(org_results)}개")
-        
+        binding_results = [
+            r for r in previous_results if "BindingAgent" in r.get('agent_name', '')]
+        org_results = [
+            r for r in previous_results if "OrgAgent" in r.get('agent_name', '')]
+
+        print(
+            f"📊 이전 결과 수집: 전체 {len(previous_results)}개, BindingAgent {len(binding_results)}개, OrgAgent {len(org_results)}개")
+
         # CrewAI Task들 생성
-        content_analysis_task = self._create_content_analysis_task(content, section_index, total_sections)
-        agent_result_analysis_task = self._create_agent_result_analysis_task(previous_results, binding_results, org_results)
+        content_analysis_task = self._create_content_analysis_task(
+            content, section_index, total_sections)
+        agent_result_analysis_task = self._create_agent_result_analysis_task(
+            previous_results, binding_results, org_results)
         vector_enhancement_task = self._create_vector_enhancement_task(content)
-        
+
         # CrewAI Crew 생성 및 실행
         analysis_crew = Crew(
-            agents=[self.content_analysis_agent, self.agent_result_analyzer, self.vector_enhancement_agent],
-            tasks=[content_analysis_task, agent_result_analysis_task, vector_enhancement_task],
+            agents=[self.content_analysis_agent,
+                    self.agent_result_analyzer, self.vector_enhancement_agent],
+            tasks=[content_analysis_task,
+                   agent_result_analysis_task, vector_enhancement_task],
             process=Process.sequential,
             verbose=True
         )
-        
+
         # Crew 실행
-        crew_result = analysis_crew.kickoff()
-        
+        crew_result = await analysis_crew.kickoff()
+
         # 결과 처리 및 통합
-        vector_enhanced_analysis = self._process_crew_analysis_result(
+        vector_enhanced_analysis = await self._process_crew_analysis_result(
             crew_result, content, section_index, previous_results, binding_results, org_results
         )
-        
+
         # 결과 저장 (수정: 올바른 메서드 사용)
-        self.result_manager.store_agent_output(
+        await self.result_manager.store_agent_output(
             agent_name="JSXContentAnalyzer",
             agent_role="콘텐츠 분석 전문가",
             task_description=f"섹션 {section_index+1}/{total_sections} JSX 콘텐츠 분석",
@@ -155,9 +164,10 @@ class JSXContentAnalyzer:
                 "crewai_enhanced": True
             }
         )
-        
-        print(f"✅ 콘텐츠 분석 완료: {vector_enhanced_analysis.get('recommended_layout', '기본')} 레이아웃 권장 (CrewAI 기반 에이전트 데이터 활용: {len(previous_results)}개)")
-        
+
+        print(
+            f"✅ 콘텐츠 분석 완료: {vector_enhanced_analysis.get('recommended_layout', '기본')} 레이아웃 권장 (CrewAI 기반 에이전트 데이터 활용: {len(previous_results)}개)")
+
         return vector_enhanced_analysis
 
     def _create_content_analysis_task(self, content: Dict, section_index: int, total_sections: int) -> Task:
@@ -249,12 +259,13 @@ class JSXContentAnalyzer:
             """,
             expected_output="벡터 데이터 기반 강화된 분석 결과",
             agent=self.vector_enhancement_agent,
-            context=[self._create_content_analysis_task(content, 0, 1), self._create_agent_result_analysis_task([], [], [])]
+            context=[self._create_content_analysis_task(
+                content, 0, 1), self._create_agent_result_analysis_task([], [], [])]
         )
 
-    def _process_crew_analysis_result(self, crew_result, content: Dict, section_index: int, 
-                                    previous_results: List[Dict], binding_results: List[Dict], 
-                                    org_results: List[Dict]) -> Dict:
+    async def _process_crew_analysis_result(self, crew_result, content: Dict, section_index: int,
+                                            previous_results: List[Dict], binding_results: List[Dict],
+                                            org_results: List[Dict]) -> Dict:
         """CrewAI 분석 결과 처리"""
         try:
             # CrewAI 결과에서 데이터 추출
@@ -262,53 +273,55 @@ class JSXContentAnalyzer:
                 result_text = crew_result.raw
             else:
                 result_text = str(crew_result)
-            
+
             # 기본 분석 수행
-            basic_analysis = self._create_default_analysis(content, section_index)
-            
+            basic_analysis = self._create_default_analysis(
+                content, section_index)
+
             # 에이전트 결과 데이터로 분석 강화
             agent_enhanced_analysis = self._enhance_analysis_with_agent_results(
                 content, basic_analysis, previous_results, binding_results, org_results
             )
-            
+
             # 벡터 데이터로 추가 강화
-            vector_enhanced_analysis = self._enhance_analysis_with_vectors(content, agent_enhanced_analysis)
-            
+            vector_enhanced_analysis = await self._enhance_analysis_with_vectors(content, agent_enhanced_analysis)
+
             # CrewAI 결과 통합
             vector_enhanced_analysis['crewai_enhanced'] = True
             vector_enhanced_analysis['crew_result_length'] = len(result_text)
-            
+
             return vector_enhanced_analysis
-            
+
         except Exception as e:
             print(f"⚠️ CrewAI 결과 처리 실패: {e}")
             # 폴백: 기존 방식으로 처리
-            basic_analysis = self._create_default_analysis(content, section_index)
+            basic_analysis = self._create_default_analysis(
+                content, section_index)
             agent_enhanced_analysis = self._enhance_analysis_with_agent_results(
                 content, basic_analysis, previous_results, binding_results, org_results
             )
-            return self._enhance_analysis_with_vectors(content, agent_enhanced_analysis)
+            return await self._enhance_analysis_with_vectors(content, agent_enhanced_analysis)
 
     # 기존 메서드들 유지 (변경 없음)
     def _enhance_analysis_with_agent_results(self, content: Dict, basic_analysis: Dict,
-                                           previous_results: List[Dict], binding_results: List[Dict],
-                                           org_results: List[Dict]) -> Dict:
+                                             previous_results: List[Dict], binding_results: List[Dict],
+                                             org_results: List[Dict]) -> Dict:
         """에이전트 결과 데이터로 분석 강화 (BindingAgent, OrgAgent 특별 처리)"""
         enhanced_analysis = basic_analysis.copy()
         enhanced_analysis['agent_results_count'] = len(previous_results)
         enhanced_analysis['binding_results_count'] = len(binding_results)
         enhanced_analysis['org_results_count'] = len(org_results)
-        
+
         if not previous_results:
             enhanced_analysis['agent_enhanced'] = False
             return enhanced_analysis
-        
+
         enhanced_analysis['agent_enhanced'] = True
-        
+
         # 이전 분석 결과 패턴 학습
         layout_recommendations = []
         confidence_scores = []
-        
+
         for result in previous_results:
             final_answer = result.get('agent_final_answer', '')
             if 'layout' in final_answer.lower():
@@ -318,19 +331,19 @@ class JSXContentAnalyzer:
                     layout_recommendations.append('hero')
                 elif 'magazine' in final_answer.lower():
                     layout_recommendations.append('magazine')
-            
+
             # 성능 메트릭에서 신뢰도 추출
             performance_data = result.get('performance_data', {})
             if isinstance(performance_data, dict):
                 confidence = performance_data.get('confidence_score', 0)
                 if confidence > 0:
                     confidence_scores.append(confidence)
-        
+
         # BindingAgent 결과 특별 활용
         if binding_results:
             latest_binding = binding_results[-1]
             binding_answer = latest_binding.get('agent_final_answer', '')
-            
+
             # 이미지 배치 전략에서 레이아웃 힌트 추출
             if '그리드' in binding_answer or 'grid' in binding_answer.lower():
                 enhanced_analysis['image_strategy'] = '그리드'
@@ -338,15 +351,15 @@ class JSXContentAnalyzer:
             elif '갤러리' in binding_answer or 'gallery' in binding_answer.lower():
                 enhanced_analysis['image_strategy'] = '갤러리'
                 enhanced_analysis['recommended_layout'] = 'gallery'
-            
+
             enhanced_analysis['binding_insights_applied'] = True
             print(f" 🖼️ BindingAgent 인사이트 적용: 이미지 전략 조정")
-        
+
         # OrgAgent 결과 특별 활용
         if org_results:
             latest_org = org_results[-1]
             org_answer = latest_org.get('agent_final_answer', '')
-            
+
             # 텍스트 구조에서 레이아웃 힌트 추출
             if '복잡' in org_answer or 'complex' in org_answer.lower():
                 enhanced_analysis['layout_complexity'] = '복잡'
@@ -354,17 +367,18 @@ class JSXContentAnalyzer:
             elif '단순' in org_answer or 'simple' in org_answer.lower():
                 enhanced_analysis['layout_complexity'] = '단순'
                 enhanced_analysis['typography_style'] = '미니멀 모던'
-            
+
             enhanced_analysis['org_insights_applied'] = True
             print(f" 📄 OrgAgent 인사이트 적용: 텍스트 구조 조정")
-        
+
         # 가장 성공적인 레이아웃 패턴 적용
         if layout_recommendations:
-            most_common_layout = max(set(layout_recommendations), key=layout_recommendations.count)
+            most_common_layout = max(
+                set(layout_recommendations), key=layout_recommendations.count)
             if layout_recommendations.count(most_common_layout) >= 2:
                 enhanced_analysis['recommended_layout'] = most_common_layout
                 enhanced_analysis['layout_confidence'] = 'high'
-        
+
         # 평균 신뢰도 기반 조정
         if confidence_scores:
             avg_confidence = sum(confidence_scores) / len(confidence_scores)
@@ -372,10 +386,10 @@ class JSXContentAnalyzer:
                 enhanced_analysis['quality_boost'] = True
                 enhanced_analysis['color_palette'] = '프리미엄 블루'
                 enhanced_analysis['typography_style'] = '고급 모던'
-        
+
         return enhanced_analysis
 
-    def _enhance_analysis_with_vectors(self, content: Dict, basic_analysis: Dict) -> Dict:
+    async def _enhance_analysis_with_vectors(self, content: Dict, basic_analysis: Dict) -> Dict:
         """벡터 데이터로 분석 강화 (기존 메서드 유지)"""
         try:
             content_query = f"{content.get('title', '')} {content.get('body', '')[:300]}"
@@ -384,24 +398,27 @@ class JSXContentAnalyzer:
                 "magazine_layout",
                 top_k=5
             )
-            
+
             if similar_layouts:
                 enhanced_analysis = basic_analysis.copy()
                 enhanced_analysis['vector_enhanced'] = True
                 enhanced_analysis['similar_layouts'] = similar_layouts
-                
-                vector_layout_recommendation = self._get_vector_layout_recommendation(similar_layouts)
+
+                vector_layout_recommendation = await self._get_vector_layout_recommendation(similar_layouts)
                 if vector_layout_recommendation:
                     enhanced_analysis['recommended_layout'] = vector_layout_recommendation
-                    enhanced_analysis['layout_confidence'] = self._calculate_vector_confidence(similar_layouts)
-                    enhanced_analysis['vector_color_palette'] = self._get_vector_color_palette(similar_layouts)
-                    enhanced_analysis['vector_typography'] = self._get_vector_typography_style(similar_layouts)
-                
+                    enhanced_analysis['layout_confidence'] = self._calculate_vector_confidence(
+                        similar_layouts)
+                    enhanced_analysis['vector_color_palette'] = self._get_vector_color_palette(
+                        similar_layouts)
+                    enhanced_analysis['vector_typography'] = self._get_vector_typography_style(
+                        similar_layouts)
+
                 return enhanced_analysis
             else:
                 basic_analysis['vector_enhanced'] = False
                 return basic_analysis
-                
+
         except Exception as e:
             print(f"⚠️ 벡터 데이터 분석 강화 실패: {e}")
             basic_analysis['vector_enhanced'] = False
@@ -414,7 +431,7 @@ class JSXContentAnalyzer:
             layout_info = layout.get('layout_info', {})
             text_blocks = len(layout_info.get('text_blocks', []))
             images = len(layout_info.get('images', []))
-            
+
             if images == 0:
                 layout_types.append('minimal')
             elif images == 1 and text_blocks <= 3:
@@ -425,7 +442,7 @@ class JSXContentAnalyzer:
                 layout_types.append('gallery')
             else:
                 layout_types.append('magazine')
-        
+
         if layout_types:
             return max(set(layout_types), key=layout_types.count)
         return None
@@ -434,19 +451,21 @@ class JSXContentAnalyzer:
         """벡터 기반 신뢰도 계산"""
         if not similar_layouts:
             return 0.5
-        
+
         scores = [layout.get('score', 0) for layout in similar_layouts]
         avg_score = sum(scores) / len(scores)
-        
-        layout_consistency = len(set(self._get_vector_layout_recommendation([layout]) for layout in similar_layouts))
+
+        layout_consistency = len(set(self._get_vector_layout_recommendation(
+            [layout]) for layout in similar_layouts))
         consistency_bonus = 0.2 if layout_consistency <= 2 else 0.1
-        
+
         return min(avg_score + consistency_bonus, 1.0)
 
     def _get_vector_color_palette(self, similar_layouts: List[Dict]) -> str:
         """벡터 데이터 기반 색상 팔레트"""
-        pdf_sources = [layout.get('pdf_name', '').lower() for layout in similar_layouts]
-        
+        pdf_sources = [layout.get('pdf_name', '').lower()
+                       for layout in similar_layouts]
+
         if any('travel' in source for source in pdf_sources):
             return "여행 블루 팔레트"
         elif any('culture' in source for source in pdf_sources):
@@ -460,9 +479,11 @@ class JSXContentAnalyzer:
 
     def _get_vector_typography_style(self, similar_layouts: List[Dict]) -> str:
         """벡터 데이터 기반 타이포그래피 스타일"""
-        total_text_blocks = sum(len(layout.get('layout_info', {}).get('text_blocks', [])) for layout in similar_layouts)
-        avg_text_blocks = total_text_blocks / len(similar_layouts) if similar_layouts else 0
-        
+        total_text_blocks = sum(len(layout.get('layout_info', {}).get(
+            'text_blocks', [])) for layout in similar_layouts)
+        avg_text_blocks = total_text_blocks / \
+            len(similar_layouts) if similar_layouts else 0
+
         if avg_text_blocks > 8:
             return "정보 집약형"
         elif avg_text_blocks > 5:
@@ -476,7 +497,7 @@ class JSXContentAnalyzer:
         """기본 분석 결과 생성"""
         body_length = len(content.get('body', ''))
         image_count = len(content.get('images', []))
-        
+
         if body_length < 300:
             recommended_layout = "minimal"
         elif image_count == 0:
@@ -487,7 +508,7 @@ class JSXContentAnalyzer:
             recommended_layout = "grid"
         else:
             recommended_layout = "magazine"
-        
+
         return {
             "text_length": "보통" if body_length < 500 else "긺",
             "emotion_tone": "peaceful",
