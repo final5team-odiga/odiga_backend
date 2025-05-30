@@ -10,3 +10,4 @@ azure-search-documents
 azure-core
 PyPDF2
 nest_asyncio
+psutil

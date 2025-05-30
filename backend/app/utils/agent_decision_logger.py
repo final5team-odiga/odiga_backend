@@ -12,20 +12,45 @@ class AgentOutput:
     agent_role: str
     output_id: str
     timestamp: str
-    
     # 에이전트 응답 (핵심 데이터만)
     task_description: str
     final_answer: str
     reasoning_process: str
     execution_steps: List[str]
-    
     # 입출력 데이터
     raw_input: Any
     raw_output: Any
-    
     # 성능 메트릭 (선택적)
     performance_metrics: Dict
     error_logs: List[Dict]
+    # info 관련 필드 추가
+    info_data: Dict
+
+    
+    def get_info(self, key: str = None):
+        """안전한 info 데이터 접근"""
+        if key:
+            return self.info_data.get(key)
+        return self.info_data
+    
+    def set_info(self, key: str, value: Any):
+        """안전한 info 데이터 설정"""
+        if not hasattr(self, 'info_data') or self.info_data is None:
+            self.info_data = {}
+        self.info_data[key] = value
+
+
+@dataclass
+class AgentInfo:
+    """에이전트 정보 데이터"""
+    agent_name: str
+    info_id: str
+    timestamp: str
+    info_type: str
+    info_content: Dict
+    metadata: Dict
+    info_data: Dict
+
 
 class AgentOutputManager:
     """에이전트 응답 전용 관리 시스템 (수정된 저장 구조)"""
@@ -34,6 +59,7 @@ class AgentOutputManager:
         self.storage_dir = storage_dir
         self.current_session_id = self._generate_session_id()
         self.outputs = []  # 에이전트 응답만 저장
+        self.info_storage = []  # info 데이터 저장 추가
         
         # 저장 디렉토리 생성 (수정: 이중 저장 구조)
         os.makedirs(storage_dir, exist_ok=True)
@@ -41,6 +67,10 @@ class AgentOutputManager:
         # agent_outputs 폴더에 저장
         self.outputs_dir = os.path.join(storage_dir, "outputs")
         os.makedirs(self.outputs_dir, exist_ok=True)
+        
+        # info 디렉토리 추가
+        self.info_dir = os.path.join(storage_dir, "info")
+        os.makedirs(self.info_dir, exist_ok=True)
         
         # 세션별 저장
         self.session_path = os.path.join(self.outputs_dir, f"session_{self.current_session_id}")
@@ -51,11 +81,14 @@ class AgentOutputManager:
         self.summary_path = os.path.join(self.outputs_dir, "outputs_summary.json")
         self.latest_path = os.path.join(storage_dir, "latest_outputs.json")
         
-    
+        # info 관련 파일 경로 추가
+        self.info_path = os.path.join(self.info_dir, f"session_{self.current_session_id}_info.json")
+        self.latest_info_path = os.path.join(storage_dir, "latest_info.json")
+
     def _generate_session_id(self) -> str:
         """세션 ID 생성"""
         return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    
+
     def store_agent_output(self,
                           agent_name: str,
                           agent_role: str,
@@ -66,7 +99,8 @@ class AgentOutputManager:
                           raw_input: Any = None,
                           raw_output: Any = None,
                           performance_metrics: Dict = None,
-                          error_logs: List[Dict] = None) -> str:
+                          error_logs: List[Dict] = None,
+                          info_data: Dict = None) -> str:
         """에이전트 응답 저장 (다중 위치 저장)"""
         
         output_id = f"{agent_name}_{int(time.time() * 1000000)}"
@@ -83,7 +117,8 @@ class AgentOutputManager:
             raw_input=self._safe_copy(raw_input),
             raw_output=self._safe_copy(raw_output),
             performance_metrics=performance_metrics or {},
-            error_logs=error_logs or []
+            error_logs=error_logs or [],
+            info_data=info_data or {}
         )
         
         self.outputs.append(agent_output)
@@ -94,11 +129,103 @@ class AgentOutputManager:
         self._update_summary()
         
         print(f"📦 {agent_name} 응답 저장: {output_id}")
-        print(f"  - 세션 저장: {self.outputs_path}")
-        print(f"  - 최신 저장: {self.latest_path}")
+        print(f" - 세션 저장: {self.outputs_path}")
+        print(f" - 최신 저장: {self.latest_path}")
         
         return output_id
-    
+
+    def store_agent_info(self,
+                        agent_name: str,
+                        info_type: str,
+                        info_content: Dict,
+                        metadata: Dict = None) -> str:
+        """에이전트 정보 저장 (새로운 기능)"""
+        
+        info_id = f"{agent_name}_info_{int(time.time() * 1000000)}"
+        
+        agent_info = AgentInfo(
+            agent_name=agent_name,
+            info_id=info_id,
+            timestamp=datetime.now().isoformat(),
+            info_type=info_type,
+            info_content=self._safe_copy(info_content),
+            metadata=metadata or {}
+        )
+        
+        self.info_storage.append(agent_info)
+        
+        # info 데이터 저장
+        self._save_info_data()
+        self._save_latest_info()
+        
+        print(f"📋 {agent_name} 정보 저장: {info_id} (타입: {info_type})")
+        
+        return info_id
+
+    def get_agent_info(self, agent_name: str = None, info_type: str = None, latest: bool = True) -> List[Dict]:
+        """에이전트 정보 조회 (새로운 기능)"""
+        
+        # 현재 세션 info 조회
+        current_info = []
+        for info in self.info_storage:
+            if agent_name is None or info.agent_name == agent_name:
+                if info_type is None or info.info_type == info_type:
+                    current_info.append(asdict(info))
+        
+        # 이전 세션 info도 로드
+        previous_info = self._load_previous_info()
+        for info in previous_info:
+            if agent_name is None or info.get('agent_name') == agent_name:
+                if info_type is None or info.get('info_type') == info_type:
+                    if not any(i.get('info_id') == info.get('info_id') for i in current_info):
+                        current_info.append(info)
+        
+        # 정렬
+        sorted_info = sorted(current_info, key=lambda x: x.get('timestamp', ''), reverse=True)
+        
+        if latest and sorted_info:
+            return [sorted_info[0]]
+        
+        return sorted_info
+
+    def get_all_info(self) -> List[Dict]:
+        """모든 정보 조회 (새로운 기능)"""
+        return self.get_agent_info()
+
+    def _save_info_data(self):
+        """info 데이터 저장 (새로운 기능)"""
+        info_data = {
+            "session_id": self.current_session_id,
+            "timestamp": datetime.now().isoformat(),
+            "agent_info": [asdict(info) for info in self.info_storage],
+            "total_info": len(self.info_storage)
+        }
+        
+        with open(self.info_path, 'w', encoding='utf-8') as f:
+            json.dump(info_data, f, ensure_ascii=False, indent=2)
+
+    def _save_latest_info(self):
+        """최신 info 데이터 저장 (새로운 기능)"""
+        latest_info_data = {
+            "last_updated": datetime.now().isoformat(),
+            "current_session_id": self.current_session_id,
+            "total_info_in_session": len(self.info_storage),
+            "latest_info": [asdict(info) for info in self.info_storage[-10:]],  # 최신 10개만
+            "info_storage_path": self.info_path
+        }
+        
+        with open(self.latest_info_path, 'w', encoding='utf-8') as f:
+            json.dump(latest_info_data, f, ensure_ascii=False, indent=2)
+
+    def _load_previous_info(self) -> List[Dict]:
+        """이전 세션 info 로드 (새로운 기능)"""
+        try:
+            with open(self.info_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get('agent_info', [])
+        except:
+            return []
+
     def _safe_copy(self, data: Any) -> Any:
         """안전한 데이터 복사"""
         try:
@@ -113,7 +240,7 @@ class AgentOutputManager:
             return str(data)  # 복잡한 객체는 문자열로 변환
         except:
             return str(data)
-    
+
     def get_all_outputs(self, exclude_agent: str = None) -> List[Dict]:
         """모든 에이전트 응답 조회"""
         all_outputs = []
@@ -130,7 +257,7 @@ class AgentOutputManager:
                     all_outputs.append(output)
         
         return sorted(all_outputs, key=lambda x: x.get('timestamp', ''))
-    
+
     def get_agent_output(self, agent_name: str, latest: bool = True) -> Optional[Dict]:
         """특정 에이전트의 응답 조회"""
         agent_outputs = [
@@ -150,7 +277,7 @@ class AgentOutputManager:
             return sorted(agent_outputs, key=lambda x: x.get('timestamp', ''), reverse=True)[0]
         else:
             return agent_outputs
-    
+
     def _save_outputs(self):
         """세션별 응답 저장"""
         outputs_data = {
@@ -166,7 +293,7 @@ class AgentOutputManager:
         
         with open(self.outputs_path, 'w', encoding='utf-8') as f:
             json.dump(outputs_data, f, ensure_ascii=False, indent=2)
-    
+
     def _save_latest_outputs(self):
         """최신 출력을 agent_outputs 폴더 루트에 저장"""
         latest_data = {
@@ -183,7 +310,7 @@ class AgentOutputManager:
         
         with open(self.latest_path, 'w', encoding='utf-8') as f:
             json.dump(latest_data, f, ensure_ascii=False, indent=2)
-    
+
     def _update_summary(self):
         """출력 요약 정보 업데이트"""
         # 기존 요약 로드
@@ -228,7 +355,7 @@ class AgentOutputManager:
         
         with open(self.summary_path, 'w', encoding='utf-8') as f:
             json.dump(summary_data, f, ensure_ascii=False, indent=2)
-    
+
     def _load_summary(self) -> Dict:
         """기존 요약 데이터 로드"""
         try:
@@ -236,7 +363,7 @@ class AgentOutputManager:
                 return json.load(f)
         except:
             return {"all_sessions": []}
-    
+
     def _load_previous_outputs(self) -> List[Dict]:
         """이전 세션 출력 로드"""
         try:
@@ -251,16 +378,13 @@ class AgentDecisionLogger:
     
     def __init__(self):
         self.current_session_id = self._generate_session_id()
-        
         # 응답 관리자 (agent_outputs 폴더 사용)
-        self.output_manager = AgentOutputManager("./agent_outputs") 
-        
-        
-    
+        self.output_manager = AgentOutputManager("./agent_outputs")
+
     def _generate_session_id(self) -> str:
         """세션 ID 생성"""
         return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    
+
     def log_agent_real_output(self,
                              agent_name: str,
                              agent_role: str,
@@ -271,7 +395,8 @@ class AgentDecisionLogger:
                              raw_input: Any = None,
                              raw_output: Any = None,
                              performance_metrics: Dict = None,
-                             error_logs: List[Dict] = None) -> str:
+                             error_logs: List[Dict] = None,
+                             info_data: Dict = None) -> str:
         """에이전트 응답 로깅"""
         
         return self.output_manager.store_agent_output(
@@ -284,19 +409,43 @@ class AgentDecisionLogger:
             raw_input=raw_input,
             raw_output=raw_output,
             performance_metrics=performance_metrics,
-            error_logs=error_logs
+            error_logs=error_logs,
+            info_data=info_data
         )
-    
+
+    def log_agent_info(self,
+                      agent_name: str,
+                      info_type: str,
+                      info_content: Dict,
+                      metadata: Dict = None) -> str:
+        """에이전트 정보 로깅 (새로운 기능)"""
+        
+        return self.output_manager.store_agent_info(
+            agent_name=agent_name,
+            info_type=info_type,
+            info_content=info_content,
+            metadata=metadata
+        )
+
+    def get_agent_info(self, agent_name: str = None, info_type: str = None, latest: bool = True) -> List[Dict]:
+        """에이전트 정보 조회 (새로운 기능)"""
+        return self.output_manager.get_agent_info(agent_name, info_type, latest)
+
+    def get_all_info(self) -> List[Dict]:
+        """모든 정보 조회 (새로운 기능)"""
+        return self.output_manager.get_all_info()
+
     def get_all_previous_results(self, current_agent: str) -> List[Dict]:
         """모든 이전 응답 조회"""
         return self.output_manager.get_all_outputs(exclude_agent=current_agent)
-    
+
     def get_previous_agent_result(self, agent_name: str, latest: bool = True) -> Optional[Dict]:
         """이전 에이전트 응답 조회"""
         return self.output_manager.get_agent_output(agent_name, latest)
-    
+
     def get_learning_insights(self, target_agent: str) -> Dict:
         """학습 인사이트 생성 (간소화)"""
+        
         all_outputs = self.output_manager.get_all_outputs()
         
         if not all_outputs:
@@ -318,7 +467,7 @@ class AgentDecisionLogger:
             "recommendations": recommendations,
             "key_insights": self._extract_insights(all_outputs, target_agent)
         }
-    
+
     def _analyze_output_patterns(self, outputs: List[Dict]) -> List[Dict]:
         """응답 패턴 분석 (간소화)"""
         patterns = []
@@ -347,7 +496,7 @@ class AgentDecisionLogger:
         })
         
         return patterns
-    
+
     def _generate_recommendations(self, patterns: List[Dict], target_agent: str) -> List[str]:
         """추천사항 생성 (간소화)"""
         recommendations = []
@@ -364,7 +513,7 @@ class AgentDecisionLogger:
                     )
         
         return recommendations
-    
+
     def _extract_insights(self, outputs: List[Dict], target_agent: str) -> List[str]:
         """인사이트 추출 (간소화)"""
         insights = []
@@ -392,7 +541,7 @@ class AgentDecisionLogger:
             )
         
         return insights
-    
+
     # 호환성을 위한 기존 메서드들 (간소화)
     def log_agent_decision(self, agent_name: str, agent_role: str, input_data: Dict,
                           decision_process: Dict, output_result: Dict, reasoning: str,
@@ -409,9 +558,9 @@ class AgentDecisionLogger:
             raw_input=input_data,
             raw_output=output_result,
             performance_metrics=performance_metrics,
-            decision_process=decision_process.get('steps', []),
+            execution_steps=decision_process.get('steps', []),
         )
-    
+
     def log_agent_interaction(self,
                              source_agent: str,
                              target_agent: str,

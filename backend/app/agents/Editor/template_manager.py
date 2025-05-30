@@ -107,7 +107,7 @@ class AsyncWorkQueue:
         return self.results
 
 class CircuitBreaker:
-    def __init__(self, failure_threshold: int = 8, recovery_timeout: float = 30.0):  # 수정된 값 적용
+    def __init__(self, failure_threshold: int = 10, recovery_timeout: float = 120.0):
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.failure_count = 0
@@ -132,6 +132,14 @@ class CircuitBreaker:
         if self.failure_count >= self.failure_threshold:
             self.state = "OPEN"
 
+TIMEOUT_CONFIGS = {
+    'org_agent': 900,      # 15분
+    'binding_agent': 1200, # 20분  
+    'coordinator_agent': 600, # 10분
+    'vector_init': 600,    # 10분
+    'crew_execution': 900  # 15분
+}
+
 class MultiAgentTemplateManager:
     """PDF 벡터 데이터 기반 다중 에이전트 템플릿 관리자 (CrewAI 통합 로깅 시스템 - 비동기 처리)"""
 
@@ -141,7 +149,7 @@ class MultiAgentTemplateManager:
         self.binding_agent = BindingAgent()
         self.coordinator_agent = CoordinatorAgent()
         self.vector_manager = PDFVectorManager()
-        self.recursion_threshold = 800  # 수정된 값 적용
+        self.recursion_threshold = 600
         self.fallback_to_sync = False  # 동기 전환 플래그
         self.logger = get_agent_logger()  # 로깅 시스템 추가
         
@@ -184,24 +192,53 @@ class MultiAgentTemplateManager:
             return True
         return self.fallback_to_sync
 
+
+
     async def execute_with_resilience(self, task_func: Callable, task_id: str,
-                                    timeout: float = 300.0, max_retries: int = 2,
+                                    timeout: float = None, max_retries: int = 2,
                                     *args, **kwargs) -> Any:
-        """복원력 있는 작업 실행"""
+        if timeout is None:
+            for task_type, default_timeout in TIMEOUT_CONFIGS.items():
+                if task_type in task_id.lower():
+                    timeout = default_timeout
+                    break
+            else:
+                timeout = 300  # 기본값
+        print(f"DEBUG [execute_with_resilience]: task_id={task_id}, task_func type={type(task_func)}")
         
         if self.circuit_breaker.is_open():
             print(f"🚫 Circuit Breaker 열림 - 작업 {task_id} 건너뜀")
             self.execution_stats["circuit_breaker_triggered"] += 1
             return self._get_fallback_result(task_id)
+
+        # 수정: 코루틴 객체 처리 개선
+        if asyncio.iscoroutine(task_func):
+            try:
+                result = await asyncio.wait_for(task_func, timeout=timeout)
+                self.circuit_breaker.record_success()
+                return result
+            except Exception as e:
+                print(f"❌ Coroutine 실행 실패: {e}")
+                self.circuit_breaker.record_failure()
+                return self._get_fallback_result(task_id)
         
+        # 코루틴 함수와 일반 함수 구분 처리
+        if asyncio.iscoroutinefunction(task_func):
+            coro = task_func(*args, **kwargs)
+        else:
+            loop = asyncio.get_event_loop()
+            coro = loop.run_in_executor(None, lambda: task_func(*args, **kwargs))
+        
+        # WorkItem 생성 시 이미 생성된 코루틴 객체 전달
         work_item = WorkItem(
             id=task_id,
-            task_func=task_func,
-            args=args,
-            kwargs=kwargs,
+            task_func=coro,  # 코루틴 객체 직접 전달
+            args=(),  # 빈 튜플
+            kwargs={},  # 빈 딕셔너리
             timeout=timeout,
             max_retries=max_retries
         )
+
         
         await self.work_queue.add_work(work_item)
         results = await self.work_queue.process_queue()

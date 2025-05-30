@@ -12,8 +12,7 @@ import traceback
 from enum import Enum
 from functools import wraps
 
-# ==================== 기본 인프라 클래스들 ====================
-
+# ==================== 표준화된 기본 인프라 클래스들 ====================
 
 @dataclass
 class WorkItem:
@@ -28,17 +27,17 @@ class WorkItem:
     timeout: float = 300.0
     created_at: float = field(default_factory=time.time)
 
+    def __lt__(self, other):
+        return self.priority < other.priority
 
 class CircuitState(Enum):
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"
 
-
 class CircuitBreaker:
-    """Circuit Breaker 패턴 구현"""
-
-    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 30):
+    """표준화된 Circuit Breaker 패턴 구현"""
+    def __init__(self, failure_threshold: int = 8, recovery_timeout: float = 30.0):  # 수정된 값 적용
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
         self.failure_count = 0
@@ -46,20 +45,28 @@ class CircuitBreaker:
         self.state = CircuitState.CLOSED
         self.logger = logging.getLogger(__name__)
 
-    async def call(self, func: Callable, *args, **kwargs) -> Any:
-        """Circuit Breaker를 통한 함수 호출"""
+    async def execute(self, func: Callable, *args, **kwargs) -> Any:
+        """표준화된 Circuit Breaker 실행 메서드 (call -> execute로 통일)"""
         if self.state == CircuitState.OPEN:
             if self._should_attempt_reset():
                 self.state = CircuitState.HALF_OPEN
             else:
+                self.logger.warning("Circuit breaker is OPEN - rejecting call")
                 raise CircuitBreakerOpenError("Circuit breaker is OPEN")
 
         try:
-            result = await func(*args, **kwargs)
+            # 동기/비동기 함수 모두 처리
+            if asyncio.iscoroutinefunction(func):
+                result = await func(*args, **kwargs)
+            else:
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+            
             self._on_success()
             return result
         except Exception as e:
             self._on_failure()
+            self.logger.error(f"Circuit breaker recorded failure: {e}")
             raise e
 
     def _should_attempt_reset(self) -> bool:
@@ -75,15 +82,12 @@ class CircuitBreaker:
         if self.failure_count >= self.failure_threshold:
             self.state = CircuitState.OPEN
 
-
 class CircuitBreakerOpenError(Exception):
     """Circuit Breaker가 열린 상태일 때 발생하는 예외"""
     pass
 
-
 class AsyncWorkQueue:
-    """비동기 작업 큐 기반 배치 처리 시스템"""
-
+    """표준화된 비동기 작업 큐 기반 배치 처리 시스템"""
     def __init__(self, max_workers: int = 2, max_queue_size: int = 50, batch_size: int = 3):
         self.max_workers = max_workers
         self.max_queue_size = max_queue_size
@@ -91,7 +95,7 @@ class AsyncWorkQueue:
         self.semaphore = asyncio.Semaphore(max_workers)
         self.queue = asyncio.Queue(maxsize=max_queue_size)
         self.processing = False
-        self.results = {}
+        self._results = {}  # 표준화된 결과 저장 형식
         self.logger = logging.getLogger(__name__)
 
     async def submit_work(self, work_item: WorkItem) -> str:
@@ -105,19 +109,28 @@ class AsyncWorkQueue:
                 asyncio.create_task(self._process_batches())
             return work_item.id
         except asyncio.TimeoutError:
+            self.logger.error("Work queue is full")
             raise Exception("Work queue is full")
 
     async def get_result(self, work_id: str, timeout: float = 300.0) -> Any:
-        """결과 조회"""
+        """표준화된 결과 조회 (pop 대신 조회만)"""
         start_time = time.time()
         while time.time() - start_time < timeout:
-            if work_id in self.results:
-                result = self.results.pop(work_id)
-                if isinstance(result, Exception):
-                    raise result
-                return result
+            if work_id in self._results:
+                result_data = self._results[work_id]
+                if result_data["status"] == "success":
+                    return result_data["result"]
+                elif result_data["status"] == "error":
+                    raise Exception(result_data["error"])
+                elif result_data["status"] == "timeout":
+                    raise asyncio.TimeoutError(result_data["error"])
             await asyncio.sleep(0.1)
         raise asyncio.TimeoutError(f"Work {work_id} timed out")
+
+    async def clear_result(self, work_id: str):
+        """명시적인 결과 제거 메서드"""
+        if work_id in self._results:
+            del self._results[work_id]
 
     async def _process_batches(self):
         """배치 처리 실행"""
@@ -127,8 +140,8 @@ class AsyncWorkQueue:
                 batch = await self._collect_batch()
                 if batch:
                     await self._process_batch(batch)
-                    # 배치 간 쿨다운
-                    await asyncio.sleep(0.5)
+                # 배치 간 쿨다운
+                await asyncio.sleep(0.5)
         finally:
             self.processing = False
 
@@ -152,29 +165,41 @@ class AsyncWorkQueue:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _execute_work_item(self, work_item: WorkItem):
-        """개별 작업 실행"""
+        """표준화된 개별 작업 실행"""
         try:
-            result = await asyncio.wait_for(
-                work_item.task_func(*work_item.args, **work_item.kwargs),
-                timeout=work_item.timeout
-            )
-            self.results[work_item.id] = result
+            if asyncio.iscoroutinefunction(work_item.task_func):
+                result = await asyncio.wait_for(
+                    work_item.task_func(*work_item.args, **work_item.kwargs),
+                    timeout=work_item.timeout
+                )
+            else:
+                loop = asyncio.get_event_loop()
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: work_item.task_func(*work_item.args, **work_item.kwargs)),
+                    timeout=work_item.timeout
+                )
+            
+            self._results[work_item.id] = {"status": "success", "result": result}
+            self.logger.info(f"Work item {work_item.id} completed successfully")
+        except asyncio.TimeoutError:
+            error_msg = f"Work item {work_item.id} timed out"
+            self._results[work_item.id] = {"status": "timeout", "error": error_msg}
+            self.logger.error(error_msg)
         except Exception as e:
-            self.logger.error(f"Work item {work_item.id} failed: {e}")
-            self.results[work_item.id] = e
-
+            error_msg = f"Work item {work_item.id} failed: {e}"
+            self._results[work_item.id] = {"status": "error", "error": str(e)}
+            self.logger.error(error_msg)
 
 class BaseAsyncAgent:
-    """기본 비동기 에이전트 클래스"""
-
+    """표준화된 기본 비동기 에이전트 클래스"""
     def __init__(self):
         self.work_queue = AsyncWorkQueue(max_workers=2, max_queue_size=50)
-        self.circuit_breaker = CircuitBreaker()
-        self.recursion_threshold = 600
+        self.circuit_breaker = CircuitBreaker(failure_threshold=8, recovery_timeout=30.0)  # 수정된 값 적용
+        self.recursion_threshold = 800  # 수정된 값 적용
         self.fallback_to_sync = False
         self.logger = logging.getLogger(__name__)
 
-        # 타임아웃 설정
+        # 표준화된 타임아웃 설정
         self.timeouts = {
             'crew_kickoff': 90.0,
             'result_collection': 15.0,
@@ -184,7 +209,7 @@ class BaseAsyncAgent:
             'post_processing': 25.0
         }
 
-        # 재시도 설정
+        # 표준화된 재시도 설정
         self.retry_config = {
             'max_attempts': 3,
             'base_delay': 1.0,
@@ -192,8 +217,17 @@ class BaseAsyncAgent:
             'exponential_base': 2
         }
 
+        # 실행 통계 추가
+        self.execution_stats = {
+            "total_attempts": 0,
+            "successful_executions": 0,
+            "fallback_used": 0,
+            "circuit_breaker_triggered": 0,
+            "timeout_occurred": 0
+        }
+
     def _should_use_sync(self) -> bool:
-        """동기 모드 사용 여부 판단"""
+        """개선된 동기 모드 사용 여부 판단"""
         current_frame_count = len(traceback.extract_stack())
         return (
             self.fallback_to_sync or
@@ -210,8 +244,9 @@ class BaseAsyncAgent:
         *args,
         **kwargs
     ) -> Any:
-        """복원력 있는 작업 실행"""
-
+        """표준화된 복원력 있는 작업 실행"""
+        self.execution_stats["total_attempts"] += 1
+        
         work_item = WorkItem(
             id=task_id,
             task_func=task_func,
@@ -225,12 +260,15 @@ class BaseAsyncAgent:
             try:
                 await self.work_queue.submit_work(work_item)
                 result = await self.work_queue.get_result(task_id, timeout)
+                
+                # 성공 시 결과 정리
+                await self.work_queue.clear_result(task_id)
+                self.execution_stats["successful_executions"] += 1
                 return result
-
-            except (CircuitBreakerOpenError, asyncio.TimeoutError, RecursionError) as e:
-                self.logger.warning(
-                    f"Attempt {attempt + 1} failed for {task_id}: {e}")
-
+                
+            except CircuitBreakerOpenError as e:
+                self.execution_stats["circuit_breaker_triggered"] += 1
+                self.logger.warning(f"Circuit breaker triggered for {task_id}: {e}")
                 if attempt < max_retries - 1:
                     delay = min(
                         self.retry_config['base_delay'] *
@@ -239,14 +277,39 @@ class BaseAsyncAgent:
                     )
                     await asyncio.sleep(delay)
                     continue
-
-                # 최종 실패 시 폴백
+                break
+            except asyncio.TimeoutError as e:
+                self.execution_stats["timeout_occurred"] += 1
+                self.logger.warning(f"Timeout for {task_id} on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    delay = min(
+                        self.retry_config['base_delay'] *
+                        (self.retry_config['exponential_base'] ** attempt),
+                        self.retry_config['max_delay']
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                break
+            except RecursionError as e:
+                self.logger.error(f"RecursionError in {task_id}: {e}")
                 self.fallback_to_sync = True
-                return self._get_fallback_result(task_id)
-
+                raise e  # RecursionError는 즉시 상위로 전파하여 동기 모드 전환 유도
             except Exception as e:
                 self.logger.error(f"Unexpected error in {task_id}: {e}")
-                return self._get_fallback_result(task_id)
+                if attempt < max_retries - 1:
+                    delay = min(
+                        self.retry_config['base_delay'] *
+                        (self.retry_config['exponential_base'] ** attempt),
+                        self.retry_config['max_delay']
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                break
+
+        # 최종 실패 시 폴백
+        self.fallback_to_sync = True
+        self.execution_stats["fallback_used"] += 1
+        return self._get_fallback_result(task_id)
 
     def _get_fallback_result(self, task_id: str) -> Any:
         """폴백 결과 생성 (서브클래스에서 구현)"""
@@ -254,12 +317,11 @@ class BaseAsyncAgent:
 
 # ==================== 개선된 JSXContentAnalyzer ====================
 
-
 class JSXContentAnalyzer(BaseAsyncAgent):
     """콘텐츠 분석 전문 에이전트 (CrewAI 기반 에이전트 결과 데이터 통합)"""
 
     def __init__(self):
-        super().__init__()
+        super().__init__()  # BaseAsyncAgent 명시적 초기화
         self.llm = get_azure_llm()
         self.vector_manager = PDFVectorManager()
         self.logger = get_agent_logger()
@@ -357,22 +419,24 @@ class JSXContentAnalyzer(BaseAsyncAgent):
         )
 
     async def analyze_content_for_jsx(self, content: Dict, section_index: int, total_sections: int) -> Dict:
-        """JSX 생성을 위한 콘텐츠 분석 (개선된 버전)"""
-
+        """JSX 생성을 위한 콘텐츠 분석 (개선된 RecursionError 처리)"""
         # 재귀 깊이 체크
         if self._should_use_sync():
             return await self._analyze_content_for_jsx_sync_mode(content, section_index, total_sections)
-
+        
         try:
             return await self._analyze_content_for_jsx_batch_mode(content, section_index, total_sections)
-        except (RecursionError, CircuitBreakerOpenError) as e:
-            self.logger.warning(f"Switching to sync mode due to: {e}")
+        except RecursionError as e:
+            self.logger.warning(f"RecursionError detected, switching to sync mode: {e}")
+            self.fallback_to_sync = True
+            return await self._analyze_content_for_jsx_sync_mode(content, section_index, total_sections)
+        except CircuitBreakerOpenError as e:
+            self.logger.warning(f"Circuit breaker open, switching to sync mode: {e}")
             self.fallback_to_sync = True
             return await self._analyze_content_for_jsx_sync_mode(content, section_index, total_sections)
 
     async def _analyze_content_for_jsx_batch_mode(self, content: Dict, section_index: int, total_sections: int) -> Dict:
         """배치 기반 안전한 콘텐츠 분석"""
-
         task_id = f"content_analysis_{section_index}_{int(time.time())}"
 
         async def _safe_content_analysis():
@@ -389,17 +453,18 @@ class JSXContentAnalyzer(BaseAsyncAgent):
             if result and not str(result).startswith("FALLBACK_RESULT"):
                 return result
             else:
+                self.logger.warning(f"Batch mode returned fallback for section {section_index}, switching to sync mode")
                 return await self._analyze_content_for_jsx_sync_mode(content, section_index, total_sections)
 
         except Exception as e:
-            self.logger.error(
-                f"Batch mode failed for section {section_index}: {e}")
+            self.logger.error(f"Batch mode failed for section {section_index}: {e}")
             return await self._analyze_content_for_jsx_sync_mode(content, section_index, total_sections)
 
     async def _analyze_content_for_jsx_sync_mode(self, content: Dict, section_index: int, total_sections: int) -> Dict:
         """동기 모드 폴백 처리"""
-
         try:
+            self.logger.info(f"Executing content analysis in sync mode for section {section_index}/{total_sections}")
+            
             # 안전한 결과 수집
             previous_results = await self._safe_collect_results()
             binding_results = [
@@ -407,12 +472,11 @@ class JSXContentAnalyzer(BaseAsyncAgent):
             org_results = [
                 r for r in previous_results if "OrgAgent" in r.get('agent_name', '')]
 
-            print(
-                f"📊 동기 모드 결과 수집: 전체 {len(previous_results)}개, BindingAgent {len(binding_results)}개, OrgAgent {len(org_results)}개")
+            self.logger.info(
+                f"Sync mode result collection: Total {len(previous_results)}, BindingAgent {len(binding_results)}, OrgAgent {len(org_results)}")
 
             # 기본 분석 수행
-            basic_analysis = self._create_default_analysis(
-                content, section_index)
+            basic_analysis = self._create_default_analysis(content, section_index)
 
             # 에이전트 결과로 강화
             agent_enhanced_analysis = self._enhance_analysis_with_agent_results(
@@ -428,17 +492,17 @@ class JSXContentAnalyzer(BaseAsyncAgent):
                 len(previous_results), len(binding_results), len(org_results)
             )
 
-            print(
-                f"✅ 동기 모드 콘텐츠 분석 완료: {vector_enhanced_analysis.get('recommended_layout', '기본')} 레이아웃")
+            self.logger.info(
+                f"Sync mode content analysis completed: {vector_enhanced_analysis.get('recommended_layout', 'default')} layout")
+
             return vector_enhanced_analysis
 
         except Exception as e:
-            print(f"⚠️ 동기 모드 분석 실패: {e}")
+            self.logger.error(f"Sync mode analysis failed: {e}")
             return self._get_fallback_result(f"content_analysis_{section_index}")
 
     async def _execute_content_analysis_pipeline(self, content: Dict, section_index: int, total_sections: int) -> Dict:
         """개선된 콘텐츠 분석 파이프라인"""
-
         # 1단계: 이전 에이전트 결과 수집 (타임아웃 적용)
         previous_results = await self._safe_collect_results()
 
@@ -448,8 +512,8 @@ class JSXContentAnalyzer(BaseAsyncAgent):
         org_results = [
             r for r in previous_results if "OrgAgent" in r.get('agent_name', '')]
 
-        print(
-            f"📊 이전 결과 수집: 전체 {len(previous_results)}개, BindingAgent {len(binding_results)}개, OrgAgent {len(org_results)}개")
+        self.logger.info(
+            f"Previous results collected: Total {len(previous_results)}, BindingAgent {len(binding_results)}, OrgAgent {len(org_results)}")
 
         # 2단계: CrewAI Task들 생성 (안전하게)
         tasks = await self._create_analysis_tasks_safe(content, section_index, total_sections, previous_results, binding_results, org_results)
@@ -468,8 +532,9 @@ class JSXContentAnalyzer(BaseAsyncAgent):
             len(previous_results), len(binding_results), len(org_results)
         )
 
-        print(
-            f"✅ 콘텐츠 분석 완료: {vector_enhanced_analysis.get('recommended_layout', '기본')} 레이아웃 권장 (CrewAI 기반 에이전트 데이터 활용: {len(previous_results)}개)")
+        self.logger.info(
+            f"Content analysis completed: {vector_enhanced_analysis.get('recommended_layout', 'default')} layout recommended (CrewAI based agent data utilization: {len(previous_results)})")
+
         return vector_enhanced_analysis
 
     async def _safe_collect_results(self) -> List[Dict]:
@@ -481,8 +546,7 @@ class JSXContentAnalyzer(BaseAsyncAgent):
                 timeout=self.timeouts['result_collection']
             )
         except asyncio.TimeoutError:
-            self.logger.warning(
-                "Result collection timeout, using empty results")
+            self.logger.warning("Result collection timeout, using empty results")
             return []
         except Exception as e:
             self.logger.error(f"Result collection failed: {e}")
@@ -503,8 +567,7 @@ class JSXContentAnalyzer(BaseAsyncAgent):
                 content, section_index, total_sections)
             agent_result_analysis_task = self._create_agent_result_analysis_task(
                 previous_results, binding_results, org_results)
-            vector_enhancement_task = self._create_vector_enhancement_task(
-                content)
+            vector_enhancement_task = self._create_vector_enhancement_task(content)
 
             return [content_analysis_task, agent_result_analysis_task, vector_enhancement_task]
         except Exception as e:
@@ -513,7 +576,7 @@ class JSXContentAnalyzer(BaseAsyncAgent):
             return [self._create_content_analysis_task(content, section_index, total_sections)]
 
     async def _execute_crew_safe(self, tasks: List[Task]) -> Any:
-        """안전한 CrewAI 실행"""
+        """안전한 CrewAI 실행 (개선된 동기 메서드 처리)"""
         try:
             # CrewAI Crew 생성
             analysis_crew = Crew(
@@ -524,12 +587,12 @@ class JSXContentAnalyzer(BaseAsyncAgent):
                 verbose=True
             )
 
-            # Circuit Breaker와 타임아웃 적용하여 Crew 실행
+            # 개선된 CrewAI 실행 (동기 메서드 처리)
             async def _crew_execution():
                 loop = asyncio.get_event_loop()
                 return await loop.run_in_executor(None, analysis_crew.kickoff)
 
-            crew_result = await self.circuit_breaker.call(
+            crew_result = await self.circuit_breaker.execute(
                 asyncio.wait_for,
                 _crew_execution(),
                 timeout=self.timeouts['crew_execution']
@@ -537,8 +600,11 @@ class JSXContentAnalyzer(BaseAsyncAgent):
 
             return crew_result
 
-        except (CircuitBreakerOpenError, asyncio.TimeoutError) as e:
-            self.logger.warning(f"CrewAI execution failed: {e}")
+        except CircuitBreakerOpenError as e:
+            self.logger.warning(f"CrewAI execution failed due to circuit breaker: {e}")
+            return None
+        except asyncio.TimeoutError as e:
+            self.logger.warning(f"CrewAI execution timed out: {e}")
             return None
         except Exception as e:
             self.logger.error(f"Unexpected CrewAI error: {e}")
@@ -563,8 +629,7 @@ class JSXContentAnalyzer(BaseAsyncAgent):
                 timeout=self.timeouts['post_processing']
             )
         except asyncio.TimeoutError:
-            self.logger.warning(
-                "Crew result processing timeout, using fallback")
+            self.logger.warning("Crew result processing timeout, using fallback")
             return await self._create_fallback_analysis(content, section_index, previous_results, binding_results, org_results)
         except Exception as e:
             self.logger.error(f"Crew result processing failed: {e}")
@@ -578,8 +643,7 @@ class JSXContentAnalyzer(BaseAsyncAgent):
                 timeout=self.timeouts['vector_enhancement']
             )
         except asyncio.TimeoutError:
-            self.logger.warning(
-                "Vector enhancement timeout, using basic analysis")
+            self.logger.warning("Vector enhancement timeout, using basic analysis")
             basic_analysis['vector_enhanced'] = False
             return basic_analysis
         except Exception as e:
@@ -641,7 +705,7 @@ class JSXContentAnalyzer(BaseAsyncAgent):
     ) -> Dict:
         """폴백 분석 결과 생성"""
         basic_analysis = self._create_default_analysis(content, section_index)
-
+        
         # 에이전트 결과가 있다면 간단히 적용
         if previous_results:
             basic_analysis = self._enhance_analysis_with_agent_results(
@@ -724,17 +788,15 @@ JSON 형태로 분석 결과를 구조화하여 제공하세요.
 
 **특별 분석 요구사항:**
 1. BindingAgent 결과에서 이미지 배치 전략 추출
-- 그리드/갤러리 패턴 식별
-- 시각적 일관성 평가
-
+   - 그리드/갤러리 패턴 식별
+   - 시각적 일관성 평가
 2. OrgAgent 결과에서 텍스트 구조 분석
-- 레이아웃 복잡도 평가
-- 타이포그래피 스타일 추출
-
+   - 레이아웃 복잡도 평가
+   - 타이포그래피 스타일 추출
 3. 성공 패턴 학습
-- 높은 신뢰도를 보인 접근법 식별
-- 레이아웃 권장사항 도출
-- 품질 향상 전략 제안
+   - 높은 신뢰도를 보인 접근법 식별
+   - 레이아웃 권장사항 도출
+   - 품질 향상 전략 제안
 
 **출력 요구사항:**
 - 에이전트별 인사이트 요약
@@ -778,8 +840,8 @@ PDF 벡터 데이터베이스를 활용하여 콘텐츠 분석 결과를 강화�
         )
 
     async def _process_crew_analysis_result(self, crew_result, content: Dict, section_index: int,
-                                            previous_results: List[Dict], binding_results: List[Dict],
-                                            org_results: List[Dict]) -> Dict:
+                                          previous_results: List[Dict], binding_results: List[Dict],
+                                          org_results: List[Dict]) -> Dict:
         """CrewAI 분석 결과 처리 (기존 메서드 완전 보존)"""
         try:
             # CrewAI 결과에서 데이터 추출
@@ -789,8 +851,7 @@ PDF 벡터 데이터베이스를 활용하여 콘텐츠 분석 결과를 강화�
                 result_text = str(crew_result)
 
             # 기본 분석 수행
-            basic_analysis = self._create_default_analysis(
-                content, section_index)
+            basic_analysis = self._create_default_analysis(content, section_index)
 
             # 에이전트 결과 데이터로 분석 강화
             agent_enhanced_analysis = self._enhance_analysis_with_agent_results(
@@ -807,18 +868,17 @@ PDF 벡터 데이터베이스를 활용하여 콘텐츠 분석 결과를 강화�
             return vector_enhanced_analysis
 
         except Exception as e:
-            print(f"⚠️ CrewAI 결과 처리 실패: {e}")
+            self.logger.error(f"CrewAI result processing failed: {e}")
             # 폴백: 기존 방식으로 처리
-            basic_analysis = self._create_default_analysis(
-                content, section_index)
+            basic_analysis = self._create_default_analysis(content, section_index)
             agent_enhanced_analysis = self._enhance_analysis_with_agent_results(
                 content, basic_analysis, previous_results, binding_results, org_results
             )
             return await self._enhance_analysis_with_vectors(content, agent_enhanced_analysis)
 
     def _enhance_analysis_with_agent_results(self, content: Dict, basic_analysis: Dict,
-                                             previous_results: List[Dict], binding_results: List[Dict],
-                                             org_results: List[Dict]) -> Dict:
+                                           previous_results: List[Dict], binding_results: List[Dict],
+                                           org_results: List[Dict]) -> Dict:
         """에이전트 결과 데이터로 분석 강화 (기존 메서드 완전 보존)"""
         enhanced_analysis = basic_analysis.copy()
         enhanced_analysis['agent_results_count'] = len(previous_results)
@@ -866,7 +926,7 @@ PDF 벡터 데이터베이스를 활용하여 콘텐츠 분석 결과를 강화�
                 enhanced_analysis['recommended_layout'] = 'gallery'
 
             enhanced_analysis['binding_insights_applied'] = True
-            print(f" 🖼️ BindingAgent 인사이트 적용: 이미지 전략 조정")
+            self.logger.info("BindingAgent insights applied: image strategy adjusted")
 
         # OrgAgent 결과 특별 활용
         if org_results:
@@ -882,7 +942,7 @@ PDF 벡터 데이터베이스를 활용하여 콘텐츠 분석 결과를 강화�
                 enhanced_analysis['typography_style'] = '미니멀 모던'
 
             enhanced_analysis['org_insights_applied'] = True
-            print(f" 📄 OrgAgent 인사이트 적용: 텍스트 구조 조정")
+            self.logger.info("OrgAgent insights applied: text structure adjusted")
 
         # 가장 성공적인 레이아웃 패턴 적용
         if layout_recommendations:
@@ -921,12 +981,9 @@ PDF 벡터 데이터베이스를 활용하여 콘텐츠 분석 결과를 강화�
                 if vector_layout_recommendation:
                     enhanced_analysis['recommended_layout'] = vector_layout_recommendation
 
-                enhanced_analysis['layout_confidence'] = self._calculate_vector_confidence(
-                    similar_layouts)
-                enhanced_analysis['vector_color_palette'] = self._get_vector_color_palette(
-                    similar_layouts)
-                enhanced_analysis['vector_typography'] = self._get_vector_typography_style(
-                    similar_layouts)
+                enhanced_analysis['layout_confidence'] = self._calculate_vector_confidence(similar_layouts)
+                enhanced_analysis['vector_color_palette'] = self._get_vector_color_palette(similar_layouts)
+                enhanced_analysis['vector_typography'] = self._get_vector_typography_style(similar_layouts)
 
                 return enhanced_analysis
             else:
@@ -934,7 +991,7 @@ PDF 벡터 데이터베이스를 활용하여 콘텐츠 분석 결과를 강화�
                 return basic_analysis
 
         except Exception as e:
-            print(f"⚠️ 벡터 데이터 분석 강화 실패: {e}")
+            self.logger.error(f"Vector data analysis enhancement failed: {e}")
             basic_analysis['vector_enhanced'] = False
             return basic_analysis
 
@@ -978,7 +1035,7 @@ PDF 벡터 데이터베이스를 활용하여 콘텐츠 분석 결과를 강화�
     def _get_vector_color_palette(self, similar_layouts: List[Dict]) -> str:
         """벡터 데이터 기반 색상 팔레트 (기존 메서드 완전 보존)"""
         pdf_sources = [layout.get('pdf_name', '').lower()
-                       for layout in similar_layouts]
+                      for layout in similar_layouts]
 
         if any('travel' in source for source in pdf_sources):
             return "여행 블루 팔레트"
@@ -1032,3 +1089,48 @@ PDF 벡터 데이터베이스를 활용하여 콘텐츠 분석 결과를 강화�
             "color_palette": "차분한 블루",
             "typography_style": "모던"
         }
+
+    # 시스템 관리 메서드들
+    def get_execution_statistics(self) -> Dict:
+        """실행 통계 조회"""
+        return {
+            **self.execution_stats,
+            "success_rate": (
+                self.execution_stats["successful_executions"] / 
+                max(self.execution_stats["total_attempts"], 1)
+            ) * 100,
+            "circuit_breaker_state": self.circuit_breaker.state.value
+        }
+
+    def reset_system_state(self) -> None:
+        """시스템 상태 리셋"""
+        self.circuit_breaker.failure_count = 0
+        self.circuit_breaker.state = CircuitState.CLOSED
+        self.fallback_to_sync = False
+        self.execution_stats = {
+            "total_attempts": 0,
+            "successful_executions": 0,
+            "fallback_used": 0,
+            "circuit_breaker_triggered": 0,
+            "timeout_occurred": 0
+        }
+
+    def get_system_info(self) -> Dict:
+        """시스템 정보 조회"""
+        return {
+            "class_name": self.__class__.__name__,
+            "version": "2.0_standardized_resilient",
+            "features": [
+                "표준화된 인프라 클래스 사용",
+                "개선된 RecursionError 처리",
+                "통일된 Circuit Breaker 인터페이스",
+                "안전한 CrewAI 동기 메서드 처리",
+                "일관된 로깅 시스템"
+            ],
+            "execution_modes": ["batch_resilient", "sync_fallback"]
+        }
+
+    # 기존 동기 버전 메서드 (호환성 유지)
+    def analyze_content_for_jsx_sync(self, content: Dict, section_index: int, total_sections: int) -> Dict:
+        """동기 버전 콘텐츠 분석 (호환성 유지)"""
+        return asyncio.run(self.analyze_content_for_jsx(content, section_index, total_sections))

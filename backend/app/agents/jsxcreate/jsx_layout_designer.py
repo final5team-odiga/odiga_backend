@@ -2,19 +2,22 @@ import asyncio
 import time
 import sys
 import inspect
-from typing import Dict, List, Callable, Any
+import logging
+from typing import Dict, List, Callable, Any, Optional
 from dataclasses import dataclass, field
 from enum import Enum
 import json
 import re
 
-from crewai import Agent, Task
+from crewai import Agent, Task, Crew, Process
 from custom_llm import get_azure_llm
 from utils.agent_decision_logger import get_agent_logger, get_complete_data_manager
 
-# --- Infrastructure Classes ---
+# ==================== 표준화된 기본 인프라 클래스들 ====================
+
 @dataclass
 class WorkItem:
+    """표준화된 작업 항목 정의"""
     id: str
     task_func: Callable
     args: tuple = field(default_factory=tuple)
@@ -23,6 +26,7 @@ class WorkItem:
     max_retries: int = 3
     current_retry: int = 0
     timeout: float = 300.0
+    created_at: float = field(default_factory=time.time)
 
     def __lt__(self, other):
         return self.priority < other.priority
@@ -33,6 +37,7 @@ class CircuitBreakerState(Enum):
     HALF_OPEN = "HALF_OPEN"
 
 class CircuitBreaker:
+    """표준화된 Circuit Breaker 패턴 구현 (execute 메서드로 통일)"""
     def __init__(self, failure_threshold: int = 8, recovery_timeout: float = 30.0, half_open_attempts: int = 1):
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
@@ -42,11 +47,13 @@ class CircuitBreaker:
         self._failure_count = 0
         self._success_count = 0
         self._last_failure_time = None
+        self.logger = logging.getLogger(self.__class__.__name__)
 
     @property
     def state(self):
         if self._state == CircuitBreakerState.OPEN:
             if self._last_failure_time and (time.monotonic() - self._last_failure_time) > self.recovery_timeout:
+                self.logger.info("CircuitBreaker recovery timeout elapsed. Transitioning to HALF_OPEN.")
                 self._state = CircuitBreakerState.HALF_OPEN
                 self._success_count = 0
         return self._state
@@ -55,15 +62,18 @@ class CircuitBreaker:
         self._failure_count += 1
         self._last_failure_time = time.monotonic()
         if self.state == CircuitBreakerState.HALF_OPEN:
+            self.logger.warning("CircuitBreaker failed in HALF_OPEN state. Transitioning back to OPEN.")
             self._state = CircuitBreakerState.OPEN
             self._failure_count = self.failure_threshold
         elif self._failure_count >= self.failure_threshold and self.state == CircuitBreakerState.CLOSED:
+            self.logger.error(f"CircuitBreaker failure threshold {self.failure_threshold} reached. Transitioning to OPEN.")
             self._state = CircuitBreakerState.OPEN
             
     def record_success(self):
         if self.state == CircuitBreakerState.HALF_OPEN:
             self._success_count += 1
             if self._success_count >= self.half_open_attempts:
+                self.logger.info("CircuitBreaker successful in HALF_OPEN state. Transitioning to CLOSED.")
                 self._state = CircuitBreakerState.CLOSED
                 self._reset_counts()
         elif self.state == CircuitBreakerState.CLOSED:
@@ -74,10 +84,13 @@ class CircuitBreaker:
         self._success_count = 0
 
     async def execute(self, task_func: Callable, *args, **kwargs) -> Any:
+        """표준화된 execute 메서드 (call에서 execute로 통일)"""
         if self.state == CircuitBreakerState.OPEN:
-            raise Exception(f"CircuitBreaker is OPEN for {getattr(task_func, '__name__', 'unknown_task')}. Call rejected.")
+            self.logger.warning(f"CircuitBreaker is OPEN for {getattr(task_func, '__name__', 'unknown_task')}. Call rejected.")
+            raise CircuitBreakerOpenError(f"CircuitBreaker is OPEN for {getattr(task_func, '__name__', 'unknown_task')}. Call rejected.")
 
         try:
+            # 개선된 동기 메서드 처리 (CrewAI kickoff 등)
             if inspect.iscoroutinefunction(task_func):
                 result = await task_func(*args, **kwargs)
             else:
@@ -86,21 +99,30 @@ class CircuitBreaker:
             self.record_success()
             return result
         except Exception as e:
+            self.logger.error(f"CircuitBreaker recorded failure for {getattr(task_func, '__name__', 'unknown_task')}: {e}")
             self.record_failure()
             raise e
 
+class CircuitBreakerOpenError(Exception):
+    """Circuit Breaker가 열린 상태일 때 발생하는 예외"""
+    pass
+
 class AsyncWorkQueue:
+    """표준화된 비동기 작업 큐 (결과 저장 형식 통일)"""
     def __init__(self, max_workers: int = 2, max_queue_size: int = 50):
         self._queue = asyncio.PriorityQueue(max_queue_size if max_queue_size > 0 else 0)
         self._workers: List[asyncio.Task] = []
         self._max_workers = max_workers
         self._running = False
-        self._results: Dict[str, Any] = {}
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self._results: Dict[str, Any] = {}  # 표준화된 결과 저장 형식
 
     async def _worker(self, worker_id: int):
+        self.logger.info(f"Worker {worker_id} starting.")
         while self._running or not self._queue.empty():
             try:
                 item: WorkItem = await asyncio.wait_for(self._queue.get(), timeout=1.0)
+                self.logger.info(f"Worker {worker_id} processing task {item.id} (retry {item.current_retry})")
                 try:
                     if inspect.iscoroutinefunction(item.task_func):
                         result = await asyncio.wait_for(item.task_func(*item.args, **item.kwargs), timeout=item.timeout)
@@ -110,11 +132,15 @@ class AsyncWorkQueue:
                             loop.run_in_executor(None, lambda: item.task_func(*item.args, **item.kwargs)),
                             timeout=item.timeout
                         )
+                    # 표준화된 결과 저장 형식
                     self._results[item.id] = {"status": "success", "result": result}
+                    self.logger.info(f"Task {item.id} completed successfully by worker {worker_id}.")
                 except asyncio.TimeoutError:
                     self._results[item.id] = {"status": "timeout", "error": f"Task {item.id} timed out"}
+                    self.logger.error(f"Task {item.id} timed out in worker {worker_id}.")
                 except Exception as e:
                     self._results[item.id] = {"status": "error", "error": str(e)}
+                    self.logger.error(f"Task {item.id} failed in worker {worker_id}: {e}")
                 finally:
                     self._queue.task_done()
             except asyncio.TimeoutError:
@@ -122,15 +148,19 @@ class AsyncWorkQueue:
                     break
                 continue
             except Exception as e:
+                self.logger.error(f"Worker {worker_id} encountered an unexpected error: {e}")
                 await asyncio.sleep(1)
+        self.logger.info(f"Worker {worker_id} stopping.")
 
     async def start(self):
         if not self._running:
             self._running = True
+            self.logger.info(f"Starting {self._max_workers} workers.")
             self._workers = [asyncio.create_task(self._worker(i)) for i in range(self._max_workers)]
 
     async def stop(self, graceful=True):
         if self._running:
+            self.logger.info("Stopping work queue...")
             self._running = False
             if graceful:
                 await self._queue.join()
@@ -140,26 +170,71 @@ class AsyncWorkQueue:
                     worker_task.cancel()
                 await asyncio.gather(*self._workers, return_exceptions=True)
                 self._workers.clear()
+            self.logger.info("Work queue stopped.")
 
     async def enqueue_work(self, item: WorkItem) -> bool:
         if not self._running:
-             await self.start()
+            await self.start()
         try:
             await self._queue.put(item)
+            self.logger.debug(f"Enqueued task {item.id} with priority {item.priority}")
             return True
         except asyncio.QueueFull:
+            self.logger.warning(f"Queue is full. Could not enqueue task {item.id}")
             return False
+
+    async def get_result(self, task_id: str, wait_timeout: Optional[float] = None) -> Any:
+        """개선된 결과 조회 (pop 대신 조회만)"""
+        start_time = time.monotonic()
+        while True:
+            if task_id in self._results:
+                result_data = self._results[task_id]
+                if result_data["status"] == "success":
+                    return result_data["result"]
+                elif result_data["status"] == "error":
+                    raise Exception(result_data["error"])
+                elif result_data["status"] == "timeout":
+                    raise asyncio.TimeoutError(result_data["error"])
+            if wait_timeout is not None and (time.monotonic() - start_time) > wait_timeout:
+                raise asyncio.TimeoutError(f"Timeout waiting for result of task {task_id}")
+            await asyncio.sleep(0.1)
+
+    async def clear_result(self, task_id: str):
+        """명시적인 결과 제거 메서드"""
+        if task_id in self._results:
+            del self._results[task_id]
+            self.logger.debug(f"Cleared result for task {task_id}")
 
     async def clear_results(self):
         self._results.clear()
 
 class BaseAsyncAgent:
+    """표준화된 기본 비동기 에이전트 클래스"""
     def __init__(self):
         self.work_queue = AsyncWorkQueue(max_workers=2, max_queue_size=50)
         self.circuit_breaker = CircuitBreaker(failure_threshold=8, recovery_timeout=30.0)
         self.recursion_threshold = 800  # 수정된 값 적용
         self.fallback_to_sync = False
         self._recursion_check_buffer = 50
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+        # 표준화된 타임아웃 설정
+        self.timeouts = {
+            'crew_kickoff': 90.0,
+            'result_collection': 15.0,
+            'vector_search': 10.0,
+            'agent_creation': 20.0,
+            'total_analysis': 180.0,
+            'post_processing': 25.0
+        }
+
+        # 표준화된 재시도 설정
+        self.retry_config = {
+            'max_attempts': 3,
+            'base_delay': 1.0,
+            'max_delay': 8.0,
+            'exponential_base': 2
+        }
 
         # 실행 통계 추가
         self.execution_stats = {
@@ -179,64 +254,110 @@ class BaseAsyncAgent:
         """동기 모드로 전환할지 판단"""
         current_depth = self._check_recursion_depth()
         if current_depth >= sys.getrecursionlimit() - self._recursion_check_buffer:
+            self.logger.warning(f"Approaching recursion limit ({current_depth}/{sys.getrecursionlimit()}). Switching to sync mode.")
             self.fallback_to_sync = True
             return True
         return self.fallback_to_sync
 
-    async def execute_with_resilience(self, task_func: Callable, task_id: str, 
-                                    timeout: float = 300.0, max_retries: int = 3, 
-                                    *args, **kwargs) -> Any:
-        """복원력 있는 작업 실행"""
+    async def execute_with_resilience(
+        self,
+        task_id: str,
+        task_func: Callable,
+        args: tuple = (),
+        kwargs: dict = None,
+        max_retries: int = 2,
+        initial_timeout: float = 180.0,
+        backoff_factor: float = 1.5,
+        circuit_breaker: CircuitBreaker = None
+    ) -> Any:
+        """표준화된 복원력 있는 작업 실행"""
+        if kwargs is None: 
+            kwargs = {}
+        
         current_retry = 0
+        current_timeout = initial_timeout
         last_exception = None
 
+        actual_circuit_breaker = circuit_breaker if circuit_breaker else self.circuit_breaker
+
         while current_retry <= max_retries:
+            task_full_id = f"{task_id}-attempt-{current_retry + 1}"
+            self.logger.info(f"Attempt {current_retry + 1}/{max_retries + 1} for task '{task_full_id}' with timeout {current_timeout}s.")
+            
             try:
                 if self._check_recursion_depth() >= sys.getrecursionlimit() - self._recursion_check_buffer:
-                    raise RecursionError(f"Preemptive recursion depth stop for {task_id}")
+                    self.logger.warning(f"Preemptive recursion stop for '{task_full_id}'.")
+                    raise RecursionError(f"Preemptive recursion depth stop for {task_full_id}")
 
                 result = await asyncio.wait_for(
-                    self.circuit_breaker.execute(task_func, *args, **kwargs),
-                    timeout=timeout
+                    actual_circuit_breaker.execute(task_func, *args, **kwargs),
+                    timeout=current_timeout
                 )
+                
+                self.logger.info(f"Task '{task_full_id}' completed successfully.")
                 return result
             except asyncio.TimeoutError as e:
                 last_exception = e
                 self.execution_stats["timeout_occurred"] += 1
+                self.logger.warning(f"Task '{task_full_id}' timed out after {current_timeout}s.")
             except RecursionError as e:
                 last_exception = e
+                self.logger.error(f"Task '{task_full_id}' failed due to RecursionError: {e}")
                 self.fallback_to_sync = True
-                raise e
-            except Exception as e:
-                if "CircuitBreaker is OPEN" in str(e):
-                    self.execution_stats["circuit_breaker_triggered"] += 1
+                raise e  # RecursionError는 즉시 상위로 전파하여 동기 모드 전환 유도
+            except CircuitBreakerOpenError as e:
+                self.execution_stats["circuit_breaker_triggered"] += 1
+                self.logger.warning(f"Task '{task_full_id}' rejected by CircuitBreaker.")
                 last_exception = e
+            except Exception as e:
+                last_exception = e
+                self.logger.error(f"Task '{task_full_id}' failed: {e}")
 
             current_retry += 1
             if current_retry <= max_retries:
-                backoff_time = min((2 ** (current_retry - 1)), 30)
-                await asyncio.sleep(backoff_time)
+                sleep_duration = (backoff_factor ** (current_retry - 1))
+                self.logger.info(f"Retrying task '{task_id}' in {sleep_duration}s...")
+                await asyncio.sleep(sleep_duration)
+                current_timeout *= backoff_factor
+            else:
+                self.logger.error(f"Task '{task_id}' failed after {max_retries + 1} attempts.")
 
         if last_exception:
             raise last_exception
         else:
-            raise Exception(f"Task '{task_id}' failed after max retries.")
+            raise Exception(f"Task '{task_id}' failed after max retries without a specific exception.")
 
-    def _get_fallback_result(self, task_id: str, analysis: Dict, component_name: str, agent_analysis: Dict) -> Dict:
-        """폴백 결과 생성"""
-        self.execution_stats["fallback_used"] += 1
-        return self._create_agent_based_default_design_sync_mode(analysis, component_name, agent_analysis)
+    def _get_fallback_result(self, task_id: str) -> Any:
+        """폴백 결과 생성 (서브클래스에서 구현)"""
+        return f"FALLBACK_RESULT_FOR_{task_id}"
+
+# ==================== 개선된 JSXLayoutDesigner ====================
 
 class JSXLayoutDesigner(BaseAsyncAgent):
     """레이아웃 설계 전문 에이전트 (에이전트 결과 데이터 기반)"""
 
     def __init__(self):
-        super().__init__()  # BaseAsyncAgent 초기화
+        super().__init__()  # BaseAsyncAgent 명시적 초기화
         self.llm = get_azure_llm()
         self.logger = get_agent_logger()
         self.result_manager = get_complete_data_manager()
 
+        # 레이아웃 설계 특화 타임아웃 설정
+        self.timeouts.update({
+            'layout_design': 120.0,
+            'crew_execution': 100.0,
+            'agent_result_analysis': 30.0,
+            'design_validation': 20.0
+        })
+
+    def _get_fallback_result(self, task_id: str, analysis: Dict, component_name: str, agent_analysis: Dict) -> Dict:
+        """레이아웃 설계 전용 폴백 결과 생성"""
+        self.logger.warning(f"Generating fallback design result for task_id: {task_id}")
+        self.execution_stats["fallback_used"] += 1
+        return self._create_agent_based_default_design_sync_mode(analysis, component_name, agent_analysis)
+
     def create_agent(self):
+        """에이전트 생성 (기존 메서드 완전 보존)"""
         return Agent(
             role="에이전트 결과 데이터 기반 매거진 레이아웃 아키텍트",
             goal="이전 에이전트들의 모든 결과 데이터, template_data.json, PDF 벡터 데이터를 종합 분석하여 완벽한 JSX 레이아웃 구조를 설계",
@@ -253,7 +374,7 @@ class JSXLayoutDesigner(BaseAsyncAgent):
 2. template_data.json의 콘텐츠 구조
 3. PDF 벡터 데이터의 레이아웃 패턴
 4. 에이전트 협업 품질 지표
-5, 존재하는 모든 콘텐츠 데이터와 이미지 URL을 사용해야함함
+5. 존재하는 모든 콘텐츠 데이터와 이미지 URL을 사용해야함
 
 **설계 철학:**
 "진정한 매거진 레이아웃은 에이전트들의 협업 결과를 존중하면서도 독자의 인지 과정을 과학적으로 설계한 시스템입니다. jsx_templates에 의존하지 않고 순수한 에이전트 데이터만으로 최적의 레이아웃을 창조합니다."
@@ -264,9 +385,8 @@ class JSXLayoutDesigner(BaseAsyncAgent):
             llm=self.llm
         )
 
-    # 기존 public 메서드 (이름 변경 없이 내부 로직만 개선)
     async def design_layout_structure(self, content: Dict, analysis: Dict, component_name: str) -> Dict:
-        """에이전트 결과 데이터 기반 레이아웃 구조 설계"""
+        """에이전트 결과 데이터 기반 레이아웃 구조 설계 (개선된 RecursionError 처리)"""
         self.execution_stats["total_attempts"] += 1
 
         # 재귀 깊이 체크
@@ -275,77 +395,51 @@ class JSXLayoutDesigner(BaseAsyncAgent):
         
         try:
             return await self._design_layout_structure_batch_mode(content, analysis, component_name)
-        except RecursionError:
+        except RecursionError as e:
+            self.logger.warning(f"RecursionError detected, switching to sync mode: {e}")
+            self.fallback_to_sync = True
+            return await self._design_layout_structure_sync_mode(content, analysis, component_name)
+        except CircuitBreakerOpenError as e:
+            self.logger.warning(f"Circuit breaker open, switching to sync mode: {e}")
             self.fallback_to_sync = True
             return await self._design_layout_structure_sync_mode(content, analysis, component_name)
         except Exception as e:
-            print(f"⚠️ 배치 모드 실패, 동기 모드로 폴백: {e}")
+            self.logger.error(f"⚠️ 배치 모드 실패, 동기 모드로 폴백: {e}")
             return await self._design_layout_structure_sync_mode(content, analysis, component_name)
 
-    # 새로운 배치 처리 메서드
     async def _design_layout_structure_batch_mode(self, content: Dict, analysis: Dict, component_name: str) -> Dict:
         """배치 기반 안전한 처리"""
-        print(f"📚 수집된 에이전트 결과 및 학습 인사이트 수집 시작...")
+        task_id = f"layout_design_{component_name}_{int(time.time())}"
+
+        async def _safe_layout_design():
+            return await self._execute_layout_design_pipeline(content, analysis, component_name)
 
         try:
-            # 복원력 있는 데이터 수집
-            all_agent_results = await self.execute_with_resilience(
-                self.result_manager.get_all_outputs,
-                f"get_all_outputs_{component_name}",
-                timeout=60.0,
-                max_retries=3,
-                exclude_agent="JSXLayoutDesigner"
-            )
-
-            learning_insights = await self.execute_with_resilience(
-                self.logger.get_learning_insights,
-                f"get_learning_insights_{component_name}",
-                timeout=30.0,
-                max_retries=3,
-                agent_name="JSXLayoutDesigner"
-            )
-
-            print(f"📚 수집된 에이전트 결과: {len(all_agent_results)}개")
-            print(f"🧠 학습 인사이트: {len(learning_insights.get('recommendations', []))}개")
-
-            # 에이전트 데이터 분석
-            agent_data_analysis = await self._analyze_all_agent_results(all_agent_results)
-
-            # CrewAI 에이전트 생성 및 실행
-            agent = self.create_agent()
-            design_task = self._create_design_task(content, analysis, component_name, all_agent_results, learning_insights, agent_data_analysis)
-
-            # 복원력 있는 CrewAI 실행
             result = await self.execute_with_resilience(
-                agent.execute_task,
-                f"execute_task_{component_name}",
-                timeout=180.0,
-                max_retries=2,
-                task=design_task
+                task_id=task_id,
+                task_func=_safe_layout_design,
+                initial_timeout=self.timeouts['layout_design'],
+                max_retries=2
             )
 
-            # 결과 파싱 및 처리
-            design_result = await self._parse_design_result_with_agent_data(str(result), analysis, agent_data_analysis)
-
-            # 결과 저장
-            await self._store_design_result(component_name, design_result, content, analysis, all_agent_results, learning_insights)
-
-            self.execution_stats["successful_executions"] += 1
-            print(f"✅ 에이전트 데이터 기반 레이아웃 설계 완료: {design_result.get('layout_type', '기본')} 구조")
-            return design_result
+            if result and not str(result).startswith("FALLBACK_RESULT"):
+                return result
+            else:
+                self.logger.warning(f"Batch mode returned fallback for {component_name}, switching to sync mode")
+                return await self._design_layout_structure_sync_mode(content, analysis, component_name)
 
         except Exception as e:
-            print(f"⚠️ 레이아웃 설계 실패 (배치 모드): {e}")
-            raise
+            self.logger.error(f"Batch mode failed for {component_name}: {e}")
+            return await self._design_layout_structure_sync_mode(content, analysis, component_name)
 
     async def _design_layout_structure_sync_mode(self, content: Dict, analysis: Dict, component_name: str) -> Dict:
         """동기 모드 폴백 처리"""
-        print(f"🔄 동기 폴백 모드로 레이아웃 설계 실행: {component_name}")
-
         try:
-            # 간소화된 데이터 수집
-            all_agent_results = await self.result_manager.get_all_outputs(exclude_agent="JSXLayoutDesigner")
-            learning_insights = await self.logger.get_learning_insights("JSXLayoutDesigner")
+            self.logger.info(f"🔄 동기 폴백 모드로 레이아웃 설계 실행: {component_name}")
+            
+            # 안전한 결과 수집
+            all_agent_results = await self._safe_collect_results()
+            learning_insights = await self._safe_get_learning_insights()
             
             agent_data_analysis = await self._analyze_all_agent_results(all_agent_results)
             
@@ -353,19 +447,200 @@ class JSXLayoutDesigner(BaseAsyncAgent):
             design_result = self._create_agent_based_default_design_sync_mode(analysis, component_name, agent_data_analysis)
             
             # 간소화된 결과 저장
-            await self._store_design_result(component_name, design_result, content, analysis, all_agent_results, learning_insights, mode="sync_fallback")
+            await self._safe_store_design_result(component_name, design_result, content, analysis, all_agent_results, learning_insights, mode="sync_fallback")
             
-            print(f"✅ 동기 모드 레이아웃 설계 완료: {design_result.get('layout_type', '기본')} 구조")
+            self.logger.info(f"✅ 동기 모드 레이아웃 설계 완료: {design_result.get('layout_type', '기본')} 구조")
             return design_result
 
         except Exception as e:
-            print(f"⚠️ 동기 모드에서도 실패: {e}")
+            self.logger.error(f"⚠️ 동기 모드에서도 실패: {e}")
             # 최종 폴백
             return self._create_agent_based_default_design_sync_mode(analysis, component_name, {})
 
-    # 모든 기존 private 메서드들 유지
+    async def _execute_layout_design_pipeline(self, content: Dict, analysis: Dict, component_name: str) -> Dict:
+        """개선된 레이아웃 설계 파이프라인"""
+        # 1단계: 이전 에이전트 결과 수집 (타임아웃 적용)
+        all_agent_results = await self._safe_collect_results()
+        learning_insights = await self._safe_get_learning_insights()
+
+        self.logger.info(f"📚 수집된 에이전트 결과: {len(all_agent_results)}개")
+        self.logger.info(f"🧠 학습 인사이트: {len(learning_insights.get('recommendations', []))}개")
+
+        # 2단계: 에이전트 데이터 분석
+        agent_data_analysis = await self._analyze_all_agent_results(all_agent_results)
+
+        # 3단계: CrewAI Task들 생성 (안전하게)
+        tasks = await self._create_design_tasks_safe(content, analysis, component_name, all_agent_results, learning_insights, agent_data_analysis)
+
+        # 4단계: CrewAI Crew 실행 (Circuit Breaker 적용)
+        crew_result = await self._execute_crew_safe(tasks)
+
+        # 5단계: 결과 처리 및 설계 (타임아웃 적용)
+        design_result = await self._process_crew_design_result_safe(
+            crew_result, content, analysis, component_name, all_agent_results, learning_insights, agent_data_analysis
+        )
+
+        # 6단계: 결과 저장
+        await self._safe_store_design_result(
+            component_name, design_result, content, analysis, all_agent_results, learning_insights
+        )
+
+        self.logger.info(f"✅ 에이전트 데이터 기반 레이아웃 설계 완료: {design_result.get('layout_type', '기본')} 구조 (CrewAI based agent data utilization: {len(all_agent_results)})")
+        self.execution_stats["successful_executions"] += 1
+        return design_result
+
+    async def _safe_collect_results(self) -> List[Dict]:
+        """안전한 결과 수집"""
+        try:
+            return await asyncio.wait_for(
+                self.result_manager.get_all_outputs(exclude_agent="JSXLayoutDesigner"),
+                timeout=self.timeouts['result_collection']
+            )
+        except asyncio.TimeoutError:
+            self.logger.warning("Result collection timeout, using empty results")
+            return []
+        except Exception as e:
+            self.logger.error(f"Result collection failed: {e}")
+            return []
+
+    async def _safe_get_learning_insights(self) -> Dict:
+        """안전한 학습 인사이트 수집"""
+        try:
+            return await asyncio.wait_for(
+                self.logger.get_learning_insights("JSXLayoutDesigner"),
+                timeout=10.0
+            )
+        except asyncio.TimeoutError:
+            self.logger.warning("Learning insights collection timeout, using empty insights")
+            return {"recommendations": []}
+        except Exception as e:
+            self.logger.error(f"Learning insights collection failed: {e}")
+            return {"recommendations": []}
+
+    async def _create_design_tasks_safe(
+        self,
+        content: Dict,
+        analysis: Dict,
+        component_name: str,
+        all_agent_results: List[Dict],
+        learning_insights: Dict,
+        agent_data_analysis: Dict
+    ) -> List[Task]:
+        """안전한 설계 태스크 생성"""
+        try:
+            design_task = self._create_design_task(
+                content, analysis, component_name, all_agent_results, learning_insights, agent_data_analysis)
+            return [design_task]
+        except Exception as e:
+            self.logger.error(f"Task creation failed: {e}")
+            # 최소한의 기본 태스크 반환
+            return [self._create_basic_design_task(content, analysis, component_name)]
+
+    async def _execute_crew_safe(self, tasks: List[Task]) -> Any:
+        """안전한 CrewAI 실행 (개선된 동기 메서드 처리)"""
+        try:
+            # CrewAI Crew 생성
+            design_crew = Crew(
+                agents=[self.create_agent()],
+                tasks=tasks,
+                process=Process.sequential,
+                verbose=True
+            )
+
+            # 개선된 CrewAI 실행 (동기 메서드 처리)
+            async def _crew_execution():
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(None, design_crew.kickoff)
+
+            crew_result = await self.circuit_breaker.execute(
+                asyncio.wait_for,
+                _crew_execution(),
+                timeout=self.timeouts['crew_execution']
+            )
+
+            return crew_result
+
+        except CircuitBreakerOpenError as e:
+            self.logger.warning(f"CrewAI execution failed due to circuit breaker: {e}")
+            return None
+        except asyncio.TimeoutError as e:
+            self.logger.warning(f"CrewAI execution timed out: {e}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Unexpected CrewAI error: {e}")
+            return None
+
+    async def _process_crew_design_result_safe(
+        self,
+        crew_result: Any,
+        content: Dict,
+        analysis: Dict,
+        component_name: str,
+        all_agent_results: List[Dict],
+        learning_insights: Dict,
+        agent_data_analysis: Dict
+    ) -> Dict:
+        """안전한 CrewAI 설계 결과 처리"""
+        try:
+            return await asyncio.wait_for(
+                self._process_crew_design_result(
+                    crew_result, content, analysis, component_name,
+                    all_agent_results, learning_insights, agent_data_analysis
+                ),
+                timeout=self.timeouts['post_processing']
+            )
+        except asyncio.TimeoutError:
+            self.logger.warning("Crew result processing timeout, using fallback")
+            return self._create_agent_based_default_design_sync_mode(analysis, component_name, agent_data_analysis)
+        except Exception as e:
+            self.logger.error(f"Crew result processing failed: {e}")
+            return self._create_agent_based_default_design_sync_mode(analysis, component_name, agent_data_analysis)
+
+    async def _safe_store_design_result(
+        self,
+        component_name: str,
+        design_result: Dict,
+        content: Dict,
+        analysis: Dict,
+        all_agent_results: List[Dict],
+        learning_insights: Dict,
+        mode: str = "batch"
+    ):
+        """안전한 설계 결과 저장"""
+        try:
+            await asyncio.wait_for(
+                self.result_manager.store_agent_output(
+                    agent_name="JSXLayoutDesigner",
+                    agent_role="에이전트 데이터 기반 레이아웃 아키텍트",
+                    task_description=f"컴포넌트 {component_name} 레이아웃 설계 ({mode} 모드)",
+                    final_answer=str(design_result),
+                    reasoning_process=f"{len(all_agent_results)}개 에이전트 결과 분석하여 레이아웃 설계",
+                    execution_steps=[
+                        "에이전트 결과 수집",
+                        "데이터 분석",
+                        "레이아웃 설계",
+                        "검증 완료"
+                    ],
+                    raw_input={"content": content, "analysis": analysis, "component_name": component_name},
+                    raw_output=design_result,
+                    performance_metrics={
+                        "agent_results_utilized": len(all_agent_results),
+                        "jsx_templates_ignored": True,
+                        "learning_insights_applied": len(learning_insights.get('recommendations', [])),
+                        "layout_type": design_result.get('layout_type'),
+                        "error_prevention_applied": True,
+                        "execution_mode": mode
+                    }
+                ),
+                timeout=5.0
+            )
+        except Exception as e:
+            self.logger.error(f"⚠️ 결과 저장 실패: {e}")
+
+    # ==================== 기존 메서드들 (완전 보존) ====================
+
     async def _analyze_all_agent_results(self, agent_results: List[Dict]) -> Dict:
-        """모든 에이전트 결과 데이터 분석"""
+        """모든 에이전트 결과 데이터 분석 (기존 메서드 완전 보존)"""
         analysis = {
             "agent_summary": {},
             "quality_indicators": {},
@@ -417,10 +692,10 @@ class JSXLayoutDesigner(BaseAsyncAgent):
 
         return analysis
 
-    def _create_design_task(self, content: Dict, analysis: Dict, component_name: str, 
-                           all_agent_results: List[Dict], learning_insights: Dict, 
+    def _create_design_task(self, content: Dict, analysis: Dict, component_name: str,
+                           all_agent_results: List[Dict], learning_insights: Dict,
                            agent_data_analysis: Dict) -> Task:
-        """설계 태스크 생성"""
+        """설계 태스크 생성 (기존 메서드 완전 보존)"""
         return Task(
             description=f"""
 **에이전트 결과 데이터 기반 완벽한 JSX 레이아웃 설계**
@@ -479,8 +754,24 @@ class JSXLayoutDesigner(BaseAsyncAgent):
             expected_output="에이전트 결과 데이터 기반 완전한 레이아웃 구조 설계 JSON"
         )
 
+    def _create_basic_design_task(self, content: Dict, analysis: Dict, component_name: str) -> Task:
+        """기본 설계 태스크 생성 (폴백용)"""
+        return Task(
+            description=f"""
+기본 JSX 레이아웃을 설계하세요.
+
+**컴포넌트:** {component_name}
+**콘텐츠:** {content.get('title', 'N/A')}
+**분석 결과:** {analysis.get('recommended_layout', 'grid')}
+
+기본적인 레이아웃 구조를 JSON 형식으로 제공하세요.
+""",
+            agent=self.create_agent(),
+            expected_output="기본 레이아웃 설계 JSON"
+        )
+
     def _format_agent_data_analysis(self, agent_analysis: Dict) -> str:
-        """에이전트 데이터 분석 결과 포맷팅"""
+        """에이전트 데이터 분석 결과 포맷팅 (기존 메서드 완전 보존)"""
         if not agent_analysis.get("agent_summary"):
             return "이전 에이전트 결과 없음"
 
@@ -501,8 +792,29 @@ class JSXLayoutDesigner(BaseAsyncAgent):
 
         return "\n".join(formatted_parts)
 
+    async def _process_crew_design_result(self, crew_result, content: Dict, analysis: Dict, component_name: str,
+                                        all_agent_results: List[Dict], learning_insights: Dict,
+                                        agent_data_analysis: Dict) -> Dict:
+        """CrewAI 설계 결과 처리 (기존 메서드 완전 보존)"""
+        try:
+            # CrewAI 결과에서 데이터 추출
+            if hasattr(crew_result, 'raw') and crew_result.raw:
+                result_text = crew_result.raw
+            else:
+                result_text = str(crew_result)
+
+            # 결과 파싱 시도
+            design_result = await self._parse_design_result_with_agent_data(result_text, analysis, agent_data_analysis)
+            
+            return design_result
+
+        except Exception as e:
+            self.logger.error(f"CrewAI result processing failed: {e}")
+            # 폴백: 기존 방식으로 처리
+            return self._create_agent_based_default_design_sync_mode(analysis, component_name, agent_data_analysis)
+
     async def _parse_design_result_with_agent_data(self, result_text: str, analysis: Dict, agent_analysis: Dict) -> Dict:
-        """에이전트 데이터 기반 설계 결과 파싱"""
+        """에이전트 데이터 기반 설계 결과 파싱 (기존 메서드 완전 보존)"""
         try:
             json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
             if json_match:
@@ -513,12 +825,12 @@ class JSXLayoutDesigner(BaseAsyncAgent):
                 parsed_result['error_prevention_applied'] = True
                 return parsed_result
         except Exception as e:
-            print(f"⚠️ JSON 파싱 실패: {e}")
+            self.logger.error(f"⚠️ JSON 파싱 실패: {e}")
 
         return self._create_agent_based_default_design_sync_mode(analysis, "DefaultComponent", agent_analysis)
 
     def _create_agent_based_default_design_sync_mode(self, analysis: Dict, component_name: str, agent_analysis: Dict) -> Dict:
-        """에이전트 데이터 기반 기본 설계 (동기 모드)"""
+        """에이전트 데이터 기반 기본 설계 (동기 모드) (기존 메서드 완전 보존)"""
         layout_type = analysis.get('recommended_layout', 'grid')
 
         # 에이전트 품질 지표 기반 조정
@@ -555,37 +867,6 @@ class JSXLayoutDesigner(BaseAsyncAgent):
             }
         }
 
-    async def _store_design_result(self, component_name: str, design_result: Dict, content: Dict, 
-                                 analysis: Dict, all_agent_results: List[Dict], 
-                                 learning_insights: Dict, mode: str = "batch"):
-        """설계 결과 저장"""
-        try:
-            await self.result_manager.store_agent_output(
-                agent_name="JSXLayoutDesigner",
-                agent_role="에이전트 데이터 기반 레이아웃 아키텍트",
-                task_description=f"컴포넌트 {component_name} 레이아웃 설계 ({mode} 모드)",
-                final_answer=str(design_result),
-                reasoning_process=f"{len(all_agent_results)}개 에이전트 결과 분석하여 레이아웃 설계",
-                execution_steps=[
-                    "에이전트 결과 수집",
-                    "데이터 분석",
-                    "레이아웃 설계",
-                    "검증 완료"
-                ],
-                raw_input={"content": content, "analysis": analysis, "component_name": component_name},
-                raw_output=design_result,
-                performance_metrics={
-                    "agent_results_utilized": len(all_agent_results),
-                    "jsx_templates_ignored": True,
-                    "learning_insights_applied": len(learning_insights.get('recommendations', [])),
-                    "layout_type": design_result.get('layout_type'),
-                    "error_prevention_applied": True,
-                    "execution_mode": mode
-                }
-            )
-        except Exception as e:
-            print(f"⚠️ 결과 저장 실패: {e}")
-
     # 시스템 관리 메서드들
     def get_execution_statistics(self) -> Dict:
         """실행 통계 조회"""
@@ -595,7 +876,7 @@ class JSXLayoutDesigner(BaseAsyncAgent):
                 self.execution_stats["successful_executions"] / 
                 max(self.execution_stats["total_attempts"], 1)
             ) * 100,
-            "circuit_breaker_state": self.circuit_breaker.state
+            "circuit_breaker_state": self.circuit_breaker.state.value
         }
 
     def reset_system_state(self) -> None:
@@ -615,16 +896,27 @@ class JSXLayoutDesigner(BaseAsyncAgent):
         """시스템 정보 조회"""
         return {
             "class_name": self.__class__.__name__,
-            "version": "2.0_resilient",
+            "version": "2.0_standardized_resilient",
             "features": [
-                "에이전트 결과 데이터 기반 레이아웃 설계",
-                "복원력 있는 실행",
-                "Circuit Breaker 패턴",
-                "재귀 깊이 감지",
-                "동기/비동기 폴백"
+                "표준화된 인프라 클래스 사용",
+                "개선된 RecursionError 처리",
+                "통일된 Circuit Breaker 인터페이스",
+                "안전한 CrewAI 동기 메서드 처리",
+                "일관된 로깅 시스템"
             ],
             "execution_modes": ["batch_resilient", "sync_fallback"]
         }
+
+    async def cleanup_resources(self) -> None:
+        """리소스 정리"""
+        self.logger.info("🧹 JSXLayoutDesigner 리소스 정리 시작")
+
+        try:
+            # 작업 큐 정리 (graceful 파라미터 명시적 전달)
+            await self.work_queue.stop(graceful=True)
+            self.logger.info("✅ 리소스 정리 완료")
+        except Exception as e:
+            self.logger.error(f"⚠️ 리소스 정리 중 오류: {e}")
 
     # 기존 동기 버전 메서드 (호환성 유지)
     def design_layout_structure_sync(self, content: Dict, analysis: Dict, component_name: str) -> Dict:

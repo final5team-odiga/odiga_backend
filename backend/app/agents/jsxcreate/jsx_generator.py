@@ -6,7 +6,7 @@ import logging
 import time
 import sys
 import inspect
-from typing import Dict, List, Callable, Any, Coroutine, Optional
+from typing import Dict, List, Callable, Any, Optional
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -18,9 +18,11 @@ from custom_llm import get_azure_llm
 from utils.pdf_vector_manager import PDFVectorManager
 from utils.agent_decision_logger import get_agent_logger, get_complete_data_manager
 
-# --- Infrastructure Classes ---
+# ==================== 표준화된 기본 인프라 클래스들 ====================
+
 @dataclass
 class WorkItem:
+    """표준화된 작업 항목 정의"""
     id: str
     task_func: Callable
     args: tuple = field(default_factory=tuple)
@@ -29,6 +31,7 @@ class WorkItem:
     max_retries: int = 3
     current_retry: int = 0
     timeout: float = 300.0
+    created_at: float = field(default_factory=time.time)
 
     def __lt__(self, other):
         return self.priority < other.priority
@@ -39,6 +42,7 @@ class CircuitBreakerState(Enum):
     HALF_OPEN = "HALF_OPEN"
 
 class CircuitBreaker:
+    """표준화된 Circuit Breaker 패턴 구현 (execute 메서드로 통일)"""
     def __init__(self, failure_threshold: int = 8, recovery_timeout: float = 30.0, half_open_attempts: int = 1):
         self.failure_threshold = failure_threshold
         self.recovery_timeout = recovery_timeout
@@ -85,11 +89,13 @@ class CircuitBreaker:
         self._success_count = 0
 
     async def execute(self, task_func: Callable, *args, **kwargs) -> Any:
+        """표준화된 execute 메서드 (call에서 execute로 통일)"""
         if self.state == CircuitBreakerState.OPEN:
             self.logger.warning(f"CircuitBreaker is OPEN for {getattr(task_func, '__name__', 'unknown_task')}. Call rejected.")
-            raise Exception(f"CircuitBreaker is OPEN for {getattr(task_func, '__name__', 'unknown_task')}. Call rejected.")
+            raise CircuitBreakerOpenError(f"CircuitBreaker is OPEN for {getattr(task_func, '__name__', 'unknown_task')}. Call rejected.")
 
         try:
+            # 개선된 동기 메서드 처리 (CrewAI kickoff 등)
             if inspect.iscoroutinefunction(task_func):
                 result = await task_func(*args, **kwargs)
             else:
@@ -102,14 +108,19 @@ class CircuitBreaker:
             self.record_failure()
             raise e
 
+class CircuitBreakerOpenError(Exception):
+    """Circuit Breaker가 열린 상태일 때 발생하는 예외"""
+    pass
+
 class AsyncWorkQueue:
+    """표준화된 비동기 작업 큐 (결과 저장 형식 통일)"""
     def __init__(self, max_workers: int = 1, max_queue_size: int = 0):
         self._queue = asyncio.PriorityQueue(max_queue_size if max_queue_size > 0 else 0)
         self._workers: List[asyncio.Task] = []
         self._max_workers = max_workers
         self._running = False
         self.logger = logging.getLogger(self.__class__.__name__)
-        self._results: Dict[str, Any] = {}
+        self._results: Dict[str, Any] = {}  # 표준화된 결과 저장 형식
 
     async def _worker(self, worker_id: int):
         self.logger.info(f"Worker {worker_id} starting.")
@@ -126,6 +137,7 @@ class AsyncWorkQueue:
                             loop.run_in_executor(None, lambda: item.task_func(*item.args, **item.kwargs)),
                             timeout=item.timeout
                         )
+                    # 표준화된 결과 저장 형식
                     self._results[item.id] = {"status": "success", "result": result}
                     self.logger.info(f"Task {item.id} completed successfully by worker {worker_id}.")
                 except asyncio.TimeoutError:
@@ -167,7 +179,7 @@ class AsyncWorkQueue:
 
     async def enqueue_work(self, item: WorkItem) -> bool:
         if not self._running:
-             await self.start()
+            await self.start()
         try:
             await self._queue.put(item)
             self.logger.debug(f"Enqueued task {item.id} with priority {item.priority}")
@@ -175,46 +187,59 @@ class AsyncWorkQueue:
         except asyncio.QueueFull:
             self.logger.warning(f"Queue is full. Could not enqueue task {item.id}")
             return False
-            
+
     async def get_result(self, task_id: str, wait_timeout: Optional[float] = None) -> Any:
-        """특정 작업 ID의 결과를 기다려서 반환"""
+        """개선된 결과 조회 (pop 대신 조회만)"""
         start_time = time.monotonic()
         while True:
             if task_id in self._results:
-                return self._results[task_id]
+                result_data = self._results[task_id]
+                if result_data["status"] == "success":
+                    return result_data["result"]
+                elif result_data["status"] == "error":
+                    raise Exception(result_data["error"])
+                elif result_data["status"] == "timeout":
+                    raise asyncio.TimeoutError(result_data["error"])
             if wait_timeout is not None and (time.monotonic() - start_time) > wait_timeout:
                 raise asyncio.TimeoutError(f"Timeout waiting for result of task {task_id}")
             await asyncio.sleep(0.1)
 
+    async def clear_result(self, task_id: str):
+        """명시적인 결과 제거 메서드"""
+        if task_id in self._results:
+            del self._results[task_id]
+            self.logger.debug(f"Cleared result for task {task_id}")
+
     async def clear_results(self):
         self._results.clear()
 
-class JSXCreatorAgent:
-    """다중 에이전트 조율자 - JSX 생성 총괄 (CrewAI 기반 에이전트 결과 데이터 기반)"""
-
+class BaseAsyncAgent:
+    """표준화된 기본 비동기 에이전트 클래스"""
     def __init__(self):
-        self.llm = get_azure_llm()
-        self.vector_manager = PDFVectorManager()
-        self.logger = get_agent_logger()
-        self.result_manager = get_complete_data_manager()
-
-        # 전문 에이전트들 초기화
-        self.content_analyzer = JSXContentAnalyzer()
-        self.layout_designer = JSXLayoutDesigner()
-        self.code_generator = JSXCodeGenerator()
-
-        # CrewAI 에이전트들 생성
-        self.jsx_coordinator_agent = self._create_jsx_coordinator_agent()
-        self.data_collection_agent = self._create_data_collection_agent()
-        self.component_generation_agent = self._create_component_generation_agent()
-        self.quality_assurance_agent = self._create_quality_assurance_agent()
-
-        # --- Resilience Infrastructure ---
         self.work_queue = AsyncWorkQueue(max_workers=2, max_queue_size=50)
         self.circuit_breaker = CircuitBreaker(failure_threshold=8, recovery_timeout=30.0)
-        self.recursion_threshold = 800
+        self.recursion_threshold = 800  # 수정된 값 적용
         self.fallback_to_sync = False
         self._recursion_check_buffer = 50
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+        # 표준화된 타임아웃 설정
+        self.timeouts = {
+            'crew_kickoff': 90.0,
+            'result_collection': 15.0,
+            'vector_search': 10.0,
+            'agent_creation': 20.0,
+            'total_analysis': 180.0,
+            'post_processing': 25.0
+        }
+
+        # 표준화된 재시도 설정
+        self.retry_config = {
+            'max_attempts': 3,
+            'base_delay': 1.0,
+            'max_delay': 8.0,
+            'exponential_base': 2
+        }
 
         # 실행 통계 추가
         self.execution_stats = {
@@ -224,12 +249,12 @@ class JSXCreatorAgent:
             "circuit_breaker_triggered": 0,
             "timeout_occurred": 0
         }
-    
+
     def _check_recursion_depth(self):
         """현재 재귀 깊이 확인"""
         current_depth = len(inspect.stack())
         return current_depth
-    
+
     def _should_use_sync(self):
         """동기 모드로 전환할지 판단"""
         current_depth = self._check_recursion_depth()
@@ -239,8 +264,8 @@ class JSXCreatorAgent:
             return True
         return self.fallback_to_sync
 
-    async def _execute_with_resilience(
-        self, 
+    async def execute_with_resilience(
+        self,
         task_id: str,
         task_func: Callable,
         args: tuple = (),
@@ -250,8 +275,9 @@ class JSXCreatorAgent:
         backoff_factor: float = 1.5,
         circuit_breaker: CircuitBreaker = None
     ) -> Any:
-        """복원력 있는 작업 실행"""
-        if kwargs is None: kwargs = {}
+        """표준화된 복원력 있는 작업 실행"""
+        if kwargs is None: 
+            kwargs = {}
         
         current_retry = 0
         current_timeout = initial_timeout
@@ -283,11 +309,12 @@ class JSXCreatorAgent:
                 last_exception = e
                 self.logger.error(f"Task '{task_full_id}' failed due to RecursionError: {e}")
                 self.fallback_to_sync = True
-                raise e
+                raise e  # RecursionError는 즉시 상위로 전파하여 동기 모드 전환 유도
+            except CircuitBreakerOpenError as e:
+                self.execution_stats["circuit_breaker_triggered"] += 1
+                self.logger.warning(f"Task '{task_full_id}' rejected by CircuitBreaker.")
+                last_exception = e
             except Exception as e:
-                if "CircuitBreaker is OPEN" in str(e):
-                    self.execution_stats["circuit_breaker_triggered"] +=1
-                    self.logger.warning(f"Task '{task_full_id}' rejected by CircuitBreaker.")
                 last_exception = e
                 self.logger.error(f"Task '{task_full_id}' failed: {e}")
 
@@ -299,13 +326,49 @@ class JSXCreatorAgent:
                 current_timeout *= backoff_factor
             else:
                 self.logger.error(f"Task '{task_id}' failed after {max_retries + 1} attempts.")
-                if last_exception:
-                    raise last_exception
-                else:
-                    raise Exception(f"Task '{task_id}' failed after max retries without a specific exception.")
-    
+
+        if last_exception:
+            raise last_exception
+        else:
+            raise Exception(f"Task '{task_id}' failed after max retries without a specific exception.")
+
+    def _get_fallback_result(self, task_id: str) -> Any:
+        """폴백 결과 생성 (서브클래스에서 구현)"""
+        return f"FALLBACK_RESULT_FOR_{task_id}"
+
+# ==================== 개선된 JSXCreatorAgent ====================
+
+class JSXCreatorAgent(BaseAsyncAgent):
+    """다중 에이전트 조율자 - JSX 생성 총괄 (CrewAI 기반 에이전트 결과 데이터 기반)"""
+
+    def __init__(self):
+        super().__init__()  # BaseAsyncAgent 명시적 초기화
+        self.llm = get_azure_llm()
+        self.vector_manager = PDFVectorManager()
+        self.logger = get_agent_logger()
+        self.result_manager = get_complete_data_manager()
+
+        # 전문 에이전트들 초기화
+        self.content_analyzer = JSXContentAnalyzer()
+        self.layout_designer = JSXLayoutDesigner()
+        self.code_generator = JSXCodeGenerator()
+
+        # CrewAI 에이전트들 생성
+        self.jsx_coordinator_agent = self._create_jsx_coordinator_agent()
+        self.data_collection_agent = self._create_data_collection_agent()
+        self.component_generation_agent = self._create_component_generation_agent()
+        self.quality_assurance_agent = self._create_quality_assurance_agent()
+
+        # JSX 생성 특화 타임아웃 설정
+        self.timeouts.update({
+            'jsx_generation': 300.0,
+            'crew_execution': 900.0,  # 15분으로 증가
+            'component_creation': 180.0,
+            'template_parsing': 60.0
+        })
+
     def _get_fallback_result(self, task_id: str, component_name: Optional[str] = None, template_data: Optional[Dict] = None) -> List[Dict]:
-        """폴백 JSX 컴포넌트 목록 생성"""
+        """JSX 생성 전용 폴백 결과 생성"""
         self.logger.warning(f"Generating fallback result for task_id: {task_id}")
         self.execution_stats["fallback_used"] += 1
 
@@ -357,6 +420,7 @@ export const {comp_name} = () => <div>Error generating component. Please check l
             
         return fallback_components
 
+    # --- Agent Creation Methods (기존 유지) ---
     def _create_jsx_coordinator_agent(self):
         """JSX 생성 총괄 조율자"""
         return Agent(
@@ -461,7 +525,7 @@ export const {comp_name} = () => <div>Error generating component. Please check l
         )
 
     async def generate_jsx_components_async(self, template_data_path: str, templates_dir: str = "jsx_templates") -> List[Dict]:
-        """에이전트 결과 데이터 기반 JSX 생성 (CrewAI 기반 jsx_templates 미사용, 복원력 강화)"""
+        """에이전트 결과 데이터 기반 JSX 생성 (개선된 RecursionError 처리)"""
         task_id = f"generate_jsx_components_async-{os.path.basename(template_data_path)}-{time.time_ns()}"
         self.logger.info(f"🚀 CrewAI 기반 에이전트 결과 데이터 기반 JSX 생성 시작 (Task ID: {task_id})")
         self.logger.info(f"📁 jsx_templates 폴더 무시 - 에이전트 데이터 우선 사용")
@@ -474,8 +538,12 @@ export const {comp_name} = () => <div>Error generating component. Please check l
         
         try:
             return await self._generate_jsx_components_batch_mode(template_data_path, templates_dir, task_id)
-        except RecursionError:
+        except RecursionError as e:
             self.logger.error(f"Task {task_id}: Batch 모드 실행 중 RecursionError 발생. 동기 모드로 폴백.")
+            self.fallback_to_sync = True
+            return await self._generate_jsx_components_sync_mode(template_data_path, templates_dir, task_id)
+        except CircuitBreakerOpenError as e:
+            self.logger.warning(f"Task {task_id}: Circuit Breaker 열림으로 인해 동기 모드로 폴백.")
             self.fallback_to_sync = True
             return await self._generate_jsx_components_sync_mode(template_data_path, templates_dir, task_id)
         except Exception as e:
@@ -484,7 +552,7 @@ export const {comp_name} = () => <div>Error generating component. Please check l
             return self._get_fallback_result(task_id, template_data=template_data_for_fallback)
 
     async def _generate_jsx_components_batch_mode(self, template_data_path: str, templates_dir: str, task_id_prefix: str) -> List[Dict]:
-        """배치 모드 JSX 생성 (비동기)"""
+        """배치 모드 JSX 생성 (개선된 CrewAI 동기 메서드 처리)"""
         self.logger.info(f"Task {task_id_prefix}: Batch 모드 실행 시작.")
 
         # CrewAI Task들 생성 (기존 방식 유지)
@@ -501,12 +569,18 @@ export const {comp_name} = () => <div>Error generating component. Please check l
             verbose=True
         )
         
-        # Crew 실행 (동기 메서드이므로 run_in_executor 사용, _execute_with_resilience로 래핑)
+        # 개선된 Crew 실행 (동기 메서드 처리)
         crew_kickoff_task_id = f"{task_id_prefix}-crew_kickoff"
-        crew_result = await self._execute_with_resilience(
+        
+        async def _safe_crew_kickoff():
+            """안전한 CrewAI kickoff 실행"""
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, jsx_crew.kickoff)
+
+        crew_result = await self.execute_with_resilience(
             task_id=crew_kickoff_task_id,
-            task_func=jsx_crew.kickoff,
-            initial_timeout=900.0,
+            task_func=_safe_crew_kickoff,
+            initial_timeout=self.timeouts['crew_execution'],
             circuit_breaker=self.circuit_breaker
         )
 
@@ -517,11 +591,11 @@ export const {comp_name} = () => <div>Error generating component. Please check l
         
         # 실제 JSX 생성 수행 (CrewAI 결과 활용)
         generation_task_id = f"{task_id_prefix}-jsx_generation_with_insights"
-        generated_components = await self._execute_with_resilience(
+        generated_components = await self.execute_with_resilience(
             task_id=generation_task_id,
             task_func=self._execute_jsx_generation_with_crew_insights,
             args=(crew_result, template_data_path, templates_dir),
-            initial_timeout=300.0
+            initial_timeout=self.timeouts['jsx_generation']
         )
         
         if isinstance(generated_components, Exception) or not generated_components:
@@ -600,6 +674,7 @@ export const {comp_name} = () => <div>Error generating component. Please check l
         )
         self.logger.info(f"✅ {mode} 모드 JSX 생성 완료: {successful_components}/{total_components}개 컴포넌트 성공 (Task Prefix: {task_id_prefix})")
 
+    # --- 기존 메서드들 유지 (변경 없음) ---
     async def _execute_jsx_generation_with_crew_insights(self, crew_result: Any, template_data_path: str, templates_dir: str) -> List[Dict]:
         """CrewAI 인사이트를 활용한 실제 JSX 생성 (기존 로직 유지 및 개선)"""
         self.logger.info(f"Crew 결과 기반 JSX 생성 시작. Crew Result (type): {type(crew_result)}")
@@ -1067,8 +1142,8 @@ template_data.json 파일을 파싱하고 JSX 생성에 필요한 구조화된 �
     def _remove_all_markdown_blocks(self, jsx_code: str) -> str:
         """마크다운 블록 완전 제거"""
         # 코드 블록 제거
+        jsx_code = re.sub(r'``````', '', jsx_code, flags=re.DOTALL)
         jsx_code = re.sub(r'```[\s\S]*?```', '', jsx_code)
-        jsx_code = re.sub(r'```\n?', '', jsx_code)
         jsx_code = re.sub(r'`', '', jsx_code)
 
         # 마크다운 헤더 제거
@@ -1111,9 +1186,9 @@ template_data.json 파일을 파싱하고 JSX 생성에 필요한 구조화된 �
             )
 
         # export 문 보장
-        export_pattern = rf'export\s+const\s+{component_name}\s*=\s*\(\s*\)\s*=>'
+        export_pattern = rf'export\s+const\s+{component_name}\s*=\s*$$\s*$$\s*=>'
         if not re.search(export_pattern, jsx_code):
-            found_export = re.search(r'export\s+const\s+\w+\s*=\s*\(\s*\)\s*=>', jsx_code)
+            found_export = re.search(r'export\s+const\s+\w+\s*=\s*$$\s*$$\s*=>', jsx_code)
             if found_export:
                 jsx_code = jsx_code.replace(
                     found_export.group(0),
@@ -1339,8 +1414,7 @@ export const {component_name} = () => {{
                 self.execution_stats["successful_executions"] / 
                 max(self.execution_stats["total_attempts"], 1)
             ) * 100,
-            "circuit_breaker_state": self.circuit_breaker.state,
-            "current_queue_size": self.work_queue._queue.qsize() if hasattr(self.work_queue, '_queue') else 'N/A'
+            "circuit_breaker_state": self.circuit_breaker.state.value
         }
 
     def reset_system_state(self) -> None:
@@ -1373,7 +1447,7 @@ export const {component_name} = () => {{
         """성능 메트릭 수집"""
         return {
             "circuit_breaker": {
-                "state": self.circuit_breaker.state,
+                "state": self.circuit_breaker.state.value,
                 "failure_count": self.circuit_breaker._failure_count,
                 "failure_threshold": self.circuit_breaker.failure_threshold
             },
@@ -1394,13 +1468,14 @@ export const {component_name} = () => {{
         """시스템 정보 조회"""
         return {
             "class_name": self.__class__.__name__,
-            "version": "2.1_resilient_jsx_creator",
+            "version": "2.1_standardized_resilient",
             "features": [
-                "CrewAI 기반 에이전트 결과 데이터 활용 JSX 생성",
-                "복원력 있는 실행 (Circuit Breaker, 재시도, 타임아웃)",
-                "재귀 깊이 감지 및 동기 폴백",
-                "비동기 작업 큐 관리",
-                "포괄적 JSX 검증 및 오류 제거"
+                "표준화된 인프라 클래스 사용",
+                "개선된 CrewAI 동기 메서드 처리",
+                "통일된 Circuit Breaker 인터페이스",
+                "개선된 RecursionError 처리",
+                "일관된 로깅 시스템",
+                "안전한 결과 조회 메커니즘"
             ],
             "agents_used": [
                 "jsx_coordinator_agent",
@@ -1470,8 +1545,8 @@ export const {component_name} = () => {{
         self.logger.info("🧹 JSXCreatorAgent 리소스 정리 시작")
 
         try:
-            # 작업 큐 정리
-            await self.work_queue.stop()
+            # 작업 큐 정리 (graceful 파라미터 명시적 전달)
+            await self.work_queue.stop(graceful=True)
             self.logger.info("✅ 리소스 정리 완료")
         except Exception as e:
             self.logger.error(f"⚠️ 리소스 정리 중 오류: {e}")
@@ -1480,7 +1555,7 @@ export const {component_name} = () => {{
         """소멸자 - 리소스 정리"""
         try:
             if hasattr(self, 'work_queue') and self.work_queue._running:
-                asyncio.create_task(self.work_queue.stop())
+                asyncio.create_task(self.work_queue.stop(graceful=True))
         except Exception:
             pass  # 소멸자에서는 예외를 무시
 
