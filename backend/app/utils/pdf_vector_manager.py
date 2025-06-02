@@ -15,48 +15,61 @@ from utils.pdf_splitter import PDFSplitter
 from dotenv import load_dotenv
 from pathlib import Path
 
+# AI Search 격리 시스템 import 추가
+try:
+    from utils.ai_search_isolation import AISearchIsolationManager
+    ISOLATION_AVAILABLE = True
+except ImportError:
+    print("⚠️ AI Search 격리 모듈을 찾을 수 없습니다. 기본 모드로 실행됩니다.")
+    ISOLATION_AVAILABLE = False
+
 # 환경 변수 로드
-dotenv_path = Path(r'C:\Users\EL0021\Desktop\odiga_agent\.env')
+dotenv_path = Path(r'C:\Users\EL0021\Desktop\odiga_multiomodal_agent\.env')
 load_dotenv(dotenv_path=dotenv_path, override=True)
 
 class PDFVectorManager:
-    """PDF 벡터 데이터 관리자 - Azure 서비스 활용"""
+    """PDF 벡터 데이터 관리자 - Azure 서비스 활용 (AI Search 격리 적용)"""
     
-    def __init__(self):
-        
-        # Azure Form Recognizer 초기화
+    def __init__(self, isolation_enabled=True):
+        # 기존 초기화 코드
         self.form_recognizer_endpoint = os.getenv("AZURE_FORM_RECOGNIZER_ENDPOINT")
         self.form_recognizer_key = os.getenv("AZURE_FORM_RECOGNIZER_KEY")
         self.form_recognizer_client = DocumentAnalysisClient(
             endpoint=self.form_recognizer_endpoint,
             credential=AzureKeyCredential(self.form_recognizer_key)
         )
-        
-        # Azure Cognitive Search 초기화
+
         self.search_endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
         self.search_key = os.getenv("AZURE_SEARCH_KEY")
         self.search_index_name = "magazine-vector-index"
-        
         self.search_client = SearchClient(
             endpoint=self.search_endpoint,
             index_name=self.search_index_name,
             credential=AzureKeyCredential(self.search_key)
         )
-        
+
         self.search_index_client = SearchIndexClient(
             endpoint=self.search_endpoint,
             credential=AzureKeyCredential(self.search_key)
         )
-        
-        # Azure OpenAI 초기화 (v1.x 방식)
+
         self.openai_client = AzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_KEY"),         
+            api_key=os.getenv("AZURE_OPENAI_KEY"),
             api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
             azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
         )
-        
+
         self.embedding_model = "text-embedding-ada-002"
         self.pdf_splitter = PDFSplitter(max_size_mb=20.0)
+        
+        # AI Search 격리 시스템 초기화 (새로 추가)
+        self.isolation_enabled = isolation_enabled and ISOLATION_AVAILABLE
+        if self.isolation_enabled:
+            self.isolation_manager = AISearchIsolationManager()
+            print("🛡️ PDFVectorManager AI Search 격리 시스템 활성화")
+        else:
+            self.isolation_manager = None
+            print("⚠️ PDFVectorManager AI Search 격리 시스템 비활성화")
     
         
     def initialize_search_index(self):
@@ -470,66 +483,142 @@ class PDFVectorManager:
             print(f"❌ 문서 업로드 실패: {e}")
     
     def search_similar_layouts(self, query_text: str, content_type: str = None, top_k: int = 5) -> List[Dict]:
-        """유사한 레이아웃 검색"""
-        
+        """유사한 레이아웃 검색 (AI Search 격리 적용)"""
         try:
-            # 쿼리 텍스트를 벡터로 변환
-            query_embeddings = self._create_embeddings([query_text])
+            # 1. 쿼리 격리 (AI Search 키워드 제거)
+            if self.isolation_enabled:
+                clean_query = self.isolation_manager.clean_query_from_azure_keywords(query_text)
+                print(f"🛡️ 쿼리 격리: '{query_text[:50]}...' → '{clean_query[:50]}...'")
+            else:
+                clean_query = query_text
+
+            # 2. 쿼리 텍스트를 벡터로 변환
+            query_embeddings = self._create_embeddings([clean_query])
             query_vector = query_embeddings[0]
-            
-            # 벡터 검색 쿼리 생성
+
+            # 3. 벡터 검색 쿼리 생성
             vector_query = VectorizedQuery(
                 vector=query_vector,
-                k_nearest_neighbors=top_k,
+                k_nearest_neighbors=top_k * 2,  # 격리 필터링을 위해 더 많이 검색
                 fields="content_vector"
             )
-            
-            # 검색 실행
+
+            # 4. 검색 실행
             search_params = {
                 "vector_queries": [vector_query],
-                "top": top_k,
+                "top": top_k * 2,  # 격리 필터링을 위해 더 많이 검색
                 "select": ["id", "pdf_name", "page_number", "content_type", "text_content", "layout_info", "image_info"]
             }
-            
+
             if content_type:
                 search_params["filter"] = f"content_type eq '{content_type}'"
-            
-            results = self.search_client.search(**search_params)
-            
-            # 결과 정리
-            similar_layouts = []
-            for result in results:
+
+            raw_results = self.search_client.search(**search_params)
+
+            # 5. 원시 결과 수집
+            raw_layouts = []
+            for result in raw_results:
                 layout_info = json.loads(result.get("layout_info", "{}"))
                 image_info = json.loads(result.get("image_info", "[]"))
                 
-                similar_layouts.append({
+                layout_data = {
                     "id": result["id"],
                     "pdf_name": result["pdf_name"],
                     "page_number": result["page_number"],
                     "text_content": result["text_content"],
                     "layout_info": layout_info,
                     "image_info": image_info,
-                    "score": result.get("@search.score", 0.0)
-                })
-            
-            return similar_layouts
-            
+                    "score": result.get("@search.score", 0.0),
+                    "source": "pdf_vector_search"
+                }
+                raw_layouts.append(layout_data)
+
+            # 6. AI Search 격리 필터링
+            if self.isolation_enabled:
+                filtered_layouts = self.isolation_manager.filter_contaminated_data(
+                    raw_layouts, "pdf_vector_search"
+                )
+                
+                # 7. 원본 데이터 우선순위 적용
+                prioritized_layouts = self._prioritize_original_layouts(filtered_layouts)
+                
+                print(f"🛡️ 레이아웃 검색 격리: {len(raw_layouts)} → {len(prioritized_layouts)}개")
+                return prioritized_layouts[:top_k]
+            else:
+                return raw_layouts[:top_k]
+
         except Exception as e:
             print(f"❌ 벡터 검색 실패: {e}")
+            if self.isolation_enabled:
+                print("🛡️ 격리된 폴백 결과 반환")
+                return self._get_isolated_fallback_layouts()
             return []
+
+    def _prioritize_original_layouts(self, layouts: List[Dict]) -> List[Dict]:
+        """원본 레이아웃 우선순위 적용"""
+        if not self.isolation_enabled:
+            return layouts
+            
+        original_sources = ['user_uploaded', 'direct_input', 'verified_template']
+        prioritized = []
+        
+        for layout in layouts:
+            source = layout.get('source', 'unknown')
+            pdf_name = layout.get('pdf_name', '').lower()
+            
+            # 원본 소스 우선
+            if any(original_source in source for original_source in original_sources):
+                layout['priority'] = 1
+                prioritized.insert(0, layout)
+            # 신뢰할 수 있는 PDF 이름 패턴
+            elif any(pattern in pdf_name for pattern in ['template', 'layout', 'design']):
+                layout['priority'] = 2
+                prioritized.append(layout)
+            # 기타
+            else:
+                layout['priority'] = 3
+                prioritized.append(layout)
+        
+        return prioritized
+
+    def _get_isolated_fallback_layouts(self) -> List[Dict]:
+        """격리된 폴백 레이아웃 반환"""
+        return [{
+            "id": "isolated_fallback_1",
+            "pdf_name": "isolated_default_layout",
+            "page_number": 1,
+            "text_content": "기본 매거진 레이아웃",
+            "layout_info": {
+                "text_blocks": [],
+                "images": [],
+                "layout_structure": ["single_column"]
+            },
+            "image_info": [],
+            "score": 0.5,
+            "source": "isolated_fallback",
+            "priority": 1
+        }]
+
     
     def get_layout_recommendations(self, content_description: str, image_count: int) -> List[Dict]:
-        """콘텐츠 설명과 이미지 수를 바탕으로 레이아웃 추천"""
-        
+        """콘텐츠 설명과 이미지 수를 바탕으로 레이아웃 추천 (AI Search 격리 적용)"""
         # 이미지 수에 따른 검색 쿼리 조정
         if image_count <= 1:
-            query = f"single image layout simple clean {content_description}"
+            base_query = f"single image layout simple clean {content_description}"
         elif image_count <= 3:
-            query = f"multiple images grid layout {content_description}"
+            base_query = f"multiple images grid layout {content_description}"
         else:
-            query = f"many images gallery layout complex {content_description}"
+            base_query = f"many images gallery layout complex {content_description}"
         
-        return self.search_similar_layouts(query, "magazine_layout", top_k=3)
+        # AI Search 격리 적용
+        if self.isolation_enabled:
+            clean_query = self.isolation_manager.clean_query_from_azure_keywords(base_query)
+            print(f"🛡️ 레이아웃 추천 쿼리 격리 적용")
+        else:
+            clean_query = base_query
+        
+        return self.search_similar_layouts(clean_query, "magazine_layout", top_k=3)
+
     
     def check_pdf_compatibility(self, template_folder: str):
         """PDF 파일 호환성 체크"""

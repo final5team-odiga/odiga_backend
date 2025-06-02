@@ -4,7 +4,7 @@ from crewai import Agent, Task, Crew
 from custom_llm import get_azure_llm
 from agents.contents.interview_agent import InterviewAgentManager
 from agents.contents.essay_agent import EssayAgentManager
-from utils.agent_decision_logger import get_agent_logger
+from utils.hybridlogging import get_hybrid_logger
 
 class ContentCreatorV2Agent:
     """인터뷰와 에세이 에이전트를 통합하는 새로운 콘텐츠 생성자 - 첫 번째 에이전트 (로그 수집만 - 비동기 처리)"""
@@ -13,7 +13,7 @@ class ContentCreatorV2Agent:
         self.llm = get_azure_llm()
         self.interview_manager = InterviewAgentManager()
         self.essay_manager = EssayAgentManager()
-        self.logger = get_agent_logger()
+        self.logger = get_hybrid_logger(self.__class__.__name__)
 
     def create_agent(self):
         return Agent(

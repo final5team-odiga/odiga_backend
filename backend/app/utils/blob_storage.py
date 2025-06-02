@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from azure.storage.blob import BlobServiceClient, ContentSettings
 from pathlib import Path
 
-dotenv_path = Path(r'C:\Users\EL0021\Desktop\odiga_agent\.env')
+dotenv_path = Path(r'C:\Users\EL0021\Desktop\odiga_multimodal_agent\.env')
 
 # 환경 변수 로드
 load_dotenv(dotenv_path=dotenv_path, override=True)

@@ -161,7 +161,14 @@ class AgentOutputManager:
         print(f"📋 {agent_name} 정보 저장: {info_id} (타입: {info_type})")
         
         return info_id
-
+    
+    
+    def info(self, message: str):
+        """표준 로깅 호환성을 위한 info 메서드"""
+        print(f"INFO: {message}")
+        # 또는 내부 로거 사용
+        # logging.getLogger(self.__class__.__name__).info(message)
+        
     def get_agent_info(self, agent_name: str = None, info_type: str = None, latest: bool = True) -> List[Dict]:
         """에이전트 정보 조회 (새로운 기능)"""
         
@@ -599,6 +606,40 @@ def get_real_output_manager() -> AgentOutputManager:
         _global_output_manager = AgentOutputManager()
     return _global_output_manager
 
+
+
+
+def log_agent_decision(self, agent_name: str, agent_role: str = None, input_data: Dict = None,
+                      decision_process: Dict = None, output_result: Dict = None, reasoning: str = "",
+                      confidence_score: float = 0.8, context: Dict = None,
+                      performance_metrics: Dict = None) -> str:
+    """기존 호환성 메서드 (응답만 저장) - 누락된 인수 문제 해결"""
+    
+    # 기본값 설정으로 누락된 인수 문제 해결
+    agent_role = agent_role or f"{agent_name} 에이전트"
+    input_data = input_data or {}
+    decision_process = decision_process or {"steps": ["결정 과정 기록"]}
+    output_result = output_result or {"result": "처리 완료"}
+    reasoning = reasoning or "에이전트 결정 처리"
+    
+    return self.log_agent_real_output(
+        agent_name=agent_name,
+        agent_role=agent_role,
+        task_description=str(input_data),
+        final_answer=str(output_result),
+        reasoning_process=reasoning,
+        raw_input=input_data,
+        raw_output=output_result,
+        performance_metrics=performance_metrics,
+        execution_steps=decision_process.get('steps', []),
+    )
+
+
+
+
 def get_complete_data_manager() -> AgentOutputManager:
     """호환성을 위한 별칭"""
     return get_real_output_manager()
+
+
+

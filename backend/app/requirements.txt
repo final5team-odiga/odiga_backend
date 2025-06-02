@@ -11,3 +11,5 @@ azure-core
 PyPDF2
 nest_asyncio
 psutil
+aiofiles
+nest-asyncio

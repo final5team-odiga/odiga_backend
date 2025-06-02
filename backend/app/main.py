@@ -1,53 +1,59 @@
+import os
 import sys
-sys.setrecursionlimit(5000) 
 
 import asyncio
-import nest_asyncio
-from dotenv import load_dotenv
-from utils.system_coordinator import SystemCoordinator
-from pathlib import Path
+from agents.system_coordinator import SystemCoordinator
+from utils.hybridlogging import get_hybrid_logger
+from utils.template_scanner import TemplateScanner
 
-# nest_asyncio 적용
-nest_asyncio.apply()
 
-dotenv_path = Path(r'C:\Users\EL0021\Desktop\odiga_agent\.env')
-load_dotenv(dotenv_path=dotenv_path, override=True)
+if sys.platform.startswith('win'):
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
 
-async def main_async():
-    print("=== CrewAI 여행 매거진 생성 시스템 ===")
-
-    # 시스템 코디네이터 초기화
-    coordinator = SystemCoordinator()
-
+async def main():
+    """완전 통합 멀티모달 매거진 생성"""
+    
+    logger = get_hybrid_logger("Main")
+    logger.info("=== 통합 멀티모달 매거진 생성 시스템 시작 ===")
+    
     try:
-        # 1. 시스템 초기화 (비동기)
-        data = await coordinator.initialize_system()
-
-        # 2. 이미지 분석 (비동기)
-        image_results = await coordinator.process_images(data['images'])
-
-        # 3. 콘텐츠 생성 (비동기)
-        magazine_content = await coordinator.create_content(data['texts'], image_results)
-
-        # 4. 템플릿 데이터 생성 (비동기)
-        template_data = await coordinator.generate_template_data(magazine_content, image_results)
-
-        # 5. JSX 컴포넌트 생성 (비동기)
-        components = await coordinator.generate_jsx_components(template_data)
-
-        # 6. React 앱 생성 (비동기)
-        project_path = await coordinator.create_react_app(components, template_data)
-
-        # 7. 결과 출력
-        coordinator.display_results(project_path, components)
-
+        # 통합 시스템 조율자 초기화
+        system_coordinator = SystemCoordinator()
+        
+        # 동적 템플릿 스캔
+        template_scanner = TemplateScanner()
+        available_templates = await template_scanner.scan_jsx_templates()
+        
+        logger.info(f"발견된 JSX 템플릿: {len(available_templates)}개")
+        logger.info(f"템플릿 목록: {available_templates}")
+        
+        # 템플릿이 없는 경우 처리
+        if not available_templates:
+            logger.warning("JSX 템플릿을 찾을 수 없습니다. 기본 템플릿을 생성합니다.")
+            available_templates = await template_scanner.create_default_templates()
+        
+        # 단일 통합 처리
+        final_result = await system_coordinator.coordinate_complete_magazine_generation(
+            available_templates=available_templates
+        )
+        
+        # 결과 요약 출력
+        processing_summary = final_result.get("processing_summary", {})
+        logger.info(f"""
+=== 매거진 생성 완료 ===
+- 총 섹션 수: {processing_summary.get('total_sections', 0)}
+- JSX 컴포넌트 수: {processing_summary.get('total_jsx_components', 0)}
+- 사용된 템플릿: {len(available_templates)}개
+- 의미적 신뢰도: {processing_summary.get('semantic_confidence', 0.0):.2f}
+- 멀티모달 최적화: {processing_summary.get('multimodal_optimization', False)}
+- 반응형 디자인: {processing_summary.get('responsive_design', False)}
+        """)
+        
+        logger.info("=== 통합 멀티모달 매거진 생성 시스템 완료 ===")
+        
     except Exception as e:
-        print(f"❌ 오류 발생: {str(e)}")
-        await coordinator.handle_error(e)
-
-def main():
-    print("🚀 CrewAI 여행 매거진 생성 시스템 시작 ")
-    asyncio.run(main_async())
+        logger.error(f"매거진 생성 실패: {e}")
+        raise
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
