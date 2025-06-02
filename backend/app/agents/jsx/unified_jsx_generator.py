@@ -392,22 +392,70 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
 **생성 요구사항:**
 1. AI Search 패턴을 참조한 현대적이고 반응형인 React 컴포넌트
 2. Tailwind CSS 클래스 사용 (패턴 기반 최적화)
-3. 이미지 최적화 및 lazy loading (패턴 참조)
+3. ✅ 이미지는 반드시 일반 img 태그 사용 - Next.js Image 컴포넌트 금지
 4. 접근성 고려 (alt 태그, ARIA 레이블, 패턴 기반)
 5. 성능 최적화 (memo, useMemo 활용)
 6. 애니메이션 및 인터랙션 (패턴에 따라)
 
+**중요: img 태그 안전 사용법:**
+- src가 undefined인 경우 img 태그를 렌더링하지 마세요
+- 다음 패턴을 사용하세요:
+{{imageSrc && <img src={{imageSrc}} alt="설명" style={{{{width: '100%', maxWidth: '500px', height: 'auto'}}}} />}}
+
 다음 형식으로 출력하세요:
+
 import React, {{ memo, useMemo }} from 'react';
-import Image from 'next/image';
 
 const {template_name.replace('.jsx', '')} = memo(() => {{
-// 컴포넌트 코드
+  const images = {json.dumps(content.get("images", []), ensure_ascii=False)};
+  
+  return (
+    <section className="py-16 px-4 max-w-4xl mx-auto">
+      <div className="text-center mb-8">
+        <h2 className="text-3xl md:text-4xl font-bold text-gray-800 mb-4">
+          {filtered_title}
+        </h2>
+        <p className="text-lg text-gray-600 mb-6">
+          {filtered_subtitle}
+        </p>
+      </div>
+      
+      {{/* 안전한 img 태그 렌더링 */}}
+      {{images && images.length > 0 && images[0] && (
+        <div className="mb-8">
+          <img 
+            src={{images[0]}} 
+            alt="{filtered_title} 이미지"
+            style={{{{
+              width: '100%',
+              maxWidth: '500px',
+              height: 'auto',
+              borderRadius: '8px',
+              margin: '0 auto',
+              display: 'block'
+            }}}}
+            onError={{(e) => {{
+              e.target.style.display = 'none';
+            }}}}
+          />
+        </div>
+      )}}
+      
+      <div className="prose prose-lg max-w-none">
+        <p className="text-gray-700 leading-relaxed">
+          {filtered_body[:200]}...
+        </p>
+      </div>
+    </section>
+  );
 }});
 
 export default {template_name.replace('.jsx', '')};
 
-text
+**절대 금지사항:**
+- import Image from 'next/image' 사용 금지
+- <Image> 컴포넌트 사용 금지
+- 오직 <img> 태그만 사용하세요
 """
         
         try:
@@ -466,14 +514,17 @@ text
             }
     
     def _generate_fallback_jsx_with_patterns(self, template_name: str, content: Dict, patterns: List[Dict]) -> str:
-        """AI Search 패턴을 고려한 격리된 기본 JSX 컴포넌트 생성"""
-        
+        """AI Search 패턴을 고려한 격리된 기본 JSX 컴포넌트 생성 (안전한 img 처리)"""
         component_name = template_name.replace('.jsx', '')
         
         # 원본 데이터 사용 (AI Search 키워드 필터링 없이)
         title = content.get("title", "여행 이야기")
         subtitle = content.get("subtitle", "특별한 순간들")
         body = content.get("body", "멋진 여행 경험을 공유합니다.")
+        images = content.get("images", [])
+        
+        # ✅ 안전한 img 태그 처리 로직 추가
+        safe_image_jsx = self._generate_safe_img_jsx(images)
         
         # 패턴 기반 스타일 개선
         additional_classes = ""
@@ -483,44 +534,126 @@ text
                 additional_classes = " transition-opacity duration-500"
             elif best_pattern.get("style_approach") == "modern":
                 additional_classes = " backdrop-blur-sm bg-white/90"
-        
+
         return f"""import React, {{ memo }} from 'react';
 
-const {component_name} = memo(() => {{
-  return (
-    <section className="py-16 px-4 max-w-4xl mx-auto{additional_classes}">
-      <div className="text-center mb-8">
-        <h2 className="text-3xl md:text-4xl font-bold text-gray-800 mb-4">
-          {title}
-        </h2>
-        <p className="text-lg text-gray-600 mb-6">
-          {subtitle}
-        </p>
-      </div>
-      
-      <div className="prose prose-lg max-w-none">
-        <p className="text-gray-700 leading-relaxed">
-          {body[:200]}...
-        </p>
-      </div>
-    </section>
-  );
-}});
+    const {component_name} = memo(() => {{
+    return (
+        <section className="py-16 px-4 max-w-4xl mx-auto{additional_classes}">
+        <div className="text-center mb-8">
+            <h2 className="text-3xl md:text-4xl font-bold text-gray-800 mb-4">
+            {title}
+            </h2>
+            <p className="text-lg text-gray-600 mb-6">
+            {subtitle}
+            </p>
+        </div>
+        
+        {safe_image_jsx}
+        
+        <div className="prose prose-lg max-w-none">
+            <p className="text-gray-700 leading-relaxed">
+            {body[:200]}...
+            </p>
+        </div>
+        </section>
+    );
+    }});
 
-export default {component_name};"""
+    export default {component_name};"""
+
+    def _generate_safe_img_jsx(self, images: List[str]) -> str:
+        """안전한 img JSX 생성 (Next.js Image 대신 img 태그 사용)"""
+        
+        if not images or len(images) == 0:
+            return """      {/* 이미지 없음 */}
+        <div className="mb-8 text-center text-gray-500">
+            이미지가 없습니다
+        </div>"""
+        
+        # 첫 번째 이미지가 유효한지 확인
+        first_image = images[0] if images[0] else None
+        
+        if not first_image:
+            return """      {/* 유효하지 않은 이미지 */}
+        <div className="mb-8 text-center text-gray-500">
+            이미지를 불러올 수 없습니다
+        </div>"""
+        
+        # 단일 이미지 처리
+        if len(images) == 1:
+            return f"""      {{/* 안전한 단일 img 태그 렌더링 */}}
+        <div className="mb-8">
+            <img 
+            src="{first_image}" 
+            alt="매거진 이미지"
+            style={{{{
+                width: '100%',
+                maxWidth: '500px',
+                height: 'auto',
+                borderRadius: '8px',
+                margin: '0 auto',
+                display: 'block'
+            }}}}
+            onError={{(e) => {{
+                e.target.style.display = 'none';
+            }}}}
+            />
+        </div>"""
+        
+        # 다중 이미지 처리 (최대 3개)
+        valid_images = [img for img in images[:3] if img and img.strip()]
+        
+        if not valid_images:
+            return """      {/* 유효한 이미지 없음 */}
+        <div className="mb-8 text-center text-gray-500">
+            표시할 이미지가 없습니다
+        </div>"""
+        
+        image_jsx_elements = []
+        for i, img in enumerate(valid_images):
+            image_jsx_elements.append(f"""          <img 
+                key={{{i}}}
+                src="{img}" 
+                alt="매거진 이미지 {i+1}"
+                style={{{{
+                width: '100%',
+                height: '200px',
+                objectFit: 'cover',
+                borderRadius: '8px'
+                }}}}
+                onError={{(e) => {{
+                e.target.style.display = 'none';
+                }}}}
+            />""")
+        
+        return f"""      {{/* 안전한 다중 img 태그 렌더링 */}}
+        <div className="mb-8">
+            <div className="grid grid-cols-1 md:grid-cols-{min(len(valid_images), 3)} gap-4">
+    {chr(10).join(image_jsx_elements)}
+            </div>
+        </div>"""
     
     async def _optimize_jsx_styles_with_patterns(self, jsx_components: List[Dict]) -> List[Dict]:
-        """AI Search 패턴 기반 JSX 스타일 최적화"""
-        
+        """AI Search 패턴 기반 JSX 스타일 최적화 (타입 안전성 강화)"""
         optimized_components = []
         
         for component in jsx_components:
-            # AI Search에서 스타일 최적화 패턴 검색
-            style_patterns = await self._search_jsx_style_patterns(component)
+            # ✅ 컴포넌트 타입 검증
+            if not isinstance(component, dict):
+                self.logger.warning(f"컴포넌트가 딕셔너리가 아님: {type(component)}, 건너뜀")
+                continue
             
-            optimized_component = await self._optimize_single_component_style_with_patterns(component, style_patterns)
-            optimized_components.append(optimized_component)
-        
+            try:
+                # AI Search에서 스타일 최적화 패턴 검색
+                style_patterns = await self._search_jsx_style_patterns(component)
+                optimized_component = await self._optimize_single_component_style_with_patterns(component, style_patterns)
+                optimized_components.append(optimized_component)
+            except Exception as e:
+                self.logger.error(f"컴포넌트 최적화 실패: {e}")
+                # 원본 컴포넌트 그대로 추가
+                optimized_components.append(component)
+
         return optimized_components
     
     async def _search_jsx_style_patterns(self, component: Dict) -> List[Dict]:
@@ -692,36 +825,91 @@ export default {component_name};"""
         
         return responsive_components
     
-    async def _search_responsive_jsx_patterns(self, component: Dict) -> List[Dict]:
-        """반응형 JSX를 위한 AI Search 패턴 검색"""
-        
+    async def _search_jsx_style_patterns(self, component: Dict) -> List[Dict]:
+        """JSX 스타일 최적화를 위한 AI Search 패턴 검색 (타입 안전성 강화)"""
         try:
+            # ✅ 입력 타입 검증 추가
+            if not isinstance(component, dict):
+                self.logger.warning(f"컴포넌트가 딕셔너리가 아님: {type(component)}")
+                return []
+            
             template_name = component.get("template_name", "")
-            image_count = component.get("component_metadata", {}).get("image_count", 0)
-            complexity = component.get("component_metadata", {}).get("complexity", "simple")
+            metadata = component.get("component_metadata", {})
             
-            search_query = f"responsive jsx {template_name} {image_count} images {complexity} mobile tablet desktop"
+            # ✅ metadata가 딕셔너리인지 확인
+            if not isinstance(metadata, dict):
+                self.logger.warning(f"메타데이터가 딕셔너리가 아님: {type(metadata)}")
+                metadata = {}
+            
+            complexity = metadata.get("complexity", "simple")
+            image_count = metadata.get("image_count", 0)
+            
+            search_query = f"jsx style optimization {template_name} {complexity} {image_count} images"
             clean_query = self.isolation_manager.clean_query_from_azure_keywords(search_query)
-            
+
             # 벡터 검색 실행
-            responsive_patterns = await asyncio.get_event_loop().run_in_executor(
+            style_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.vector_manager.search_similar_layouts(
                     clean_query, "magazine_layout", top_k=5
                 )
             )
-            
+
             # 격리된 패턴만 반환
             isolated_patterns = self.isolation_manager.filter_contaminated_data(
-                responsive_patterns, f"responsive_jsx_patterns_{template_name}"
+                style_patterns, f"jsx_style_patterns_{template_name}"
             )
-            
+
             return isolated_patterns
+
+        except Exception as e:
+            self.logger.error(f"JSX 스타일 패턴 검색 실패: {e}")
+            return []
+    
+
+    async def _search_responsive_jsx_patterns(self, component: Dict) -> List[Dict]:
+        """반응형 JSX 패턴 검색"""
+        try:
+            # ✅ 입력 타입 검증
+            if not isinstance(component, dict):
+                self.logger.warning(f"컴포넌트가 딕셔너리가 아님: {type(component)}")
+                return []
             
+            template_name = component.get("template_name", "")
+            metadata = component.get("component_metadata", {})
+            
+            # ✅ metadata 타입 검증
+            if not isinstance(metadata, dict):
+                metadata = {}
+            
+            complexity = metadata.get("complexity", "simple")
+            image_count = metadata.get("image_count", 0)
+            text_length = metadata.get("text_length", 0)
+            
+            search_query = f"responsive jsx {template_name} {complexity} {image_count} images {text_length} text"
+            clean_query = self.isolation_manager.clean_query_from_azure_keywords(search_query)
+
+            # 벡터 검색 실행
+            responsive_patterns = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.vector_manager.search_similar_layouts(
+                    clean_query, "magazine_layout", top_k=3
+                )
+            )
+
+            # 격리된 패턴만 반환
+            isolated_patterns = self.isolation_manager.filter_contaminated_data(
+                responsive_patterns, f"responsive_patterns_{template_name}"
+            )
+
+            self.logger.debug(f"반응형 패턴 검색 {template_name}: {len(isolated_patterns)}개")
+            return isolated_patterns
+
         except Exception as e:
             self.logger.error(f"반응형 JSX 패턴 검색 실패: {e}")
             return []
-    
+
+
     async def _make_jsx_responsive_with_patterns(self, component: Dict, patterns: List[Dict]) -> Dict:
         """AI Search 패턴을 활용한 JSX 컴포넌트 반응형 변환"""
         
@@ -746,7 +934,7 @@ export default {component_name};"""
         return component
     
     def _add_image_carousel_responsive_with_patterns(self, jsx_code: str, patterns: List[Dict]) -> str:
-        """AI Search 패턴 기반 이미지 캐러셀 반응형 처리"""
+        """AI Search 패턴 기반 이미지 캐러셀 반응형 처리 (안전한 img 처리)"""
         
         # 기본 캐러셀 import 추가
         if "import React" in jsx_code and "useState" not in jsx_code:
@@ -754,6 +942,37 @@ export default {component_name};"""
                 "import React, { memo }",
                 "import React, { memo, useState, useEffect }"
             )
+        
+        # ✅ 안전한 img 태그 사용 패턴 추가
+        safe_image_pattern = """
+    // 안전한 img 태그 렌더링 함수
+    const renderSafeImage = (imageSrc, index) => {
+        if (!imageSrc || typeof imageSrc !== 'string') {
+        return (
+            <div key={index} className="w-full h-64 bg-gray-200 flex items-center justify-center rounded-lg">
+            <span className="text-gray-500">이미지 없음</span>
+            </div>
+        );
+        }
+        
+        return (
+        <img 
+            key={index}
+            src={imageSrc} 
+            alt={`이미지 ${index + 1}`}
+            style={{
+            width: '100%',
+            height: '256px',
+            objectFit: 'cover',
+            borderRadius: '8px'
+            }}
+            onError={(e) => {
+            e.target.style.display = 'none';
+            }}
+        />
+        );
+    };
+    """
         
         # AI Search 패턴 기반 캐러셀 기능 개선
         if patterns:
@@ -764,19 +983,20 @@ export default {component_name};"""
                 # Swiper 기반 캐러셀 코드 추가
                 jsx_code = jsx_code.replace(
                     "// 컴포넌트 코드",
-                    """
-  const [currentSlide, setCurrentSlide] = useState(0);
-  
-  const nextSlide = () => {
-    setCurrentSlide((prev) => (prev + 1) % images.length);
-  };
-  
-  const prevSlide = () => {
-    setCurrentSlide((prev) => (prev - 1 + images.length) % images.length);
-  };
-  
-  // 컴포넌트 코드
-                    """
+                    f"""{safe_image_pattern}
+    
+    const [currentSlide, setCurrentSlide] = useState(0);
+    const validImages = images.filter(img => img && typeof img === 'string');
+    
+    const nextSlide = () => {{
+        setCurrentSlide((prev) => (prev + 1) % validImages.length);
+    }};
+    
+    const prevSlide = () => {{
+        setCurrentSlide((prev) => (prev - 1 + validImages.length) % validImages.length);
+    }};
+    
+    // 컴포넌트 코드"""
                 )
         
         return jsx_code
