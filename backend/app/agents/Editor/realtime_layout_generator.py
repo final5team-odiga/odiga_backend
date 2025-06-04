@@ -1053,7 +1053,7 @@ JSON 형식으로 출력하세요:
             responsive_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.vector_manager.search_similar_layouts(
-                    clean_query, "magazine_layout", top_k=5
+                    clean_query, "magazine-vector-index", top_k=5
                 )
             )
             
