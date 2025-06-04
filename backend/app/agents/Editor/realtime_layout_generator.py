@@ -161,7 +161,7 @@ class RealtimeLayoutGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
             layout_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.vector_manager.search_similar_layouts(
-                    clean_query, "magazine_layout", top_k=8
+                    clean_query, "magazine-vector-index", top_k=8
                 )
             )
             
@@ -192,7 +192,7 @@ class RealtimeLayoutGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
         pattern_context = ""
         if patterns:
             pattern_info = []
-            for pattern in patterns[:3]:  # 상위 3개 패턴 사용
+            for pattern in patterns[:3]: 
                 pattern_info.append({
                     "레이아웃_타입": pattern.get("layout_type", "균형형"),
                     "이미지_배치": pattern.get("image_placement", "상단"),
@@ -382,7 +382,7 @@ JSON 형식으로 출력하세요:
             placement_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.vector_manager.search_similar_layouts(
-                    clean_query, "magazine_layout", top_k=8
+                    clean_query, "magazine-vector-index", top_k=8
                 )
             )
             
@@ -514,7 +514,7 @@ JSON 형식으로 출력하세요:
             #  빈 응답 체크 추가
             if not response or not response.strip():
                 self.logger.warning(f"레이아웃 {template} 생성에서 빈 응답 수신")
-                return self._get_fallback_layout(template, text_info, combination, patterns)
+
             
             #  JSON 파싱 안전 처리
             try:
@@ -522,7 +522,7 @@ JSON 형식으로 출력하세요:
             except json.JSONDecodeError as json_error:
                 self.logger.error(f"레이아웃 {template} JSON 파싱 실패: {json_error}")
                 self.logger.debug(f"응답 내용: {response[:200]}...")
-                return self._get_fallback_layout(template, text_info, combination, patterns)
+
             
             # 이미지 URL 추가
             assigned_images = combination.get("assigned_images", [])
@@ -544,39 +544,6 @@ JSON 형식으로 출력하세요:
         except Exception as e:
             self.logger.error(f"레이아웃 {template} 최적화 실패: {e}")
             #  올바른 파라미터 개수로 호출
-            return self._get_fallback_layout(template, text_info, combination, patterns)
-
-    #  _get_fallback_layout 메서드 파라미터 수정
-    def _get_fallback_layout(self, template: str, text_info: Dict, 
-                        combination: Dict, patterns: List[Dict]) -> Dict:
-        """폴백 레이아웃 생성"""
-        
-        return {
-            "template": template,
-            "title": text_info.get("title", f"여행 이야기"),
-            "subtitle": "특별한 순간들",
-            "body": text_info.get("content_preview", "멋진 여행 경험을 공유합니다."),
-            "tagline": "TRAVEL & CULTURE",
-            "images": [],
-            "layout_config": {
-                "title_position": "상단",
-                "image_grid": "단일",
-                "text_alignment": "좌측",
-                "spacing": "기본",
-                "margin_ratio": "표준",
-                "typography": "기본"
-            },
-            "optimization_metadata": {
-                "strategy_applied": False,
-                "semantic_score": 0.3,
-                "image_count": 0,
-                "optimization_level": "basic",
-                "patterns_referenced": len(patterns),
-                "vector_enhanced": False,
-                "fallback_used": True
-            }
-        }
-
     
     async def _ensure_visual_balance_with_patterns(self, layouts: List[Dict]) -> List[Dict]:
         """AI Search 패턴 기반 시각적 균형 검증 및 조정"""
@@ -659,7 +626,7 @@ JSON 형식으로 출력하세요:
             balance_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.vector_manager.search_similar_layouts(
-                    clean_query, "magazine_layout", top_k=8  #  더 많은 패턴 검색
+                    clean_query, "magazine-vector-index", top_k=8  #  더 많은 패턴 검색
                 )
             )
             
@@ -816,7 +783,7 @@ JSON 형식으로 출력하세요:
             consistency_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.vector_manager.search_similar_layouts(
-                    clean_query, "magazine_layout", top_k=5
+                    clean_query, "magazine-vector-index", top_k=5
                 )
             )
             

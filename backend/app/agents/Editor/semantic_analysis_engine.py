@@ -207,7 +207,7 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
             similar_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.vector_manager.search_similar_layouts(
-                    clean_query, "magazine_layout", top_k=8
+                    clean_query, "text-semantic-patterns-index", top_k=8
                 )
             )
             
@@ -250,7 +250,7 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
 다음 텍스트 섹션의 의미적 요소를 분석하세요:
 
 제목: {filtered_title}
-내용: {filtered_content[:500]}...
+내용: {filtered_content}
 
 {pattern_context}
 
@@ -433,7 +433,7 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
             layout_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.vector_manager.search_similar_layouts(
-                    clean_query, "magazine_layout", top_k=5
+                    clean_query, "magazine-vector-index", top_k=5
                 )
             )
             

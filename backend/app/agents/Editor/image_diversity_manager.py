@@ -18,7 +18,7 @@ from utils.logging_manager import LoggingManager
 class ImageDiversityManager(SessionAwareMixin):
     """이미지 다양성 관리 및 중복 방지 전문 에이전트"""
     
-    def __init__(self, similarity_threshold: int = 10, diversity_weight: float = 0.7):
+    def __init__(self, similarity_threshold: int = 40, diversity_weight: float = 0.3):
         super().__init__()
         self.logger = get_hybrid_logger(self.__class__.__name__)
         self.similarity_threshold = similarity_threshold
@@ -201,7 +201,11 @@ class ImageDiversityManager(SessionAwareMixin):
                 distance = current_hash - existing_hash
                 
                 if distance <= self.similarity_threshold:
-                    return True
+                    # 매우 유사한 경우만 중복으로 처리 (더 엄격한 기준)
+                    if distance <= 5:
+                        return True
+                    # 중간 유사도는 품질 점수로 판단
+                    return False
             
             return False
         except Exception as e:
@@ -444,33 +448,27 @@ class ImageDiversityManager(SessionAwareMixin):
             return None
 
     def _select_representative_images(self, clusters: Dict[str, List[Dict]]) -> List[Dict]:
-        """
-        클러스터별 대표 이미지 선정 (활용률 극대화, 중복 제거)
-        - 각 클러스터에서 품질 기준을 만족하는 이미지를 모두 선택
-        - 너무 유사한 이미지는 해시 중복으로 제거
-        """
         representative_images = []
         temp_hashes = set()
+        
         for cluster_name, cluster_images in clusters.items():
-            # 품질 기준(예: 0.4 이상) 만족하는 모든 이미지 선택
+
             for img in cluster_images:
                 img_hash = img.get("perceptual_hash")
                 quality = img.get("overall_quality", 0.5)
-                if quality >= 0.4 and img_hash and img_hash not in temp_hashes:
+                
+
+                if quality >= 0.25 and img_hash and img_hash not in temp_hashes: 
                     representative_images.append(img)
                     temp_hashes.add(img_hash)
-                elif not img_hash:  # 해시가 없으면 일단 포함
+                elif not img_hash:  # 해시가 없으면 포함
                     representative_images.append(img)
-        self.logger.info(f"대표 이미지 선택 완료(활용률 극대화): {len(representative_images)}개")
+        
+        self.logger.info(f"대표 이미지 선택 완료(매트릭 조정): {len(representative_images)}개")
         return representative_images
 
     async def _allocate_images_to_sections_with_diversity(self, images: List[Dict], sections: List[Dict]) -> Dict[str, List[Dict]]:
-        """
-        섹션별 의미적 유사도 기반 이미지 할당 (중복 없이, 최대한 많은 이미지 활용)
-        - 각 섹션의 텍스트와 모든 이미지 간의 CLIP 유사도 계산
-        - 각 이미지는 한 섹션에만 할당 (중복 방지)
-        - 섹션당 할당 이미지 개수는 min(3, 남은 이미지/남은 섹션)로 동적 조정
-        """
+
         total_images = len(images)
         total_sections = len(sections)
         if total_images == 0 or total_sections == 0:
@@ -491,9 +489,12 @@ class ImageDiversityManager(SessionAwareMixin):
         images_left = total_images
 
         for i, section in enumerate(sections):
-            allocation_count = min(3, images_per_section, images_left - (total_sections - i - 1))
+            base_allocation = max(5, images_per_section * 3)
+            max_allocation = min(12, images_left - (total_sections - i - 1))
+            allocation_count = min(base_allocation, max_allocation, images_left)
+            
             if allocation_count <= 0:
-                allocation_count = 1
+                allocation_count = 1 
 
             # 유사도 기반 최적 이미지 선택
             if similarity_matrix is not None:

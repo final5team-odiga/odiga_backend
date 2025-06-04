@@ -160,7 +160,7 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
             jsx_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.vector_manager.search_similar_layouts(
-                    clean_query, "magazine_layout", top_k=8
+                    clean_query, "jsx-component-vector-index", top_k=10
                 )
             )
             
@@ -245,7 +245,7 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
             style_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.vector_manager.search_similar_layouts(
-                    clean_query, "magazine_layout", top_k=5
+                    clean_query, "jsx-component-vector-index", top_k=10
                 )
             )
             
@@ -319,32 +319,13 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
                 "pattern_enhanced": False
             }
     
-    async def _generate_jsx_components_with_patterns(self, analyzed_data: Dict) -> List[Dict]:
-        """AI Search 패턴 기반 JSX 컴포넌트 생성"""
-        
-        jsx_components = []
-        analyzed_sections = analyzed_data.get("analyzed_sections", [])
-        global_style = analyzed_data.get("global_style_guide", {})
-        
-        self.logger.info(f"JSX 생성할 섹션 수: {len(analyzed_sections)}개")
-        
-        # ✅ 각 섹션별로 JSX 컴포넌트 생성
-        for section_data in analyzed_sections:
-            jsx_component = await self._create_jsx_component_with_patterns(section_data, global_style)
-            jsx_components.append(jsx_component)
-            self.logger.info(f"JSX 컴포넌트 생성: {jsx_component.get('template_name', 'Unknown')}")
-        
-        self.logger.info(f"총 {len(jsx_components)}개 JSX 컴포넌트 생성 완료")
-        return jsx_components
-    
     async def _create_jsx_component_with_patterns(self, section_data: Dict, global_style: Dict) -> Dict:
-        """AI Search 패턴을 활용한 개별 JSX 컴포넌트 생성 (다양성 최적화 정보 포함)"""
+        """AI Search 패턴을 활용한 JSX 컴포넌트 생성 (텍스트 처리 강화 및 구조화)"""
         
         template_name = section_data.get("template_name", "Section01.jsx")
         content = section_data.get("content", {})
         layout = section_data.get("layout", {})
         requirements = section_data.get("jsx_requirements", {})
-        jsx_patterns = section_data.get("jsx_patterns", [])
         
         # ✅ 다양성 최적화 정보 추출
         images = content.get("images", [])
@@ -399,23 +380,34 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
                     "clip_enhanced": any(isinstance(img, dict) and img.get("perceptual_hash") for img in images)
                 })
         
-        # 콘텐츠 필터링
-        filtered_title = self.isolation_manager.clean_query_from_azure_keywords(content.get("title", ""))
-        filtered_subtitle = self.isolation_manager.clean_query_from_azure_keywords(content.get("subtitle", ""))
-        filtered_body = self.isolation_manager.clean_query_from_azure_keywords(content.get("body", ""))
+        # ✅ 텍스트 내용 안전하게 추출 및 정리 (JSX 최적화)
+        title = self._clean_text_for_jsx(content.get("title", ""))
+        subtitle = self._clean_text_for_jsx(content.get("subtitle", ""))
+        body = self._clean_text_for_jsx(content.get("body", content.get("content", "")))
+        
+        # AI Search 패턴 검색 (기존 로직 유지)
+        search_query = f"react jsx component {template_name} {len(optimized_images)} images"
+        clean_query = self.isolation_manager.clean_query_from_azure_keywords(search_query)
+        
+        jsx_patterns_search = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: self.vector_manager.search_similar_layouts(
+                clean_query, "jsx-component-vector-index", top_k=10
+            )
+        )
         
         # AI Search 패턴 컨텍스트 생성
         pattern_context = ""
-        if jsx_patterns:
+        if jsx_patterns_search:
             pattern_info = []
-            for pattern in jsx_patterns[:2]:
+            for pattern in jsx_patterns_search[:2]:
                 pattern_info.append({
-                    "컴포넌트_구조": pattern.get("component_structure", "기본"),
-                    "스타일_접근법": pattern.get("style_approach", "Tailwind"),
-                    "반응형_전략": pattern.get("responsive_strategy", "모바일우선"),
-                    "이미지_처리": pattern.get("image_handling", "lazy_loading"),
-                    "애니메이션": pattern.get("animation_type", "none"),
-                    "접근성_레벨": pattern.get("accessibility_level", "기본")
+                    "컴포넌트_구조": pattern.get("jsx_structure", {}).get("type", "기본"),
+                    "스타일_접근법": pattern.get("layout_method", "Tailwind"),
+                    "반응형_전략": "모바일우선",
+                    "이미지_처리": "responsive_grid",
+                    "애니메이션": "none",
+                    "접근성_레벨": "기본"
                 })
             pattern_context = f"AI Search 참조 패턴: {json.dumps(pattern_info, ensure_ascii=False)}"
         
@@ -433,16 +425,16 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
     {json.dumps(optimized_images, ensure_ascii=False, indent=2)}
     """
         
+        # ✅ JSX 생성 프롬프트 (구조화된 접근)
         jsx_prompt = f"""
-    다음 정보를 바탕으로 React JSX 컴포넌트를 생성하세요:
+    다음 정보를 바탕으로 완전한 React JSX 컴포넌트를 생성하세요:
 
     **컴포넌트명:** {template_name.replace('.jsx', '')}
 
     **콘텐츠 정보:**
-    - 제목: {filtered_title}
-    - 부제목: {filtered_subtitle}
-    - 본문: {filtered_body[:300]}...
-    - 태그라인: {content.get("tagline", "")}
+    - 제목: {title}
+    - 부제목: {subtitle}
+    - 본문: {body}
 
     **레이아웃 설정:**
     {json.dumps(layout.get("layout_config", {}), ensure_ascii=False, indent=2)}
@@ -457,165 +449,320 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
 
     {diversity_context}
 
-    **생성 요구사항:**
-    1. AI Search 패턴을 참조한 현대적이고 반응형인 React 컴포넌트
-    2. Tailwind CSS 클래스 사용 (패턴 기반 최적화)
-    3. ✅ 이미지는 반드시 일반 img 태그 사용 - Next.js Image 컴포넌트 금지
-    4. ✅ 다양성 최적화된 이미지 정보 활용 (품질 점수 기반 우선순위)
-    5. ✅ 모든 최적화된 이미지를 적절히 배치 (중복 없이)
-    6. 접근성 고려 (alt 태그, ARIA 레이블, 패턴 기반)
-    7. 성능 최적화 (memo, useMemo 활용)
+    **JSX 생성 규칙:**
+    1. 완전한 React 컴포넌트 구조 (import, export 포함)
+    2. 모든 텍스트 내용을 JSX에 안전하게 포함
+    3. ✅ 이미지는 반드시 일반 <img> 태그 사용 (Next.js Image 금지)
+    4. Tailwind CSS 클래스 사용
+    5. 반응형 디자인 적용
+    6. ✅ 다양성 최적화된 이미지 정보 활용 (품질 점수 기반 우선순위)
+    7. ✅ 모든 최적화된 이미지를 적절히 배치 (중복 없이)
+    8. 접근성 고려 (alt 태그, ARIA 레이블)
+    9. 성능 최적화 (memo, useMemo 활용)
 
     **중요: 다양성 최적화된 이미지 사용법:**
     - 제공된 최적화된 이미지 정보를 모두 활용하세요
     - 품질 점수가 높은 이미지를 우선 배치하세요
     - 각 이미지의 alt_text를 정확히 사용하세요
+    - 제공된 모든 optimized_images를 반드시 사용하세요
+    - 이미지가 많은 경우 그리드나 갤러리 형태로 배치하세요
+    - 이미지 개수에 따른 동적 레이아웃 적용:
+    * 1-2개: 큰 크기로 표시
+    * 3-5개: 그리드 형태
+    * 6개 이상: 갤러리/캐러셀 형태
 
-    다음 형식으로 출력하세요(똑같은 형식이 아닌 이전 데이터 기반으로 적절히 변형 단, 코드의 문제점은 없어야함):
-
+    **출력 형식:**
     import React, {{ memo, useMemo }} from 'react';
 
     const {template_name.replace('.jsx', '')} = memo(() => {{
     // ✅ 다양성 최적화된 이미지 데이터 사용
     const optimizedImages = {json.dumps(optimized_images, ensure_ascii=False)};
-    
+
+    text
     // ✅ 품질 점수 기반 이미지 정렬
     const sortedImages = useMemo(() => {{
         return optimizedImages
-        .filter(img => img.url && img.url.trim())
-        .sort((a, b) => b.quality - a.quality); // 품질 높은 순으로 정렬
+            .filter(img => img.url && img.url.trim())
+            .sort((a, b) => b.quality - a.quality); // 품질 높은 순으로 정렬
     }}, []);
-    
+
     return (
-        <section className="py-16 px-4 max-w-4xl mx-auto">
-        <div className="text-center mb-8">
-            <h2 className="text-3xl md:text-4xl font-bold text-gray-800 mb-4">
-            {filtered_title}
-            </h2>
-            <p className="text-lg text-gray-600 mb-6">
-            {filtered_subtitle}
-            </p>
-        </div>
-        
-        {{/* ✅ 모든 최적화된 이미지 렌더링 */}}
-        {{sortedImages.length > 0 && (
-            <div className="images-container mb-8">
-            {{sortedImages.length === 1 ? (
-                // 단일 이미지 레이아웃
-                <div className="single-image">
-                <img 
-                    src={{sortedImages[0].url}}
-                    alt={{sortedImages[0].alt_text}}
-                    className="w-full max-w-2xl mx-auto rounded-lg shadow-lg"
-                    style={{{{
-                    height: 'auto',
-                    display: 'block'
-                    }}}}
-                    onError={{(e) => {{
-                    e.target.style.display = 'none';
-                    }}}}
-                />
-                </div>
-            ) : (
-                // 다중 이미지 그리드 레이아웃
-                <div className="image-grid grid gap-4" style={{{{
-                gridTemplateColumns: sortedImages.length === 2 ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(250px, 1fr))',
-                maxWidth: '1000px',
-                margin: '0 auto'
-                }}}}>
-                {{sortedImages.map((img, index) => (
-                    <img 
-                    key={{index}}
-                    src={{img.url}}
-                    alt={{img.alt_text}}
-                    className="w-full h-48 object-cover rounded-lg shadow-md"
-                    onError={{(e) => {{
-                        e.target.style.display = 'none';
-                    }}}}
-                    />
-                ))}}
+        <div className="max-w-4xl mx-auto p-6">
+            <h1 className="text-3xl font-bold mb-4">{title}</h1>
+            {{subtitle && (
+                <h2 className="text-xl text-gray-600 mb-6">{subtitle}</h2>
+            )}}
+            
+            <div className="prose prose-lg max-w-none mb-8">
+                <p className="text-gray-800 leading-relaxed">
+                    {body}
+                </p>
+            </div>
+            
+            {{/* ✅ 모든 최적화된 이미지 렌더링 */}}
+            {{sortedImages.length > 0 && (
+                <div className="images-container mb-8">
+                    {{sortedImages.length === 1 ? (
+                        // 단일 이미지 레이아웃
+                        <div className="single-image">
+                            <img 
+                                src={{sortedImages.url}}
+                                alt={{sortedImages.alt_text}}
+                                className="w-full max-w-2xl mx-auto rounded-lg shadow-lg"
+                                style={{{{
+                                    height: 'auto',
+                                    display: 'block'
+                                }}}}
+                                onError={{(e) => {{
+                                    e.target.style.display = 'none';
+                                }}}}
+                            />
+                        </div>
+                    ) : (
+                        // 다중 이미지 그리드 레이아웃
+                        <div className="image-grid grid gap-4" style={{{{
+                            gridTemplateColumns: sortedImages.length === 2 ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(250px, 1fr))',
+                            maxWidth: '1000px',
+                            margin: '0 auto'
+                        }}}}>
+                            {{sortedImages.map((img, index) => (
+                                <img 
+                                    key={{index}}
+                                    src={{img.url}}
+                                    alt={{img.alt_text}}
+                                    className="w-full h-48 object-cover rounded-lg shadow-md"
+                                    onError={{(e) => {{
+                                        e.target.style.display = 'none';
+                                    }}}}
+                                />
+                            ))}}
+                        </div>
+                    )}}
                 </div>
             )}}
-            </div>
-        )}}
+        </div>
+    );
     }});
 
     export default {template_name.replace('.jsx', '')};
+
+    text
 
     **절대 금지사항:**
     - import Image from 'next/image' 사용 금지
     - <Image> 컴포넌트 사용 금지
     - 오직 <img> 태그만 사용하세요
     - 다양성 최적화 정보를 무시하지 마세요
+
+    **중요: 위의 JSX 코드 형식만 출력하고 다른 설명은 포함하지 마세요.**
     """
         
         try:
             response = await self.llm.ainvoke(jsx_prompt)
-            jsx_code = response
-
-            # JSX 코드 오염 검사
-            if self.isolation_manager.is_contaminated(jsx_code, f"jsx_code_{template_name}"):
-                self.logger.warning(f"JSX 코드 {template_name}에서 오염 감지, 폴백 사용")
-                jsx_code = self._generate_fallback_jsx_with_patterns(template_name, content, jsx_patterns)
-
-            # JSX 코드에서 실제 코드 부분 추출
-            if "```jsx" in jsx_code:
-                jsx_code = jsx_code.split("```jsx")[1].split("```")[0].strip()
-            elif "```javascript" in jsx_code:
-                jsx_code = jsx_code.split("```javascript")[1].split("```")[0].strip()
             
-            return {
-                "template_name": template_name,
-                "jsx_code": jsx_code,
-                "component_metadata": {
-                    "complexity": requirements.get("layout_complexity", "simple"),
-                    "image_count": len(content.get("images", [])),
-                    "text_length": len(content.get("body", "")),
-                    "responsive_optimized": True,
-                    "accessibility_features": True,
-                    "ai_search_patterns_used": len(jsx_patterns),
-                    "pattern_enhanced": len(jsx_patterns) > 0,
-                    "isolation_applied": True,
-                    "contamination_detected": False,
-                    # ✅ 다양성 최적화 메타데이터 추가
-                    "diversity_optimized": diversity_info["diversity_optimized"],
-                    "avg_diversity_score": diversity_info["avg_diversity_score"],
-                    "avg_quality_score": diversity_info["avg_quality_score"],
-                    "deduplication_applied": diversity_info["deduplication_applied"],
-                    "clip_enhanced": diversity_info["clip_enhanced"],
-                    "optimized_image_count": len(optimized_images)
+            # JSX 코드 추출 및 정리
+            cleaned_jsx = self._extract_and_clean_jsx(str(response))
+            
+            # JSX 구문 검증
+            if self._validate_jsx_syntax(cleaned_jsx):
+                return {
+                    "template_name": template_name,
+                    "jsx_code": cleaned_jsx,
+                    "component_name": template_name.replace('.jsx', ''),
+                    "component_metadata": {
+                        "complexity": requirements.get("layout_complexity", "simple"),
+                        "image_count": len(content.get("images", [])),
+                        "text_length": len(content.get("body", "")),
+                        "responsive_optimized": True,
+                        "accessibility_features": True,
+                        "ai_search_patterns_used": len(jsx_patterns_search),
+                        "pattern_enhanced": len(jsx_patterns_search) > 0,
+                        "isolation_applied": True,
+                        "contamination_detected": False,
+                        # ✅ 다양성 최적화 메타데이터 추가
+                        "diversity_optimized": diversity_info["diversity_optimized"],
+                        "avg_diversity_score": diversity_info["avg_diversity_score"],
+                        "avg_quality_score": diversity_info["avg_quality_score"],
+                        "deduplication_applied": diversity_info["deduplication_applied"],
+                        "clip_enhanced": diversity_info["clip_enhanced"],
+                        "optimized_image_count": len(optimized_images),
+                        "jsx_validated": True
+                    }
                 }
-            }
-            
+            else:
+                # 검증 실패 시 폴백
+                return self._generate_fallback_jsx_component(template_name, content)
+                
         except Exception as e:
             self.logger.error(f"JSX 컴포넌트 {template_name} 생성 실패: {e}")
-            
-            # 격리된 폴백 JSX 컴포넌트 반환
-            fallback_jsx = self._generate_fallback_jsx_with_patterns(template_name, content, jsx_patterns)
-            
-            return {
-                "template_name": template_name,
-                "jsx_code": fallback_jsx,
-                "component_metadata": {
-                    "complexity": "simple",
-                    "image_count": 0,
-                    "text_length": len(content.get("body", "")),
-                    "responsive_optimized": False,
-                    "accessibility_features": True,
-                    "ai_search_patterns_used": len(jsx_patterns),
-                    "pattern_enhanced": False,
-                    "isolation_applied": True,
-                    "fallback_used": True,
-                    # ✅ 폴백 시에도 다양성 정보 포함
-                    "diversity_optimized": False,
-                    "avg_diversity_score": 0.0,
-                    "avg_quality_score": 0.0,
-                    "deduplication_applied": False,
-                    "clip_enhanced": False,
-                    "optimized_image_count": 0
-                }
-            }
+            return self._generate_fallback_jsx_component(template_name, content)
 
+    def _clean_text_for_jsx(self, text: str) -> str:
+        """JSX에 안전한 텍스트로 정리"""
+        if not text:
+            return ""
+        
+        # 구조적 마커 제거
+        text = text.replace("magazine layout design structure", "")
+        
+        # 특수문자 이스케이프
+        text = text.replace('"', '\\"')
+        text = text.replace("'", "\\'")
+        text = text.replace('\n', ' ')
+        text = text.replace('\r', ' ')
+        
+        # 연속 공백 제거
+        import re
+        text = re.sub(r'\s+', ' ', text)
+        
+        # 길이 제한
+        if len(text) > 500:
+            text = text[:497] + "..."
+        
+        return text.strip()
+
+    def _extract_and_clean_jsx(self, response: str) -> str:
+        """응답에서 JSX 코드 추출 및 정리"""
+        import re
+        
+        # 코드 블록 추출 (jsx)
+        jsx_match = re.search(r'``````', response, re.DOTALL)
+        if jsx_match:
+            return jsx_match.group(1).strip()
+        
+        # 일반 코드 블록 추출
+        code_match = re.search(r'``````', response, re.DOTALL)
+        if code_match:
+            return code_match.group(1).strip()
+        
+        # 일반 코드 블록 (언어 지정 없음)
+        general_code_match = re.search(r'``````', response, re.DOTALL)
+        if general_code_match:
+            return general_code_match.group(1).strip()
+        
+        # import로 시작하는 부분부터 export까지 추출
+        import_match = re.search(r'(import.*?export default.*?;)', response, re.DOTALL)
+        if import_match:
+            return import_match.group(1).strip()
+        
+        return response.strip()
+
+    def _validate_jsx_syntax(self, jsx_code: str) -> bool:
+        """JSX 구문 기본 검증"""
+        try:
+            # 기본 구문 검증
+            required_elements = [
+                'import React',
+                'const ',
+                'return (',
+                'export default'
+            ]
+            
+            for element in required_elements:
+                if element not in jsx_code:
+                    return False
+            
+            # 중괄호 균형 검증
+            open_braces = jsx_code.count('{')
+            close_braces = jsx_code.count('}')
+            
+            if abs(open_braces - close_braces) > 2:  # 약간의 여유
+                return False
+            
+            # Next.js Image 컴포넌트 사용 금지 검증
+            if 'import Image' in jsx_code or '<Image' in jsx_code:
+                return False
+            
+            return True
+            
+        except Exception:
+            return False
+
+    def _generate_fallback_jsx_component(self, template_name: str, content: Dict) -> Dict:
+        """폴백 JSX 컴포넌트 생성 (구조화된 버전)"""
+        component_name = template_name.replace('.jsx', '')
+        title = self._clean_text_for_jsx(content.get("title", "여행 이야기"))
+        subtitle = self._clean_text_for_jsx(content.get("subtitle", ""))
+        body = self._clean_text_for_jsx(content.get("body", content.get("content", "멋진 여행 경험을 공유합니다.")))
+        
+        # 이미지 처리
+        images = content.get("images", [])
+        processed_images = []
+        for image in images:
+            if isinstance(image, dict):
+                image_url = image.get("image_url", image.get("image_name", ""))
+            else:
+                image_url = str(image)
+            
+            if image_url and image_url.strip():
+                processed_images.append(image_url.strip())
+        
+        fallback_jsx = f"""import React, {{ memo, useMemo }} from 'react';
+
+    const {component_name} = memo(() => {{
+        const images = {json.dumps(processed_images, ensure_ascii=False)};
+        
+        const validImages = useMemo(() => {{
+            return images.filter(img => img && img.trim());
+        }}, []);
+        
+        return (
+            <div className="max-w-4xl mx-auto p-6">
+                <h1 className="text-3xl font-bold mb-4">{title}</h1>
+                {subtitle and f'''
+                <h2 className="text-xl text-gray-600 mb-6">{subtitle}</h2>''' or ''}
+                
+                <div className="prose prose-lg max-w-none mb-8">
+                    <p className="text-gray-800 leading-relaxed">
+                        {body}
+                    </p>
+                </div>
+                
+                {{validImages.length > 0 && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {{validImages.map((img, index) => (
+                            <img
+                                key={{index}}
+                                src={{img}}
+                                alt={{`여행 이미지 ${{index + 1}}`}}
+                                className="w-full h-64 object-cover rounded-lg shadow-md"
+                                onError={{(e) => {{
+                                    e.target.style.display = 'none';
+                                }}}}
+                            />
+                        ))}}
+                    </div>
+                )}}
+            </div>
+        );
+    }});
+
+    export default {component_name};"""
+
+        return {
+            "template_name": template_name,
+            "jsx_code": fallback_jsx,
+            "component_name": component_name,
+            "component_metadata": {
+                "complexity": "simple",
+                "image_count": len(processed_images),
+                "text_length": len(body),
+                "responsive_optimized": True,
+                "accessibility_features": True,
+                "ai_search_patterns_used": 0,
+                "pattern_enhanced": False,
+                "isolation_applied": True,
+                "fallback_used": True,
+                # ✅ 폴백 시에도 다양성 정보 포함
+                "diversity_optimized": False,
+                "avg_diversity_score": 0.0,
+                "avg_quality_score": 0.0,
+                "deduplication_applied": False,
+                "clip_enhanced": False,
+                "optimized_image_count": len(processed_images),
+                "jsx_validated": True
+            }
+        }
     
     def _generate_fallback_jsx_with_patterns(self, template_name: str, content: Dict, patterns: List[Dict]) -> str:
         """AI Search 패턴을 고려한 격리된 기본 JSX 컴포넌트 생성 (안전한 img 처리)"""
@@ -705,8 +852,8 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
             />
         </div>"""
         
-        # 다중 이미지 처리 (최대 3개)
-        valid_images = [img for img in images[:3] if img and img.strip()]
+        # 다중 이미지 처리
+        valid_images = [img for img in images if img and img.strip()]
         
         if not valid_images:
             return """      {/* 유효한 이미지 없음 */}
@@ -733,7 +880,7 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
         
         return f"""      {{/* 안전한 다중 img 태그 렌더링 */}}
         <div className="mb-8">
-            <div className="grid grid-cols-1 md:grid-cols-{min(len(valid_images), 3)} gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-{min(len(valid_images), 6)} gap-4">
     {chr(10).join(image_jsx_elements)}
             </div>
         </div>"""
@@ -775,7 +922,7 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
             style_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.vector_manager.search_similar_layouts(
-                    clean_query, "magazine_layout", top_k=5
+                    clean_query, "jsx-component-vector-index", top_k=10
                 )
             )
             
@@ -955,7 +1102,7 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
             style_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.vector_manager.search_similar_layouts(
-                    clean_query, "magazine_layout", top_k=5
+                    clean_query, "jsx-component-vector-index", top_k=10
                 )
             )
 
@@ -997,7 +1144,7 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
             responsive_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.vector_manager.search_similar_layouts(
-                    clean_query, "magazine_layout", top_k=3
+                    clean_query, "jsx-component-vector-index", top_k=10
                 )
             )
 

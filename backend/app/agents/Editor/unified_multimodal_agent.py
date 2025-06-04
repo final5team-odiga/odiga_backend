@@ -443,7 +443,7 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
                     
                     text_patterns = await asyncio.get_event_loop().run_in_executor(
                         None,
-                        lambda q=clean_query: self.vector_manager.search_similar_layouts(q, "magazine_layout", top_k=3)
+                        lambda q=clean_query: self.vector_manager.search_similar_layouts(q, "text-semantic-patterns-index", top_k=8)
                     )
                     
                     isolated_text_patterns = self.isolation_manager.filter_contaminated_data(
@@ -480,7 +480,7 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
                         
                         image_patterns = await asyncio.get_event_loop().run_in_executor(
                             None,
-                            lambda q=clean_query: self.vector_manager.search_similar_layouts(q, "magazine_layout", top_k=3)
+                            lambda q=clean_query: self.vector_manager.search_similar_layouts(q, "magazine-vector-index", top_k=8)
                         )
                         
                         isolated_image_patterns = self.isolation_manager.filter_contaminated_data(
@@ -514,7 +514,7 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
             
             integration_patterns = await asyncio.get_event_loop().run_in_executor(
                 None,
-                lambda: self.vector_manager.search_similar_layouts(clean_integration_query, "magazine_layout", top_k=5)
+                lambda: self.vector_manager.search_similar_layouts(clean_integration_query, "magazine-vector-index", top_k=5)
             )
             
             isolated_integration_patterns = self.isolation_manager.filter_contaminated_data(
