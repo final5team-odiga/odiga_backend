@@ -3,6 +3,9 @@ import json
 from typing import List, Dict
 import aiofiles
 import asyncio
+from db.cosmos_connection import magazine_container
+from db.db_utils import save_to_cosmos
+
 
 class FileManager:
     def __init__(self, output_folder="./output"):
@@ -55,7 +58,7 @@ class FileManager:
         try:
             # 디렉토리 생성
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            
+
             async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
                 await f.write(content)
             print(f"✅ 텍스트 파일 비동기 저장 성공: {file_path}")
@@ -64,18 +67,19 @@ class FileManager:
             print(f"❌ 텍스트 파일 비동기 저장 실패: {e}")
             return file_path
 
-    def save_magazine_content_json(self, magazine_content, file_path):
-        """매거진 콘텐츠를 JSON 형식으로 저장 (구조적 데이터 포함)"""
+    def save_magazine_content_json(self, magazine_content, file_path=None):
+        """
+        매거진 콘텐츠를 Cosmos DB에 저장 (로컬 파일 저장 대신)
+        """
+        content_json = None  # 미리 선언하여 except에서 참조 가능하게 함
         try:
             # magazine_content가 이미 딕셔너리인지 확인
             if isinstance(magazine_content, dict):
                 content_json = magazine_content
             elif isinstance(magazine_content, str):
-                # 문자열인 경우 JSON 파싱 시도
                 try:
                     content_json = json.loads(magazine_content)
                 except json.JSONDecodeError:
-                    # JSON이 아닌 일반 텍스트인 경우 구조화
                     content_json = {
                         "magazine_title": "여행 매거진",
                         "content_type": "integrated_magazine",
@@ -90,7 +94,6 @@ class FileManager:
                         }
                     }
             else:
-                # 기타 타입인 경우 문자열로 변환 후 처리
                 content_json = {
                     "content_type": "unknown",
                     "raw_content": str(magazine_content),
@@ -101,18 +104,67 @@ class FileManager:
                         "agent_enhanced": True
                     }
                 }
-
-            # JSON 파일로 저장
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(content_json, f, ensure_ascii=False, indent=2)
-            print(f"✅ 매거진 콘텐츠 JSON 저장 성공: {file_path}")
-            return file_path
+            if 'mag_id' not in content_json:
+                content_json['mag_id'] = content_json.get(
+                    'mag_id', 'unknown_mag')
+            save_to_cosmos(magazine_container, content_json,
+                           partition_key_field='mag_id')
+            print(f"✅ 매거진 콘텐츠 Cosmos DB 저장 성공")
+            return "cosmosdb"
         except Exception as e:
-            print(f"❌ 매거진 콘텐츠 JSON 저장 실패: {e}")
-            # 폴백: 텍스트로 저장
-            with open(file_path.replace('.json', '.txt'), 'w', encoding='utf-8') as f:
-                f.write(str(magazine_content))
-            return file_path
+            print(f"❌ 매거진 콘텐츠 Cosmos DB 저장 실패: {e}")
+            # magazine_content가 정의되어 있으므로 안전하게 처리 가능
+            return None
+
+    # def save_magazine_content_json(self, magazine_content, file_path):
+    #     """매거진 콘텐츠를 JSON 형식으로 저장 (구조적 데이터 포함)"""
+    #     try:
+    #         # magazine_content가 이미 딕셔너리인지 확인
+    #         if isinstance(magazine_content, dict):
+    #             content_json = magazine_content
+    #         elif isinstance(magazine_content, str):
+    #             # 문자열인 경우 JSON 파싱 시도
+    #             try:
+    #                 content_json = json.loads(magazine_content)
+    #             except json.JSONDecodeError:
+    #                 # JSON이 아닌 일반 텍스트인 경우 구조화
+    #                 content_json = {
+    #                     "magazine_title": "여행 매거진",
+    #                     "content_type": "integrated_magazine",
+    #                     "sections": self._parse_text_to_sections(magazine_content),
+    #                     "raw_content": magazine_content,
+    #                     "layout_structure": self._generate_default_layout_structure(),
+    #                     "metadata": {
+    #                         "content_length": len(magazine_content),
+    #                         "creation_date": self._get_current_timestamp(),
+    #                         "format": "json",
+    #                         "agent_enhanced": True
+    #                     }
+    #                 }
+    #         else:
+    #             # 기타 타입인 경우 문자열로 변환 후 처리
+    #             content_json = {
+    #                 "content_type": "unknown",
+    #                 "raw_content": str(magazine_content),
+    #                 "layout_structure": self._generate_default_layout_structure(),
+    #                 "metadata": {
+    #                     "original_type": str(type(magazine_content)),
+    #                     "creation_date": self._get_current_timestamp(),
+    #                     "agent_enhanced": True
+    #                 }
+    #             }
+
+    #         # JSON 파일로 저장
+    #         with open(file_path, 'w', encoding='utf-8') as f:
+    #             json.dump(content_json, f, ensure_ascii=False, indent=2)
+    #         print(f"✅ 매거진 콘텐츠 JSON 저장 성공: {file_path}")
+    #         return file_path
+    #     except Exception as e:
+    #         print(f"❌ 매거진 콘텐츠 JSON 저장 실패: {e}")
+    #         # 폴백: 텍스트로 저장
+    #         with open(file_path.replace('.json', '.txt'), 'w', encoding='utf-8') as f:
+    #             f.write(str(magazine_content))
+    #         return file_path
 
     def _generate_default_layout_structure(self) -> Dict:
         """기본 레이아웃 구조 생성"""
@@ -123,8 +175,10 @@ class FileManager:
                 "margin": "40px"
             },
             "text_areas": [
-                {"id": "title", "position": {"x": 0, "y": 0, "width": 12, "height": 2}},
-                {"id": "subtitle", "position": {"x": 0, "y": 2, "width": 12, "height": 1}},
+                {"id": "title", "position": {
+                    "x": 0, "y": 0, "width": 12, "height": 2}},
+                {"id": "subtitle", "position": {
+                    "x": 0, "y": 2, "width": 12, "height": 1}},
                 {"id": "body", "position": {"x": 0, "y": 3, "width": 8, "height": 6}}
             ],
             "image_areas": [
@@ -142,19 +196,20 @@ class FileManager:
         """텍스트 콘텐츠를 섹션별로 파싱 (구조적 정보 포함)"""
         import re
         sections = []
-        
+
         # 헤더 기반 분할 (## 또는 ###)
         header_pattern = r'^(#{1,3})\s+(.+?)$'
         current_section = {"title": "", "content": "", "level": 1}
         current_content = []
-        
+
         lines = content.split('\n')
         for line in lines:
             header_match = re.match(header_pattern, line.strip())
             if header_match:
                 # 이전 섹션 저장
                 if current_content or current_section["title"]:
-                    current_section["content"] = '\n'.join(current_content).strip()
+                    current_section["content"] = '\n'.join(
+                        current_content).strip()
                     if current_section["content"] or current_section["title"]:
                         # 구조적 정보 추가
                         current_section["layout_info"] = {
@@ -163,7 +218,7 @@ class FileManager:
                             "suggested_layout": "grid" if len(current_section["content"]) > 500 else "minimal"
                         }
                         sections.append(current_section.copy())
-                
+
                 # 새 섹션 시작
                 header_level = len(header_match.group(1))
                 header_text = header_match.group(2).strip()
@@ -178,7 +233,7 @@ class FileManager:
                 # 내용 추가
                 if line.strip():
                     current_content.append(line)
-        
+
         # 마지막 섹션 저장
         if current_content or current_section["title"]:
             current_section["content"] = '\n'.join(current_content).strip()
@@ -189,7 +244,7 @@ class FileManager:
                     "suggested_layout": "grid" if len(current_section["content"]) > 500 else "minimal"
                 }
                 sections.append(current_section)
-        
+
         # 섹션이 없으면 전체를 하나의 섹션으로
         if not sections:
             sections.append({
@@ -203,7 +258,7 @@ class FileManager:
                     "suggested_layout": "magazine"
                 }
             })
-        
+
         return sections
 
     def _get_current_timestamp(self) -> str:
@@ -224,7 +279,8 @@ class FileManager:
                     # Python dict 문자열 변환 시도
                     try:
                         import ast
-                        cleaned_str = data.replace("'", '"').replace('True', 'true').replace('False', 'false').replace('None', 'null')
+                        cleaned_str = data.replace("'", '"').replace(
+                            'True', 'true').replace('False', 'false').replace('None', 'null')
                         parsed_data = json.loads(cleaned_str)
                         data = parsed_data
                     except:
@@ -260,24 +316,25 @@ class FileManager:
         """Template Data 구조화하여 비동기 저장"""
         try:
             # Template Data 구조 분석 및 향상
-            enhanced_template_data = self._enhance_template_data_structure(template_data)
-            
+            enhanced_template_data = self._enhance_template_data_structure(
+                template_data)
+
             # 비동기 저장
             await self.save_json_async(file_path, enhanced_template_data)
             print(f"✅ Template Data 저장 완료: {file_path}")
             return file_path
-            
+
         except Exception as e:
             print(f"❌ Template Data 저장 실패: {e}")
             return file_path
-    
+
     def _enhance_template_data_structure(self, template_data: Dict) -> Dict:
         """Template Data 구조 향상 (File Manager 전용)"""
-        
+
         # 기본 구조 분석
         content_sections = template_data.get("content_sections", [])
         selected_templates = template_data.get("selected_templates", [])
-        
+
         enhanced_data = {
             "magazine_metadata": {
                 "title": "AI 생성 여행 매거진",
@@ -309,26 +366,26 @@ class FileManager:
                 "target_browsers": ["Chrome", "Firefox", "Safari", "Edge"]
             }
         }
-        
+
         return enhanced_data
-    
+
     def _analyze_template_structure(self, content_sections: List[Dict]) -> Dict:
         """템플릿 구조 분석"""
-        
+
         structure_analysis = {
             "section_types": {},
             "image_distribution": {},
             "text_complexity": {},
             "layout_patterns": []
         }
-        
+
         for i, section in enumerate(content_sections):
             template_name = section.get("template", f"Section{i+1:02d}.jsx")
-            
+
             # 섹션 타입 분석
             images = section.get("images", [])
             body_length = len(section.get("body", ""))
-            
+
             if len(images) > 2:
                 section_type = "image_gallery"
             elif len(images) == 1:
@@ -337,10 +394,11 @@ class FileManager:
                 section_type = "text_only"
             else:
                 section_type = "multi_image"
-            
+
             structure_analysis["section_types"][template_name] = section_type
-            structure_analysis["image_distribution"][template_name] = len(images)
-            
+            structure_analysis["image_distribution"][template_name] = len(
+                images)
+
             # 텍스트 복잡도 분석
             if body_length > 500:
                 complexity = "high"
@@ -348,9 +406,9 @@ class FileManager:
                 complexity = "medium"
             else:
                 complexity = "low"
-            
+
             structure_analysis["text_complexity"][template_name] = complexity
-            
+
             # 레이아웃 패턴 추가
             layout_config = section.get("layout_config", {})
             if layout_config:
@@ -358,14 +416,14 @@ class FileManager:
                     "template": template_name,
                     "pattern": layout_config
                 })
-        
+
         return structure_analysis
-    
+
     def _process_content_sections(self, content_sections: List[Dict]) -> List[Dict]:
         """콘텐츠 섹션 처리 및 구조화"""
-        
+
         processed_sections = []
-        
+
         for i, section in enumerate(content_sections):
             processed_section = {
                 "section_id": f"section_{i+1:03d}",
@@ -396,16 +454,16 @@ class FileManager:
                     "ready_for_jsx": True
                 }
             }
-            
+
             processed_sections.append(processed_section)
-        
+
         return processed_sections
-    
+
     def _determine_section_type(self, section: Dict) -> str:
         """섹션 타입 결정"""
         images = section.get("images", [])
         body_length = len(section.get("body", ""))
-        
+
         if len(images) == 0:
             return "text_focused"
         elif len(images) == 1:
@@ -414,21 +472,21 @@ class FileManager:
             return "image_rich"
         else:
             return "gallery_style"
-    
+
     def _calculate_section_complexity(self, section: Dict) -> str:
         """섹션 복잡도 계산"""
         body_length = len(section.get("body", ""))
         image_count = len(section.get("images", []))
-        
+
         complexity_score = (body_length / 100) + (image_count * 2)
-        
+
         if complexity_score > 10:
             return "high"
         elif complexity_score > 5:
             return "medium"
         else:
             return "low"
-    
+
     # ✅ JSX 컴포넌트 처리 메서드들 (핵심)
     async def save_jsx_components_async(self, jsx_components: List[Dict]) -> None:
         """JSX 컴포넌트들을 구조화하여 저장"""
@@ -436,27 +494,28 @@ class FileManager:
             # 1. 컴포넌트 폴더 생성
             components_folder = os.path.join(self.output_folder, "components")
             os.makedirs(components_folder, exist_ok=True)
-            
+
             # 2. 개별 JSX 파일 저장
             saved_components = []
             for component in jsx_components:
                 template_name = component.get("template_name", "Unknown.jsx")
                 jsx_code = component.get("jsx_code", "")
-                
+
                 if jsx_code and template_name:
-                    component_path = os.path.join(components_folder, template_name)
+                    component_path = os.path.join(
+                        components_folder, template_name)
                     await self.save_text_async(component_path, jsx_code)
-                    
+
                     saved_components.append({
                         "template_name": template_name,
                         "file_path": component_path,
                         "component_metadata": component.get("component_metadata", {}),
                         "save_timestamp": self._get_current_timestamp()
                     })
-            
+
             # 3. 컴포넌트 인덱스 파일 생성
             await self._create_component_index_async(saved_components, components_folder)
-            
+
             # 4. 컴포넌트 매니페스트 저장
             manifest_data = {
                 "total_components": len(saved_components),
@@ -464,45 +523,49 @@ class FileManager:
                 "creation_timestamp": self._get_current_timestamp(),
                 "file_manager_version": "2.0"
             }
-            
-            manifest_path = os.path.join(components_folder, "component_manifest.json")
+
+            manifest_path = os.path.join(
+                components_folder, "component_manifest.json")
             await self.save_json_async(manifest_path, manifest_data)
-            
+
             print(f"✅ JSX 컴포넌트 저장 완료: {len(saved_components)}개")
-            
+
         except Exception as e:
             print(f"❌ JSX 컴포넌트 저장 실패: {e}")
-    
+
     async def _create_component_index_async(self, saved_components: List[Dict], components_folder: str) -> None:
         """컴포넌트 인덱스 파일 생성"""
-        
+
         # index.js 생성
         index_content = "// 자동 생성된 컴포넌트 인덱스 파일\n"
         index_content += f"// 생성 시간: {self._get_current_timestamp()}\n\n"
-        
+
         # Import 문 생성
         for component in saved_components:
-            template_name = component.get("template_name", "").replace(".jsx", "")
+            template_name = component.get(
+                "template_name", "").replace(".jsx", "")
             if template_name:
                 index_content += f"import {template_name} from './{template_name}';\n"
-        
+
         index_content += "\n// 컴포넌트 배열 Export\n"
         index_content += "export const MagazineComponents = [\n"
-        
+
         for component in saved_components:
-            template_name = component.get("template_name", "").replace(".jsx", "")
+            template_name = component.get(
+                "template_name", "").replace(".jsx", "")
             if template_name:
                 index_content += f"  {template_name},\n"
-        
+
         index_content += "];\n\n"
-        
+
         # 개별 Export
         index_content += "// 개별 컴포넌트 Export\n"
         for component in saved_components:
-            template_name = component.get("template_name", "").replace(".jsx", "")
+            template_name = component.get(
+                "template_name", "").replace(".jsx", "")
             if template_name:
                 index_content += f"export {{ default as {template_name} }} from './{template_name}';\n"
-        
+
         # 메타데이터 Export
         index_content += f"\n// 컴포넌트 메타데이터\n"
         index_content += f"export const ComponentMetadata = {{\n"
@@ -510,7 +573,7 @@ class FileManager:
         index_content += f"  generationTime: '{self._get_current_timestamp()}',\n"
         index_content += f"  aiGenerated: true\n"
         index_content += f"}};\n"
-        
+
         index_path = os.path.join(components_folder, "index.js")
         await self.save_text_async(index_path, index_content)
         print("✅ 컴포넌트 인덱스 파일 생성: index.js")
@@ -524,7 +587,7 @@ class FileManager:
         app_folder = os.path.join(project_folder, "app")
         components_folder = os.path.join(project_folder, "components")
         public_folder = os.path.join(project_folder, "public")
-        
+
         os.makedirs(app_folder, exist_ok=True)
         os.makedirs(components_folder, exist_ok=True)
         os.makedirs(public_folder, exist_ok=True)
@@ -583,12 +646,13 @@ export default function RootLayout({ children }) {
         # ✅ 3. 생성된 컴포넌트들을 components 폴더에 저장 및 import 정보 생성
         component_imports = []
         component_list = []
-        
+
         for i, component_data in enumerate(saved_components):
             # JSX 컴포넌트 데이터 구조에 맞게 수정
             if isinstance(component_data, dict):
                 # 새로운 구조: template_name과 jsx_code 사용
-                template_name = component_data.get('template_name', f'Component{i+1}.jsx')
+                template_name = component_data.get(
+                    'template_name', f'Component{i+1}.jsx')
                 jsx_code = component_data.get('jsx_code', '')
                 component_name = template_name.replace('.jsx', '')
             else:
@@ -596,15 +660,16 @@ export default function RootLayout({ children }) {
                 component_name = f'Component{i+1}'
                 template_name = f'{component_name}.jsx'
                 jsx_code = str(component_data)
-            
+
             if jsx_code:
                 # ✅ Next.js 컴포넌트 파일 저장 (JSX 그대로 사용)
                 component_path = os.path.join(components_folder, template_name)
                 with open(component_path, 'w', encoding='utf-8') as f:
                     f.write(jsx_code)
-                
+
                 # import 문과 컴포넌트 리스트에 추가
-                component_imports.append(f"import {component_name} from '../components/{component_name}';")
+                component_imports.append(
+                    f"import {component_name} from '../components/{component_name}';")
                 component_list.append({
                     'name': component_name,
                     'component': component_name,
