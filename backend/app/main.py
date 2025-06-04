@@ -5,6 +5,7 @@ import asyncio
 from agents.system_coordinator import SystemCoordinator
 from utils.hybridlogging import get_hybrid_logger
 from utils.template_scanner import TemplateScanner
+from utils.final_pdf_generater import PDFGenerationService
 
 
 if sys.platform.startswith('win'):
@@ -34,6 +35,7 @@ async def main():
         final_result = await system_coordinator.coordinate_complete_magazine_generation(
             available_templates=available_templates
         )
+        print("🧪 final_result =", final_result)
         
         # 결과 요약 출력
         processing_summary = final_result.get("processing_summary", {})
@@ -46,6 +48,13 @@ async def main():
 - 멀티모달 최적화: {processing_summary.get('multimodal_optimization', False)}
 - 반응형 디자인: {processing_summary.get('responsive_design', False)}
         """)
+        
+        # ✅ PDF 생성
+        logger.info("JSX 파일 기반으로 PDF 생성 시작...")
+        pdf_service = PDFGenerationService()
+        output_pdf_path = os.path.abspath("magazine_result.pdf")
+        pdf_service.generate_pdf(output_pdf_path=output_pdf_path)
+        logger.info(f"PDF 생성 완료: {output_pdf_path}")
         
         logger.info("=== 통합 멀티모달 매거진 생성 시스템 완료 ===")
         

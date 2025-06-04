@@ -1,0 +1,26 @@
+{
+  "name": "odiga_backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/final5team-odiga/odiga_backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/final5team-odiga/odiga_backend/issues"
+  },
+  "homepage": "https://github.com/final5team-odiga/odiga_backend#readme",
+  "dependencies": {
+    "@babel/parser": "^7.27.5",
+    "@babel/traverse": "^7.27.4",
+    "fs-extra": "^11.3.0",
+    "recast": "^0.23.11"
+  }
+}
