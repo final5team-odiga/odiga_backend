@@ -1,0 +1,32 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VS Code 설정
+.vscode/
+
+# 환경 설정
+.env
+
+# 로그 및 캐시
+*.log
+*.sqlite3
+*.db
+*.cache
+
+# Node.js
+node_modules/
+npm-debug.log
+
+# Output 결과물
+/output/
+output/
+pdf_components/
+magazine_app_*/
+
+# OS 관련
+.DS_Store
+Thumbs.db
