@@ -178,6 +178,15 @@ class SystemCoordinator:
                 input_data["magazine_content"],
                 input_data["image_analysis"]
             )
+
+            # ✅ 두 가지 키 모두 지원
+            text_semantics = semantic_analysis.get('text_semantics', [])
+            if not text_semantics:
+                # 이전 버전 호환성
+                semantic_mappings = semantic_analysis.get('semantic_mappings', [])
+                text_semantics = semantic_mappings  # 매핑을 텍스트 의미로 사용
+
+            self.logger.info(f"의미 분석된 텍스트 섹션: {len(text_semantics)}")
             
             # ✅ 의미적 분석 로깅
             await self.logging_manager.log_semantic_analysis_completion(semantic_analysis)

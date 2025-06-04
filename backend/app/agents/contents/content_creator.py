@@ -509,14 +509,14 @@ class ContentCreatorV2Agent:
         )
 
     async def _integrate_all_content_as_first_agent_async(self, interview_results: Dict[str, str], essay_results: Dict[str, str],
-                                                    image_info: str, original_texts: List[str], semantic_connections: Dict) -> str:
-        """첫 번째 에이전트로서 모든 콘텐츠를 활용하여 최종 매거진 콘텐츠 생성 (JSX 최적화)"""
+                                                        image_info: str, original_texts: List[str], semantic_connections: Dict) -> str:
+        """첫 번째 에이전트로서 모든 콘텐츠를 활용하여 최종 매거진 콘텐츠 생성 (비동기)"""
         agent = self.create_agent()
         
-        # 모든 인터뷰 콘텐츠 정리
+        # 모든 인터뷰 콘텐츠 정리 (완전 활용)
         interview_content = "\n\n".join([f"=== {key} ===\n{value}" for key, value in interview_results.items()])
         
-        # 모든 에세이 콘텐츠 정리
+        # 모든 에세이 콘텐츠 정리 (완전 활용)
         essay_content = "\n\n".join([f"=== {key} ===\n{value}" for key, value in essay_results.items()])
         
         # 원본 텍스트도 참고용으로 제공
@@ -527,32 +527,87 @@ class ContentCreatorV2Agent:
         
         integration_task = Task(
             description=f"""
-    **JSX 생성 최적화를 위한 구조화된 매거진 콘텐츠 생성**
+**첫 번째 에이전트로서 후속 에이전트들을 위한 기초 매거진 콘텐츠 생성**
 
-    다음의 **모든** 인터뷰 형식 콘텐츠와 에세이 형식 콘텐츠를 바탕으로
-    **JSX 생성에 최적화된** 구조화된 여행 매거진 콘텐츠를 작성하세요.
+다음의 **모든** 인터뷰 형식 콘텐츠와 에세이 형식 콘텐츠, 그리고 이미지 정보를 바탕으로
+**완전한** 여행 매거진 콘텐츠를 작성하세요.
 
-    **인터뷰 형식 콘텐츠 (모두 활용):**
-    {interview_content}
+**중요**: 제공된 모든 콘텐츠를 빠짐없이 활용해야 합니다. 첨삭하지 말고 모든 내용을 포함하세요.
 
-    **에세이 형식 콘텐츠 (모두 활용):**
-    {essay_content}
+**첫 번째 에이전트로서의 역할:**
+- 후속 에이전트들이 활용할 수 있는 고품질 기초 콘텐츠 생성
+- 구조화되고 완성도 높은 매거진 콘텐츠 제공
+- 이미지 배치 및 레이아웃 에이전트들을 위한 명확한 콘텐츠 섹션 구분
+- **이미지와 텍스트의 의미적 연결을 반영한 콘텐츠 구성**
 
-    **원본 텍스트 참고:**
-    {original_content}
+**인터뷰 형식 콘텐츠 (모두 활용):**
+{interview_content}
 
-    **이미지 정보:**
-    {image_info}
+**에세이 형식 콘텐츠 (모두 활용):**
+{essay_content}
 
-    **이미지-텍스트 의미적 연결 분석 결과:**
-    {semantic_info}
+**원본 텍스트 참고:**
+{original_content}
 
-    **JSX 최적화 구조화 지침:**
+**이미지 정보:**
+{image_info}
+
+**이미지-텍스트 의미적 연결 분석 결과:**
+{semantic_info}
+
+**통합 지침 (첫 번째 에이전트 - 모든 데이터 활용):**
+1. **완전 활용**: 인터뷰와 에세이의 모든 내용을 빠짐없이 포함
+2. **구조화**: 후속 에이전트들이 활용하기 쉽도록 명확한 섹션 구분
+3. **내용 확장**: 제공된 콘텐츠를 기반으로 더 풍부한 매거진 스토리 생성
+4. **품질 보장**: 첫 번째 에이전트로서 높은 품질의 기초 데이터 제공
+5. **통합성**: 각 섹션이 독립적이면서도 전체 스토리가 연결되도록 구성
+6. **이미지 연계**: 이미지 정보를 적절한 위치에 자연스럽게 녹여냄
+7. **완성도**: 매거진 독자들이 몰입할 수 있는 완성된 스토리로 구성
+8. **확장성**: 후속 에이전트들이 추가 작업할 수 있는 여지 제공
+9. **의미적 연결**: 이미지-텍스트 분석 결과를 반영하여 시각적 요소와 텍스트가 조화롭게 구성
+
+**매거진 구성 요소 (모든 콘텐츠 포함):**
+1. 매력적인 제목과 부제목
+2. 여행지 소개 및 첫인상 (인터뷰와 에세이 내용 활용)
+3. 주요 경험과 감상 (모든 인터뷰와 에세이 혼합)
+4. 특별한 순간들과 만남 (모든 콘텐츠에서 추출)
+5. 일상적 경험들 (모든 세부 내용 포함)
+6. 문화적 체험과 성찰 (에세이 내용 중심)
+7. 여행의 의미와 마무리 (모든 감상 통합)
+
+**스타일 (첫 번째 에이전트 기준):**
+- 매거진 특유의 세련되고 감성적인 문체
+- 독자의 공감을 이끌어내는 스토리텔링
+- 시각적 상상력을 자극하는 묘사
+- 인터뷰의 진솔함과 에세이의 성찰이 조화된 톤
+- **모든 제공된 콘텐츠가 자연스럽게 녹아든 완성된 스토리**
+- **후속 에이전트들이 작업하기 좋은 구조화된 형태**
+- **이미지와 텍스트가 서로를 보완하고 강화하는 시너지 창출**
+
+**이미지-텍스트 시너지 창출 요구사항:**
+- 각 텍스트 섹션에서 시각적 요소를 연상시키는 묘사 포함
+- 이미지의 감정적 톤과 일치하는 문체 사용
+- 독자가 텍스트를 읽으면서 자연스럽게 이미지를 떠올릴 수 있도록 구성
+- 이미지 시퀀스가 텍스트의 내러티브 플로우와 일치하도록 섹션 배치
+
+**출력 요구사항:**
+- 최소 3000자 이상의 풍부한 매거진 콘텐츠
+- 모든 인터뷰와 에세이 내용이 포함된 완성된 스토리
+- 여행의 전 과정을 아우르는 완전한 내러티브
+- 이미지 배치 에이전트를 위한 이미지 연결점 정보 포함
+- **이미지와 텍스트의 의미적 연결이 명확히 드러나는 구성**
+
+**템플릿 생성 규칙:**
+- 모든 텍스트 섹션은 독자의 인지 흐름을 고려하여 자연스럽게 이어져야 합니다.
+- 중복을 절대로 하지않고 만듭니다!!
+- **각 섹션에서 해당하는 이미지의 시각적 특성을 텍스트로 표현합니다.**
+- **이미지가 전달하는 감정과 분위기를 텍스트에 반영합니다.**
+
+**JSX 최적화 구조화 지침:**
     1. **명확한 JSON 구조**: 각 섹션을 명확한 JSON 객체로 구분
     2. **구조적 마커 제거**: "magazine layout design structure" 같은 불필요한 마커 완전 제거
     3. **섹션별 명확한 구분**: title, subtitle, body가 명확히 분리된 구조
     4. **특수문자 제거**: JSX 파싱을 방해하는 특수문자 정리
-    5. **적절한 길이**: 각 섹션의 body는 500자 이내로 제한
     6. **일관된 톤**: 모든 섹션에서 일관된 문체 유지
 
     **출력 형식 (반드시 이 구조로만 출력):**
@@ -565,14 +620,14 @@ class ContentCreatorV2Agent:
         "section_id": 1,
         "title": "섹션 제목",
         "subtitle": "섹션 부제목",
-        "body": "완전한 본문 내용 (500자 이내, 특수문자 제거)",
+        "body": "완전한 본문 내용 (특수문자 제거)",
         "image_keywords": ["관련", "이미지", "키워드"]
         }},
         {{
         "section_id": 2,
         "title": "섹션 제목",
         "subtitle": "섹션 부제목", 
-        "body": "완전한 본문 내용 (500자 이내, 특수문자 제거)",
+        "body": "완전한 본문 내용 (특수문자 제거)",
         "image_keywords": ["관련", "이미지", "키워드"]
         }}
     ]
@@ -582,10 +637,10 @@ class ContentCreatorV2Agent:
     - 위의 JSON 형식만 출력하고 다른 텍스트는 포함하지 마세요
     - 구조적 마커나 메타데이터는 절대 포함하지 마세요
     - 모든 텍스트는 JSX에서 안전하게 파싱될 수 있도록 정리하세요
-    - 각 섹션의 body는 완전한 문장으로 구성하되 500자를 초과하지 마세요
-    """,
+    - 각 섹션의 body는 완전한 문장으로 구성
+""",
             agent=agent,
-            expected_output="JSX 최적화된 구조화된 JSON 매거진 콘텐츠"
+            expected_output="모든 하위 에이전트 콘텐츠가 포함되고 이미지-텍스트 의미적 연결이 강화된 완성된 여행 매거진 콘텐츠"
         )
         
         # 비동기 태스크 실행
@@ -593,47 +648,11 @@ class ContentCreatorV2Agent:
             None, agent.execute_task, integration_task
         )
         
-        # 결과를 JSON으로 파싱하여 검증
-        final_content = str(result)
-        
-        # JSON 구조 검증 및 정리
-        cleaned_content = self._clean_and_validate_json_content(final_content)
-        
         # 결과 검증
-        await self._verify_final_content_as_first_agent_async(cleaned_content, interview_results, essay_results)
+        final_content = str(result)
+        await self._verify_final_content_as_first_agent_async(final_content, interview_results, essay_results)
         
-        return cleaned_content
-
-    def _clean_and_validate_json_content(self, content: str) -> str:
-        """JSON 콘텐츠 정리 및 검증"""
-        try:
-            # JSON 추출 시도
-            import re
-            
-            # 첫 번째와 마지막 중괄호 사이의 내용 추출
-            first_brace = content.find('{')
-            last_brace = content.rfind('}')
-            
-            if first_brace != -1 and last_brace != -1 and first_brace < last_brace:
-                json_content = content[first_brace:last_brace + 1]
-                
-                # JSON 파싱 테스트
-                import json
-                parsed = json.loads(json_content)
-                
-                # 필수 구조 검증
-                if "sections" in parsed and isinstance(parsed["sections"], list):
-                    # 각 섹션의 body 길이 제한
-                    for section in parsed["sections"]:
-                        if "body" in section and len(section["body"]) > 500:
-                            section["body"] = section["body"][:497] + "..."
-                    
-                    return json.dumps(parsed, ensure_ascii=False, indent=2)
-            
-        except Exception as e:
-            self.logger.error(f"JSON 콘텐츠 정리 실패: {e}")
-
-
+        return final_content
 
     def _format_semantic_connections_for_prompt(self, semantic_connections: Dict) -> str:
         """의미적 연결 정보를 프롬프트용으로 포맷팅"""

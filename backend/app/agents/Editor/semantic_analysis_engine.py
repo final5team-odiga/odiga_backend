@@ -3,6 +3,7 @@ import json
 import numpy as np
 import open_clip
 import time
+import torch
 from typing import Dict, List
 from sklearn.metrics.pairwise import cosine_similarity
 from custom_llm import get_azure_llm
@@ -83,55 +84,267 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
 
         
     async def analyze_text_image_semantics(self, magazine_content: Dict, image_analysis: List[Dict]) -> Dict:
-        """
-        의미적 텍스트-이미지 매칭 (중복 없이, 의미적 군집 기반)
-        """
+        """의미적 텍스트-이미지 매칭 (구조 통일)"""
+        
         sections = magazine_content.get("sections", [])
-        if not sections or not image_analysis:
-            return {"semantic_mappings": []}
-
-        # CLIP 임베딩 생성
-        if hasattr(self, 'clip_available') and self.clip_available:
-            section_texts = [sec.get("title", "") + " " + sec.get("content", "")[:200] for sec in sections]
-            section_embeddings = await self._generate_clip_text_embeddings(section_texts)
-            image_embeddings = await self._generate_clip_image_embeddings_from_data(image_analysis)
-            similarity_matrix = cosine_similarity(section_embeddings, image_embeddings)
-        else:
-            similarity_matrix = None
-
-        semantic_mappings = []
-        assigned_image_indices = set()
-
-        for i, section in enumerate(sections):
-            mapping = {
-                "text_section_index": i,
-                "text_title": section.get("title", f"섹션 {i+1}"),
-                "image_matches": []
+        if not sections:
+            # ✅ 빈 섹션이어도 구조는 유지
+            return {
+                "text_semantics": [],
+                "semantic_mappings": [],
+                "analysis_metadata": {
+                    "sections_processed": 0,
+                    "images_processed": len(image_analysis) if image_analysis else 0,
+                    "success": True,
+                    "empty_sections": True
+                }
             }
-            # 의미적 유사도 기반 이미지 선택
-            if similarity_matrix is not None:
-                sim_scores = list(enumerate(similarity_matrix[i]))
-                sim_scores = [s for s in sim_scores if s[0] not in assigned_image_indices]
-                sim_scores.sort(key=lambda x: x[1], reverse=True)
-                selected_indices = [idx for idx, _ in sim_scores[:3]]
+        
+        if not image_analysis:
+            # ✅ 이미지가 없어도 텍스트 분석은 수행
+            text_semantics = await self._extract_text_semantics_with_vector_search(magazine_content)
+            return {
+                "text_semantics": text_semantics,
+                "semantic_mappings": self._create_text_only_mappings(text_semantics),
+                "analysis_metadata": {
+                    "sections_processed": len(sections),
+                    "images_processed": 0,
+                    "success": True,
+                    "text_only_mode": True
+                }
+            }
+        
+        # ✅ 정상적인 텍스트-이미지 분석
+        # CLIP 모델 초기화 확인
+        await self._ensure_clip_initialization()
+        
+        # 텍스트 의미 분석
+        text_semantics = await self._extract_text_semantics_with_vector_search(magazine_content)
+        
+        # 이미지 의미 분석
+        image_semantics = await self._extract_image_semantics_with_layout_patterns_batch(image_analysis)
+        
+        # 의미적 매칭 수행
+        semantic_mappings = await self._perform_enhanced_semantic_matching(
+            text_semantics, image_semantics, sections, image_analysis
+        )
+        
+        # ✅ 통일된 구조로 반환
+        return {
+            "text_semantics": text_semantics,
+            "image_semantics": image_semantics,
+            "semantic_mappings": semantic_mappings,
+            "optimal_combinations": await self._generate_optimal_combinations_with_ai_search(semantic_mappings),
+            "analysis_metadata": {
+                "sections_processed": len(sections),
+                "images_processed": len(image_analysis),
+                "text_sections_analyzed": len(text_semantics),
+                "image_sections_analyzed": len(image_semantics),
+                "mappings_created": len(semantic_mappings),
+                "clip_available": getattr(self, 'clip_available', False),
+                "success": True
+            }
+        }
+
+    def _create_text_only_mappings(self, text_semantics: List[Dict]) -> List[Dict]:
+        """텍스트만 있을 때의 매핑 생성"""
+        mappings = []
+        for text_section in text_semantics:
+            mappings.append({
+                "text_section_index": text_section["section_index"],
+                "text_title": text_section["title"],
+                "image_matches": [],  # 이미지 없음
+                "text_only": True
+            })
+        return mappings
+
+    async def _ensure_clip_initialization(self):
+        """CLIP 모델 초기화 보장"""
+        if not hasattr(self, 'clip_available'):
+            try:
+                import torch
+                import open_clip
+                self.device = "cuda" if torch.cuda.is_available() else "cpu"
+                self.clip_model, _, self.clip_preprocess = open_clip.create_model_and_transforms(
+                    'ViT-B-32', pretrained='laion2b_s34b_b79k', device=self.device
+                )
+                self.clip_model.eval()
+                self.clip_available = True
+                self.logger.info("✅ CLIP 모델 초기화 성공")
+            except Exception as e:
+                self.logger.warning(f"⚠️ CLIP 모델 초기화 실패, 품질 기반 매칭 사용: {e}")
+                self.clip_available = False
+
+
+    async def _perform_enhanced_semantic_matching(self, text_semantics: List[Dict], 
+                                            image_semantics: List[Dict],
+                                            sections: List[Dict], 
+                                            image_analysis: List[Dict]) -> List[Dict]:
+        """강화된 의미적 매칭 (빈 결과 방지)"""
+        
+        if not text_semantics:
+            self.logger.warning("텍스트 의미 분석 결과 없음")
+            return []
+        
+        # CLIP 기반 매칭 시도
+        if self.clip_available and image_analysis:
+            try:
+                return await self._perform_clip_based_matching(text_semantics, image_analysis, sections)
+            except Exception as e:
+                self.logger.error(f"CLIP 매칭 실패: {e}")
+        
+        # 키워드 기반 매칭 (CLIP 실패 시)
+        if image_analysis:
+            return await self._perform_keyword_based_matching(text_semantics, image_analysis)
+        
+        # 텍스트만 있는 경우
+        return self._create_text_only_mappings(text_semantics)
+
+    async def _perform_clip_based_matching(self, text_semantics: List[Dict], 
+                                        image_analysis: List[Dict], 
+                                        sections: List[Dict]) -> List[Dict]:
+        """CLIP 기반 의미적 매칭"""
+        
+        # 텍스트 임베딩 생성
+        section_texts = []
+        for i, section in enumerate(sections):
+            text = section.get("title", "") + " " + section.get("content", "")[:200]
+            section_texts.append(text)
+        
+        section_embeddings = await self._generate_clip_text_embeddings(section_texts)
+        
+        # 이미지 임베딩 생성 (ImageDiversityManager 캐시 활용)
+        image_embeddings = []
+        for img in image_analysis:
+            url = img.get("image_url", "")
+            if hasattr(self, 'image_diversity_manager') and url in self.image_diversity_manager.image_embeddings_cache:
+                image_embeddings.append(self.image_diversity_manager.image_embeddings_cache[url])
             else:
-                quality_scores = [(idx, img.get("overall_quality", 0.5)) for idx, img in enumerate(image_analysis) if idx not in assigned_image_indices]
-                quality_scores.sort(key=lambda x: x[1], reverse=True)
-                selected_indices = [idx for idx, _ in quality_scores[:3]]
+                # 실시간 임베딩 생성
+                try:
+                    embedding = await self._generate_clip_image_embeddings_from_data(url)
+                    image_embeddings.append(embedding)
+                except:
+                    image_embeddings.append(np.zeros(512))  # 폴백 임베딩
+        
+        if not image_embeddings:
+            return self._create_text_only_mappings(text_semantics)
+        
+        # 유사도 계산
+        from sklearn.metrics.pairwise import cosine_similarity
+        similarity_matrix = cosine_similarity(section_embeddings, np.array(image_embeddings))
+        
+        # 매핑 생성 (중복 제거 없이 모든 섹션에 이미지 할당)
+        semantic_mappings = []
+        
+        for i, text_section in enumerate(text_semantics):
+            # 상위 3개 이미지 선택
+            sim_scores = list(enumerate(similarity_matrix[i]))
+            sim_scores.sort(key=lambda x: x[1], reverse=True)
+            
+            image_matches = []
+            for idx, score in sim_scores[:3]:
+                if idx < len(image_analysis):
+                    match = image_analysis[idx].copy()
+                    match["image_index"] = idx
+                    match["similarity_score"] = float(score)
+                    image_matches.append(match)
+            
+            semantic_mappings.append({
+                "text_section_index": text_section["section_index"],
+                "text_title": text_section["title"],
+                "image_matches": image_matches
+            })
+        
+        return semantic_mappings
 
-            for idx in selected_indices:
-                assigned_image_indices.add(idx)
-                match = image_analysis[idx].copy()
-                match["image_index"] = idx
-                match["similarity_score"] = similarity_matrix[i][idx] if similarity_matrix is not None else match.get("overall_quality", 0.5)
-                mapping["image_matches"].append(match)
+    async def _perform_keyword_based_matching(self, text_semantics: List[Dict], 
+                                            image_analysis: List[Dict]) -> List[Dict]:
+        """키워드 기반 의미적 매칭 (CLIP 대안)"""
+        
+        semantic_mappings = []
+        
+        for text_section in text_semantics:
+            # 텍스트에서 키워드 추출
+            text_keywords = self._extract_keywords_from_text(text_section)
+            
+            # 이미지와 키워드 매칭
+            image_matches = []
+            for i, img in enumerate(image_analysis):
+                match_score = self._calculate_keyword_similarity(text_keywords, img)
+                
+                if match_score > 0.1:  # 최소 임계값
+                    match = img.copy()
+                    match["image_index"] = i
+                    match["similarity_score"] = match_score
+                    image_matches.append(match)
+            
+            # 점수 순으로 정렬하여 상위 3개 선택
+            image_matches.sort(key=lambda x: x["similarity_score"], reverse=True)
+            
+            semantic_mappings.append({
+                "text_section_index": text_section["section_index"],
+                "text_title": text_section["title"],
+                "image_matches": image_matches[:3]
+            })
+        
+        return semantic_mappings
 
-            semantic_mappings.append(mapping)
+    def _extract_keywords_from_text(self, text_section: Dict) -> List[str]:
+        """텍스트에서 키워드 추출"""
+        keywords = []
+        
+        # 제목에서 키워드 추출
+        title = text_section.get("title", "")
+        keywords.extend(title.split())
+        
+        # 의미 분석 결과에서 키워드 추출
+        semantic_analysis = text_section.get("semantic_analysis", {})
+        
+        if isinstance(semantic_analysis, dict):
+            # 주요 주제
+            main_topics = semantic_analysis.get("주요_주제", [])
+            if isinstance(main_topics, list):
+                keywords.extend(main_topics)
+            
+            # 시각적 키워드
+            visual_keywords = semantic_analysis.get("시각적_키워드", [])
+            if isinstance(visual_keywords, list):
+                keywords.extend(visual_keywords)
+            
+            # 문화적 요소
+            cultural_elements = semantic_analysis.get("문화적_요소", [])
+            if isinstance(cultural_elements, list):
+                keywords.extend(cultural_elements)
+        
+        return [k.strip() for k in keywords if k.strip()]
 
-        return {"semantic_mappings": semantic_mappings}
+    def _calculate_keyword_similarity(self, text_keywords: List[str], image: Dict) -> float:
+        """키워드 기반 유사도 계산"""
+        if not text_keywords:
+            return 0.0
+        
+        # 이미지 정보에서 키워드 추출
+        image_text = ""
+        image_text += image.get("location", "") + " "
+        image_text += image.get("description", "") + " "
+        image_text += image.get("city", "") + " "
+        image_text += image.get("country", "") + " "
+        
+        image_keywords = image_text.lower().split()
+        
+        # 공통 키워드 계산
+        text_keywords_lower = [k.lower() for k in text_keywords]
+        common_keywords = set(text_keywords_lower) & set(image_keywords)
+        
+        if not text_keywords_lower:
+            return 0.0
+        
+        similarity = len(common_keywords) / len(text_keywords_lower)
+        return min(similarity, 1.0)
 
     async def _generate_clip_text_embeddings(self, texts: List[str]) -> np.ndarray:
-        import torch
+
         with torch.no_grad():
             text_tokens = open_clip.tokenize(texts).to(self.device)
             text_features = self.clip_model.encode_text(text_tokens)
@@ -139,7 +352,6 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
             return text_features.cpu().numpy()
 
     async def _generate_clip_image_embeddings_from_data(self, images: List[Dict]) -> np.ndarray:
-        import torch
         embeddings = []
         for img in images:
             url = img.get("image_url")
