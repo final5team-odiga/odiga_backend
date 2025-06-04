@@ -4,7 +4,7 @@ import asyncio
 import random
 import time
 from dotenv import load_dotenv
-from crewai import BaseLLM
+from crewai.llm import BaseLLM
 from openai import AzureOpenAI
 from typing import Any, Dict, List, Optional, Union
 from pathlib import Path

@@ -1,13 +1,18 @@
 import asyncio
 import json
+import numpy as np
+import open_clip
 import time
 from typing import Dict, List
+from sklearn.metrics.pairwise import cosine_similarity
 from custom_llm import get_azure_llm
 from utils.hybridlogging import get_hybrid_logger
 from utils.ai_search_isolation import AISearchIsolationManager
 from utils.pdf_vector_manager import PDFVectorManager
 from utils.session_isolation import SessionAwareMixin
 from utils.agent_communication_isolation import InterAgentCommunicationMixin
+from agents.Editor.image_diversity_manager import ImageDiversityManager
+from utils.logging_manager import LoggingManager
 
 class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
     """의미적 분석 엔진 - 텍스트와 이미지의 의미적 연관성 분석 (AI Search 통합)"""
@@ -19,10 +24,10 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
         self.isolation_manager = AISearchIsolationManager()
         # PDF 벡터 매니저 추가 (격리 활성화)
         self.vector_manager = PDFVectorManager(isolation_enabled=True)
-        
+        self.logging_manager = LoggingManager()
         self.__init_session_awareness__()
         self.__init_inter_agent_communication__()
-        
+        self.image_diversity_manager = ImageDiversityManager()
 
         self._setup_logging_system()
 
@@ -30,6 +35,21 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
         """로그 저장 시스템 설정"""
         self.log_enabled = True
         self.response_counter = 0
+
+
+
+    async def process_data(self, input_data):
+        # 에이전트 작업 수행
+        result = await self._do_work(input_data)
+        
+        # ✅ 응답 로그 저장
+        await self.logging_manager.log_agent_response(
+            agent_name=self.__class__.__name__,
+            agent_role="에이전트 역할 설명",
+            task_description="수행한 작업 설명",
+            response_data=result,  # 실제 응답 데이터만
+            metadata={"additional": "info"}
+        )
 
     async def _log_semantic_analysis_response(self, analysis_result: Dict) -> str:
         """의미적 분석 결과 로그 저장 (BindingAgent 방식 적용)"""
@@ -62,53 +82,98 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
 
 
         
-    async def analyze_text_image_semantics(self, content: Dict, images: List[Dict]) -> Dict:
-        """텍스트-이미지 의미적 연관성 분석 (AI Search 격리 적용)"""
-        
-        self.logger.info("=== 의미적 연관성 분석 시작 (AI Search 통합) ===")
-        
-        # AI Search 오염 검사
-        if self.isolation_manager.is_contaminated(content, "semantic_analysis_input"):
-            self.logger.warning("입력 콘텐츠에서 AI Search 오염 감지, 정화 처리 중...")
-            content = self.isolation_manager.filter_contaminated_data(content)
-        
-        # 텍스트 의미 추출 (AI Search 벡터 검색 통합)
-        text_semantics = await self._extract_text_semantics_with_vector_search(content)
-        
-        # 이미지 의미 추출 (AI Search 레이아웃 패턴 참조)
-        image_semantics = await self._extract_image_semantics_with_layout_patterns_batch(images)
-        
-        # 의미적 매칭 수행 (벡터 데이터 기반)
-        semantic_mappings = await self._perform_semantic_matching_with_vectors(text_semantics, image_semantics)
-        
-        # 최적 조합 생성 (AI Search 레이아웃 추천 활용)
-        optimal_combinations = await self._generate_optimal_combinations_with_ai_search(semantic_mappings)
-        
-        result = {
-            "text_semantics": text_semantics,
-            "image_semantics": image_semantics,
-            "semantic_mappings": semantic_mappings,
-            "optimal_combinations": optimal_combinations,
-            "analysis_metadata": {
-                "total_text_sections": len(text_semantics),
-                "total_images": len(image_semantics),
-                "mapping_confidence": self._calculate_overall_confidence(semantic_mappings),
-                "ai_search_enhanced": True,
-                "isolation_applied": True,
-                "vector_patterns_used": True
-            }
-        }
-        
-        # 최종 결과 격리 검증
-        if self.isolation_manager.is_contaminated(result, "semantic_analysis_output"):
-            self.logger.error("분석 결과에서 오염 감지, 폴백 처리")
-            result = self._generate_clean_fallback_result(content, images)
-        
-        response_id = await self._log_semantic_analysis_response(result)
-        result["response_id"] = response_id
-        self.store_result(result)
+    async def analyze_text_image_semantics(self, magazine_content: Dict, image_analysis: List[Dict]) -> Dict:
+        """
+        의미적 텍스트-이미지 매칭 (중복 없이, 의미적 군집 기반)
+        """
+        sections = magazine_content.get("sections", [])
+        if not sections or not image_analysis:
+            return {"semantic_mappings": []}
 
-        return result
+        # CLIP 임베딩 생성
+        if hasattr(self, 'clip_available') and self.clip_available:
+            section_texts = [sec.get("title", "") + " " + sec.get("content", "")[:200] for sec in sections]
+            section_embeddings = await self._generate_clip_text_embeddings(section_texts)
+            image_embeddings = await self._generate_clip_image_embeddings_from_data(image_analysis)
+            similarity_matrix = cosine_similarity(section_embeddings, image_embeddings)
+        else:
+            similarity_matrix = None
+
+        semantic_mappings = []
+        assigned_image_indices = set()
+
+        for i, section in enumerate(sections):
+            mapping = {
+                "text_section_index": i,
+                "text_title": section.get("title", f"섹션 {i+1}"),
+                "image_matches": []
+            }
+            # 의미적 유사도 기반 이미지 선택
+            if similarity_matrix is not None:
+                sim_scores = list(enumerate(similarity_matrix[i]))
+                sim_scores = [s for s in sim_scores if s[0] not in assigned_image_indices]
+                sim_scores.sort(key=lambda x: x[1], reverse=True)
+                selected_indices = [idx for idx, _ in sim_scores[:3]]
+            else:
+                quality_scores = [(idx, img.get("overall_quality", 0.5)) for idx, img in enumerate(image_analysis) if idx not in assigned_image_indices]
+                quality_scores.sort(key=lambda x: x[1], reverse=True)
+                selected_indices = [idx for idx, _ in quality_scores[:3]]
+
+            for idx in selected_indices:
+                assigned_image_indices.add(idx)
+                match = image_analysis[idx].copy()
+                match["image_index"] = idx
+                match["similarity_score"] = similarity_matrix[i][idx] if similarity_matrix is not None else match.get("overall_quality", 0.5)
+                mapping["image_matches"].append(match)
+
+            semantic_mappings.append(mapping)
+
+        return {"semantic_mappings": semantic_mappings}
+
+    async def _generate_clip_text_embeddings(self, texts: List[str]) -> np.ndarray:
+        import torch
+        with torch.no_grad():
+            text_tokens = open_clip.tokenize(texts).to(self.device)
+            text_features = self.clip_model.encode_text(text_tokens)
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+            return text_features.cpu().numpy()
+
+    async def _generate_clip_image_embeddings_from_data(self, images: List[Dict]) -> np.ndarray:
+        import torch
+        embeddings = []
+        for img in images:
+            url = img.get("image_url")
+            if url and hasattr(self, "image_diversity_manager") and url in self.image_diversity_manager.image_embeddings_cache:
+                embeddings.append(self.image_diversity_manager.image_embeddings_cache[url])
+            else:
+                # fallback: zeros
+                embeddings.append(np.zeros(512))
+        return np.array(embeddings)
+
+    # _generate_optimal_combinations_with_ai_search는 기존 로직에서 중복 방지와 의미적 매칭만 유지
+    async def _generate_optimal_combinations_with_ai_search(self, semantic_mappings: List[Dict]) -> List[Dict]:
+        """
+        의미적 분석 결과를 기반으로 섹션별 최적 이미지 조합 생성 (중복 없이)
+        """
+        optimal_combinations = []
+        used_images = set()
+        for mapping in semantic_mappings:
+            section_index = mapping["text_section_index"]
+            section_title = mapping["text_title"]
+            best_images = []
+            for image_match in mapping["image_matches"]:
+                if image_match["image_index"] not in used_images:
+                    best_images.append(image_match)
+                    used_images.add(image_match["image_index"])
+            optimal_combinations.append({
+                "section_index": section_index,
+                "section_title": section_title,
+                "assigned_images": best_images,
+                "total_similarity_score": sum(img["similarity_score"] for img in best_images),
+                "ai_search_enhanced": True,
+                "optimization_notes": f"{len(best_images)}개 이미지 할당됨 (중복 없이 의미적 매칭)"
+            })
+        return optimal_combinations
     
     async def _extract_text_semantics_with_vector_search(self, content: Dict) -> List[Dict]:
         """AI Search 벡터 검색을 활용한 텍스트 의미 추출"""
@@ -704,7 +769,7 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
         }
     
     async def _generate_optimal_combinations_with_ai_search(self, semantic_mappings: List[Dict]) -> List[Dict]:
-        """AI Search 데이터를 활용한 최적 조합 생성"""
+        """AI Search 데이터를 활용한 최적 조합 생성 (다양성 최적화 인식)"""
         
         optimal_combinations = []
         used_images = set()
@@ -713,30 +778,45 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
             section_index = mapping["text_section_index"]
             section_title = mapping["text_title"]
             
-            # AI Search 패턴 기반 이미지 선택
+            # ✅ 기존 AI Search 패턴 기반 이미지 선택 로직 유지
             best_images = []
+            semantic_matches = []  # ✅ 의미적 매칭 정보도 별도 보관
+            
             for image_match in mapping["image_matches"]:
-                if image_match["image_index"] not in used_images:
-                    # 레이아웃 추천이 있는 이미지 우선 선택
+                image_index = image_match["image_index"]
+                
+                # ✅ 중복 방지 (ImageDiversityManager와 협력)
+                if image_index not in used_images:
+                    semantic_matches.append(image_match)  # 의미적 매칭 정보 보관
+                    
+                    # ✅ 기존 AI Search 패턴 우선순위 로직 유지
                     layout_rec = image_match.get("layout_recommendation", {})
                     if layout_rec.get("패턴_기반", False):
                         best_images.insert(0, image_match)  # 앞에 추가
                     else:
                         best_images.append(image_match)
                     
-                    used_images.add(image_match["image_index"])
+                    used_images.add(image_index)
                     
+                    # ✅ 기존 제한 로직 유지
                     if len(best_images) >= 3:
                         break
             
+            # ✅ 기존 구조 유지 + 다양성 정보 추가
             optimal_combinations.append({
                 "section_index": section_index,
                 "section_title": section_title,
-                "assigned_images": best_images,
+                "assigned_images": best_images,  # ✅ 기존 키 유지 (호환성)
+                "semantic_matches": semantic_matches,  # ✅ 추가 정보
                 "total_similarity_score": sum(img["similarity_score"] for img in best_images),
+                "semantic_score": sum(match.get("similarity_score", 0) for match in semantic_matches),
                 "ai_search_enhanced": any(img.get("layout_recommendation", {}).get("패턴_기반", False) for img in best_images),
-                "optimization_notes": f"{len(best_images)}개 이미지 할당됨 (AI Search 패턴 기반)"
+                "diversity_aware": True,  # ✅ 다양성 인식 표시
+                "optimization_notes": f"{len(best_images)}개 이미지 할당됨 (AI Search 패턴 + 다양성 인식)"
             })
+        
+        self.logger.info(f"의미적 분석 완료: {len(optimal_combinations)}개 조합, "
+                        f"{len(used_images)}개 고유 이미지 (AI Search 패턴 + 다양성 최적화)")
         
         return optimal_combinations
     

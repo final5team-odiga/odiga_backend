@@ -338,13 +338,66 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
         return jsx_components
     
     async def _create_jsx_component_with_patterns(self, section_data: Dict, global_style: Dict) -> Dict:
-        """AI Search 패턴을 활용한 개별 JSX 컴포넌트 생성"""
+        """AI Search 패턴을 활용한 개별 JSX 컴포넌트 생성 (다양성 최적화 정보 포함)"""
         
         template_name = section_data.get("template_name", "Section01.jsx")
         content = section_data.get("content", {})
         layout = section_data.get("layout", {})
         requirements = section_data.get("jsx_requirements", {})
         jsx_patterns = section_data.get("jsx_patterns", [])
+        
+        # ✅ 다양성 최적화 정보 추출
+        images = content.get("images", [])
+        diversity_info = {
+            "diversity_optimized": False,
+            "total_images": len(images),
+            "avg_diversity_score": 0.0,
+            "avg_quality_score": 0.5,
+            "deduplication_applied": False,
+            "clip_enhanced": False
+        }
+        
+        # ✅ 이미지별 다양성 정보 수집
+        optimized_images = []
+        if images:
+            diversity_scores = []
+            quality_scores = []
+            has_diversity_data = False
+            
+            for image in images:
+                if isinstance(image, dict):
+                    # ImageDiversityManager에서 추가된 메타데이터 확인
+                    if "diversity_score" in image:
+                        diversity_scores.append(image.get("diversity_score", 0.0))
+                        has_diversity_data = True
+                    if "overall_quality" in image:
+                        quality_scores.append(image.get("overall_quality", 0.5))
+                    if "perceptual_hash" in image:
+                        diversity_info["deduplication_applied"] = True
+                    
+                    # 최적화된 이미지 정보 구성
+                    optimized_images.append({
+                        "url": image.get("image_url", image.get("image_name", "")),
+                        "quality": image.get("overall_quality", 0.5),
+                        "diversity": image.get("diversity_score", 0.0),
+                        "alt_text": f"{content.get('title', '')} - 품질: {int(image.get('overall_quality', 0.5) * 100)}%"
+                    })
+                else:
+                    # 문자열인 경우 (기존 방식)
+                    optimized_images.append({
+                        "url": str(image),
+                        "quality": 0.5,
+                        "diversity": 0.0,
+                        "alt_text": content.get('title', '')
+                    })
+            
+            if has_diversity_data:
+                diversity_info.update({
+                    "diversity_optimized": True,
+                    "avg_diversity_score": sum(diversity_scores) / len(diversity_scores) if diversity_scores else 0.0,
+                    "avg_quality_score": sum(quality_scores) / len(quality_scores) if quality_scores else 0.5,
+                    "clip_enhanced": any(isinstance(img, dict) and img.get("perceptual_hash") for img in images)
+                })
         
         # 콘텐츠 필터링
         filtered_title = self.isolation_manager.clean_query_from_azure_keywords(content.get("title", ""))
@@ -355,7 +408,7 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
         pattern_context = ""
         if jsx_patterns:
             pattern_info = []
-            for pattern in jsx_patterns[:2]:  # 상위 2개 패턴 사용
+            for pattern in jsx_patterns[:2]:
                 pattern_info.append({
                     "컴포넌트_구조": pattern.get("component_structure", "기본"),
                     "스타일_접근법": pattern.get("style_approach", "Tailwind"),
@@ -366,97 +419,135 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
                 })
             pattern_context = f"AI Search 참조 패턴: {json.dumps(pattern_info, ensure_ascii=False)}"
         
+        # ✅ 다양성 최적화 컨텍스트 추가
+        diversity_context = f"""
+    **이미지 다양성 최적화 정보:**
+    - 다양성 최적화 적용: {diversity_info['diversity_optimized']}
+    - 총 이미지 수: {diversity_info['total_images']}개
+    - 평균 다양성 점수: {diversity_info['avg_diversity_score']:.3f}
+    - 평균 품질 점수: {diversity_info['avg_quality_score']:.3f}
+    - 중복 제거 적용: {diversity_info['deduplication_applied']}
+    - CLIP 기반 분석: {diversity_info['clip_enhanced']}
+
+    **최적화된 이미지 정보:**
+    {json.dumps(optimized_images, ensure_ascii=False, indent=2)}
+    """
+        
         jsx_prompt = f"""
-다음 정보를 바탕으로 React JSX 컴포넌트를 생성하세요:
+    다음 정보를 바탕으로 React JSX 컴포넌트를 생성하세요:
 
-**컴포넌트명:** {template_name.replace('.jsx', '')}
+    **컴포넌트명:** {template_name.replace('.jsx', '')}
 
-**콘텐츠 정보:**
-- 제목: {filtered_title}
-- 부제목: {filtered_subtitle}
-- 본문: {filtered_body[:300]}...
-- 태그라인: {content.get("tagline", "")}
-- 이미지: {content.get("images", [])}
+    **콘텐츠 정보:**
+    - 제목: {filtered_title}
+    - 부제목: {filtered_subtitle}
+    - 본문: {filtered_body[:300]}...
+    - 태그라인: {content.get("tagline", "")}
 
-**레이아웃 설정:**
-{json.dumps(layout.get("layout_config", {}), ensure_ascii=False, indent=2)}
+    **레이아웃 설정:**
+    {json.dumps(layout.get("layout_config", {}), ensure_ascii=False, indent=2)}
 
-**JSX 요구사항:**
-{json.dumps(requirements, ensure_ascii=False, indent=2)}
+    **JSX 요구사항:**
+    {json.dumps(requirements, ensure_ascii=False, indent=2)}
 
-**글로벌 스타일:**
-{json.dumps(global_style, ensure_ascii=False, indent=2)}
+    **글로벌 스타일:**
+    {json.dumps(global_style, ensure_ascii=False, indent=2)}
 
-{pattern_context}
+    {pattern_context}
 
-**생성 요구사항:**
-1. AI Search 패턴을 참조한 현대적이고 반응형인 React 컴포넌트
-2. Tailwind CSS 클래스 사용 (패턴 기반 최적화)
-3. ✅ 이미지는 반드시 일반 img 태그 사용 - Next.js Image 컴포넌트 금지
-4. 접근성 고려 (alt 태그, ARIA 레이블, 패턴 기반)
-5. 성능 최적화 (memo, useMemo 활용)
-6. 애니메이션 및 인터랙션 (패턴에 따라)
+    {diversity_context}
 
-**중요: img 태그 안전 사용법:**
-- src가 undefined인 경우 img 태그를 렌더링하지 마세요
-- 다음 패턴을 사용하세요:
-{{imageSrc && <img src={{imageSrc}} alt="설명" style={{{{width: '100%', maxWidth: '500px', height: 'auto'}}}} />}}
+    **생성 요구사항:**
+    1. AI Search 패턴을 참조한 현대적이고 반응형인 React 컴포넌트
+    2. Tailwind CSS 클래스 사용 (패턴 기반 최적화)
+    3. ✅ 이미지는 반드시 일반 img 태그 사용 - Next.js Image 컴포넌트 금지
+    4. ✅ 다양성 최적화된 이미지 정보 활용 (품질 점수 기반 우선순위)
+    5. ✅ 모든 최적화된 이미지를 적절히 배치 (중복 없이)
+    6. 접근성 고려 (alt 태그, ARIA 레이블, 패턴 기반)
+    7. 성능 최적화 (memo, useMemo 활용)
 
-다음 형식으로 출력하세요:
+    **중요: 다양성 최적화된 이미지 사용법:**
+    - 제공된 최적화된 이미지 정보를 모두 활용하세요
+    - 품질 점수가 높은 이미지를 우선 배치하세요
+    - 각 이미지의 alt_text를 정확히 사용하세요
 
-import React, {{ memo, useMemo }} from 'react';
+    다음 형식으로 출력하세요(똑같은 형식이 아닌 이전 데이터 기반으로 적절히 변형 단, 코드의 문제점은 없어야함):
 
-const {template_name.replace('.jsx', '')} = memo(() => {{
-  const images = {json.dumps(content.get("images", []), ensure_ascii=False)};
-  
-  return (
-    <section className="py-16 px-4 max-w-4xl mx-auto">
-      <div className="text-center mb-8">
-        <h2 className="text-3xl md:text-4xl font-bold text-gray-800 mb-4">
-          {filtered_title}
-        </h2>
-        <p className="text-lg text-gray-600 mb-6">
-          {filtered_subtitle}
-        </p>
-      </div>
-      
-      {{/* 안전한 img 태그 렌더링 */}}
-      {{images && images.length > 0 && images[0] && (
-        <div className="mb-8">
-          <img 
-            src={{images[0]}} 
-            alt="{filtered_title} 이미지"
-            style={{{{
-              width: '100%',
-              maxWidth: '500px',
-              height: 'auto',
-              borderRadius: '8px',
-              margin: '0 auto',
-              display: 'block'
-            }}}}
-            onError={{(e) => {{
-              e.target.style.display = 'none';
-            }}}}
-          />
+    import React, {{ memo, useMemo }} from 'react';
+
+    const {template_name.replace('.jsx', '')} = memo(() => {{
+    // ✅ 다양성 최적화된 이미지 데이터 사용
+    const optimizedImages = {json.dumps(optimized_images, ensure_ascii=False)};
+    
+    // ✅ 품질 점수 기반 이미지 정렬
+    const sortedImages = useMemo(() => {{
+        return optimizedImages
+        .filter(img => img.url && img.url.trim())
+        .sort((a, b) => b.quality - a.quality); // 품질 높은 순으로 정렬
+    }}, []);
+    
+    return (
+        <section className="py-16 px-4 max-w-4xl mx-auto">
+        <div className="text-center mb-8">
+            <h2 className="text-3xl md:text-4xl font-bold text-gray-800 mb-4">
+            {filtered_title}
+            </h2>
+            <p className="text-lg text-gray-600 mb-6">
+            {filtered_subtitle}
+            </p>
         </div>
-      )}}
-      
-      <div className="prose prose-lg max-w-none">
-        <p className="text-gray-700 leading-relaxed">
-          {filtered_body[:200]}...
-        </p>
-      </div>
-    </section>
-  );
-}});
+        
+        {{/* ✅ 모든 최적화된 이미지 렌더링 */}}
+        {{sortedImages.length > 0 && (
+            <div className="images-container mb-8">
+            {{sortedImages.length === 1 ? (
+                // 단일 이미지 레이아웃
+                <div className="single-image">
+                <img 
+                    src={{sortedImages[0].url}}
+                    alt={{sortedImages[0].alt_text}}
+                    className="w-full max-w-2xl mx-auto rounded-lg shadow-lg"
+                    style={{{{
+                    height: 'auto',
+                    display: 'block'
+                    }}}}
+                    onError={{(e) => {{
+                    e.target.style.display = 'none';
+                    }}}}
+                />
+                </div>
+            ) : (
+                // 다중 이미지 그리드 레이아웃
+                <div className="image-grid grid gap-4" style={{{{
+                gridTemplateColumns: sortedImages.length === 2 ? 'repeat(2, 1fr)' : 'repeat(auto-fit, minmax(250px, 1fr))',
+                maxWidth: '1000px',
+                margin: '0 auto'
+                }}}}>
+                {{sortedImages.map((img, index) => (
+                    <img 
+                    key={{index}}
+                    src={{img.url}}
+                    alt={{img.alt_text}}
+                    className="w-full h-48 object-cover rounded-lg shadow-md"
+                    onError={{(e) => {{
+                        e.target.style.display = 'none';
+                    }}}}
+                    />
+                ))}}
+                </div>
+            )}}
+            </div>
+        )}}
+    }});
 
-export default {template_name.replace('.jsx', '')};
+    export default {template_name.replace('.jsx', '')};
 
-**절대 금지사항:**
-- import Image from 'next/image' 사용 금지
-- <Image> 컴포넌트 사용 금지
-- 오직 <img> 태그만 사용하세요
-"""
+    **절대 금지사항:**
+    - import Image from 'next/image' 사용 금지
+    - <Image> 컴포넌트 사용 금지
+    - 오직 <img> 태그만 사용하세요
+    - 다양성 최적화 정보를 무시하지 마세요
+    """
         
         try:
             response = await self.llm.ainvoke(jsx_prompt)
@@ -472,8 +563,6 @@ export default {template_name.replace('.jsx', '')};
                 jsx_code = jsx_code.split("```jsx")[1].split("```")[0].strip()
             elif "```javascript" in jsx_code:
                 jsx_code = jsx_code.split("```javascript")[1].split("```")[0].strip()
-            elif "```javascript" in jsx_code:
-                jsx_code = jsx_code.split("``````")[0].strip()
             
             return {
                 "template_name": template_name,
@@ -487,7 +576,14 @@ export default {template_name.replace('.jsx', '')};
                     "ai_search_patterns_used": len(jsx_patterns),
                     "pattern_enhanced": len(jsx_patterns) > 0,
                     "isolation_applied": True,
-                    "contamination_detected": False
+                    "contamination_detected": False,
+                    # ✅ 다양성 최적화 메타데이터 추가
+                    "diversity_optimized": diversity_info["diversity_optimized"],
+                    "avg_diversity_score": diversity_info["avg_diversity_score"],
+                    "avg_quality_score": diversity_info["avg_quality_score"],
+                    "deduplication_applied": diversity_info["deduplication_applied"],
+                    "clip_enhanced": diversity_info["clip_enhanced"],
+                    "optimized_image_count": len(optimized_images)
                 }
             }
             
@@ -509,9 +605,17 @@ export default {template_name.replace('.jsx', '')};
                     "ai_search_patterns_used": len(jsx_patterns),
                     "pattern_enhanced": False,
                     "isolation_applied": True,
-                    "fallback_used": True
+                    "fallback_used": True,
+                    # ✅ 폴백 시에도 다양성 정보 포함
+                    "diversity_optimized": False,
+                    "avg_diversity_score": 0.0,
+                    "avg_quality_score": 0.0,
+                    "deduplication_applied": False,
+                    "clip_enhanced": False,
+                    "optimized_image_count": 0
                 }
             }
+
     
     def _generate_fallback_jsx_with_patterns(self, template_name: str, content: Dict, patterns: List[Dict]) -> str:
         """AI Search 패턴을 고려한 격리된 기본 JSX 컴포넌트 생성 (안전한 img 처리)"""

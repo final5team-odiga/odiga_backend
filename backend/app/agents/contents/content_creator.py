@@ -323,56 +323,28 @@ class ContentCreatorV2Agent:
             None, self._verify_final_content_as_first_agent, final_content, interview_results, essay_results
         )
 
-    async def _log_final_content_async(self, final_content: str, interview_results: Dict[str, str], 
-                                     essay_results: Dict[str, str], image_analysis_results: List[Dict], texts: List[str]):
-        """최종 통합 콘텐츠 생성 로깅 (비동기)"""
-        await asyncio.get_event_loop().run_in_executor(
-            None,
-            lambda: self.logger.log_agent_real_output(
-                agent_name="ContentCreatorV2Agent",
-                agent_role="여행 콘텐츠 통합 편집자 (첫 번째 에이전트)",
-                task_description=f"인터뷰 {len(interview_results)}개, 에세이 {len(essay_results)}개, 이미지 {len(image_analysis_results)}개를 통합한 매거진 콘텐츠 생성",
-                final_answer=final_content,
-                reasoning_process=f"""첫 번째 에이전트로서 후속 에이전트들을 위한 기초 콘텐츠 생성:
-1. 원본 텍스트 {len(texts)}개 분석
-2. 인터뷰 형식 {len(interview_results)}개 생성
-3. 에세이 형식 {len(essay_results)}개 생성
-4. 이미지 정보 {len(image_analysis_results)}개 통합
-5. 최종 매거진 콘텐츠 {len(final_content)}자 생성
-6. 후속 에이전트들을 위한 구조화된 데이터 제공""",
-                execution_steps=[
-                    "원본 데이터 수집 및 분석",
-                    "인터뷰 형식 콘텐츠 비동기 생성",
-                    "에세이 형식 콘텐츠 비동기 생성",
-                    "이미지 정보 처리 및 통합",
-                    "전체 콘텐츠 통합 및 구조화",
-                    "후속 에이전트용 데이터 준비",
-                    "품질 검증 및 최종 출력"
-                ],
-                raw_input={
-                    "texts": texts,
-                    "image_analysis_results": image_analysis_results,
-                    "texts_count": len(texts),
-                    "images_count": len(image_analysis_results)
-                },
-                raw_output={
-                    "final_content": final_content,
-                    "interview_results": interview_results,
-                    "essay_results": essay_results,
-                    "image_info": self._process_image_analysis(image_analysis_results)
-                },
-                performance_metrics={
-                    "final_content_length": len(final_content),
-                    "content_expansion_ratio": len(final_content) / sum(len(text) for text in texts) if texts else 0,
-                    "integration_success": len(interview_results) > 0 and len(essay_results) > 0,
-                    "image_integration_count": len(image_analysis_results),
-                    "first_agent_completion": True,
-                    "data_for_next_agents": True,
-                    "content_sections_created": final_content.count("==="),
-                    "quality_score": self._calculate_content_quality_score(final_content, interview_results, essay_results),
-                    "async_processing": True
-                }
-            )
+    async def _log_final_content_async(self, final_content: str, interview_results: Dict[str, str],
+                                 essay_results: Dict[str, str], image_analysis_results: List[Dict], texts: List[str]):
+        """최종 통합 콘텐츠 생성 로깅 (새로운 방식 적용)"""
+        
+        # ✅ LoggingManager 인스턴스 생성
+        from utils.logging_manager import LoggingManager
+        logging_manager = LoggingManager()
+        
+        # ✅ 새로운 로깅 방식으로 응답 데이터 저장
+        await logging_manager.log_agent_response(
+            agent_name="ContentCreatorV2Agent",
+            agent_role="여행 콘텐츠 통합 편집자 (첫 번째 에이전트)",
+            task_description=f"인터뷰 {len(interview_results)}개, 에세이 {len(essay_results)}개, 이미지 {len(image_analysis_results)}개를 통합한 매거진 콘텐츠 생성",
+            response_data=final_content,  # ✅ 실제 응답 데이터만 저장
+            metadata={
+                "final_content_length": len(final_content),
+                "content_expansion_ratio": len(final_content) / sum(len(text) for text in texts) if texts else 0,
+                "integration_success": len(interview_results) > 0 and len(essay_results) > 0,
+                "image_integration_count": len(image_analysis_results),
+                "first_agent_completion": True,
+                "async_processing": True
+            }
         )
 
     # 동기 버전 메서드들 (호환성 유지)

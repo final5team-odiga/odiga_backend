@@ -8,6 +8,7 @@ from utils.ai_search_isolation import AISearchIsolationManager
 from utils.pdf_vector_manager import PDFVectorManager
 from utils.session_isolation import SessionAwareMixin
 from utils.agent_communication_isolation import InterAgentCommunicationMixin
+from utils.logging_manager import LoggingManager
 
 class RealtimeLayoutGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
     """실시간 레이아웃 생성기 - AI Search 벡터 데이터 기반 레이아웃 생성"""
@@ -16,7 +17,7 @@ class RealtimeLayoutGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
         self.llm = get_azure_llm()
         self.logger = get_hybrid_logger(self.__class__.__name__)
         self._setup_logging_system()
-
+        self.logging_manager = LoggingManager()
         # AI Search 격리 시스템 추가
         self.isolation_manager = AISearchIsolationManager()
         # PDF 벡터 매니저 추가 (격리 활성화)
@@ -29,7 +30,21 @@ class RealtimeLayoutGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
         """로그 저장 시스템 설정"""
         self.log_enabled = True
         self.response_counter = 0
-
+        
+    async def process_data(self, input_data):
+        # 에이전트 작업 수행
+        result = await self._do_work(input_data)
+        
+        # ✅ 응답 로그 저장
+        await self.logging_manager.log_agent_response(
+            agent_name=self.__class__.__name__,
+            agent_role="에이전트 역할 설명",
+            task_description="수행한 작업 설명",
+            response_data=result,  # 실제 응답 데이터만
+            metadata={"additional": "info"}
+        )
+        
+        return result
     async def _log_layout_generation_response(self, layout_result: Dict) -> str:
         """레이아웃 생성 결과 로그 저장"""
         if not self.log_enabled:

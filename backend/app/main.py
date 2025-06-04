@@ -24,8 +24,6 @@ async def main():
         template_scanner = TemplateScanner()
         available_templates = await template_scanner.scan_jsx_templates()
         
-        logger.info(f"발견된 JSX 템플릿: {len(available_templates)}개")
-        logger.info(f"템플릿 목록: {available_templates}")
         
         # 템플릿이 없는 경우 처리
         if not available_templates:

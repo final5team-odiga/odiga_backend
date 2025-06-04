@@ -78,16 +78,12 @@ class SystemCoordinator:
 
     async def _execute_image_analysis_stage(self) -> List[Dict]:
         """1단계: 이미지 분석 실행 (기존 시스템 활용)"""
-        
         self.logger.info("1단계: 이미지 분석 시작")
         
-        # 시스템 초기화
         images = self.blob_manager.get_images()
         self.logger.info(f"이미지 {len(images)}개 발견")
         
-        # 이미지 분석 실행 (올바른 인수 전달)
         crew = Crew(agents=[self.image_analyzer.create_agent()], verbose=False)
-        
         try:
             if hasattr(self.image_analyzer, 'analyze_images_batch_async'):
                 results = await self.image_analyzer.analyze_images_batch_async(images, max_concurrent=5)
@@ -99,7 +95,7 @@ class SystemCoordinator:
             analysis_path = os.path.join(self.file_manager.output_folder, "image_analysis_results.json")
             self.file_manager.save_json(results, analysis_path)
             
-            # 로깅
+            # ✅ 새로운 로깅 방식 적용
             await self.logging_manager.log_image_analysis_completion(len(images), len(results))
             
             self.logger.info(f"1단계: 이미지 분석 완료 - {len(results)}개 결과")
@@ -111,14 +107,11 @@ class SystemCoordinator:
 
     async def _execute_content_creation_stage(self, image_results: List[Dict]) -> str:
         """2단계: 콘텐츠 생성 실행 (기존 시스템 활용)"""
-        
         self.logger.info("2단계: 콘텐츠 생성 시작")
         
-        # 텍스트 데이터 수집
         text_blobs = self.blob_manager.get_texts()
         texts = [self.blob_manager.read_text_file(text_blob) for text_blob in text_blobs]
         
-        # 콘텐츠 생성 실행 (올바른 메서드 호출)
         try:
             if hasattr(self.content_creator, 'execute_content_creation') and asyncio.iscoroutinefunction(self.content_creator.execute_content_creation):
                 magazine_content = await self.content_creator.execute_content_creation(texts, image_results)
@@ -131,7 +124,7 @@ class SystemCoordinator:
             content_path = os.path.join(self.file_manager.output_folder, "magazine_content.json")
             self.file_manager.save_magazine_content_json(magazine_content, content_path)
             
-            # 로깅
+            # ✅ 새로운 로깅 방식 적용
             await self.logging_manager.log_content_creation_completion(len(texts), len(image_results), len(magazine_content))
             
             self.logger.info(f"2단계: 콘텐츠 생성 완료 - {len(magazine_content)}자")
@@ -142,28 +135,31 @@ class SystemCoordinator:
             return "기본 여행 매거진 콘텐츠"
 
     async def _execute_multimodal_processing_stage(self, magazine_content: str,
-                                                 image_results: List[Dict],
-                                                 available_templates: List[str]) -> Dict:
-        """3단계: 통합 멀티모달 처리 실행 (새로운 시스템 활용)"""
-        
+                                                image_results: List[Dict],
+                                                available_templates: List[str]) -> Dict:
+        """3단계: 통합 멀티모달 처리 실행 (이미지 다양성 최적화 포함)"""
         self.logger.info("3단계: 통합 멀티모달 처리 시작")
         
         try:
-            # ✅ magazine_content 구조 분석 및 섹션 분할
             parsed_content = self._parse_magazine_content_to_sections(magazine_content)
             self.logger.info(f"파싱된 섹션 수: {len(parsed_content.get('sections', []))}")
             
-            # 입력 데이터 준비 (수정된 구조)
             input_data = {
-                "magazine_content": parsed_content,  # ✅ 여러 섹션 구조로 변경
+                "magazine_content": parsed_content,
                 "image_analysis": image_results
             }
+            
+            # ✅ 이미지 다양성 최적화 로깅
+            self.logger.info(f"이미지 다양성 최적화 대상: {len(image_results)}개 이미지")
             
             # 의미적 분석 수행
             semantic_analysis = await self.semantic_engine.analyze_text_image_semantics(
                 input_data["magazine_content"],
                 input_data["image_analysis"]
             )
+            
+            # ✅ 의미적 분석 로깅
+            await self.logging_manager.log_semantic_analysis_completion(semantic_analysis)
             
             self.logger.info(f"의미 분석된 텍스트 섹션: {len(semantic_analysis.get('text_semantics', []))}")
             
@@ -173,12 +169,34 @@ class SystemCoordinator:
                 available_templates
             )
             
-            # 멀티모달 에이전트로 통합 처리
+            # ✅ 레이아웃 생성 로깅
+            await self.logging_manager.log_layout_generation_completion(layout_results)
+            
+            # ✅ 멀티모달 에이전트로 통합 처리 (이미지 다양성 최적화 포함)
             unified_results = await self.multimodal_agent.process_magazine_unified(
                 input_data["magazine_content"],
                 input_data["image_analysis"],
                 available_templates
             )
+            
+            # ✅ 멀티모달 처리 로깅
+            await self.logging_manager.log_multimodal_processing_completion(unified_results)
+            
+            # ✅ 다양성 최적화 결과 로깅
+            if unified_results.get("diversity_optimization_applied"):
+                optimization_stats = unified_results.get("optimization_stats", {})
+                total_used = unified_results.get("total_images_used", 0)
+                utilization_rate = total_used / len(image_results) if image_results else 0
+                
+                await self.logging_manager.log_diversity_optimization_completion({
+                    "utilization_rate": utilization_rate,
+                    "total_images_processed": len(image_results),
+                    "total_images_used": total_used,
+                    "optimization_stats": optimization_stats
+                })
+                
+                self.logger.info(f"✅ 이미지 다양성 최적화 적용 - 활용률: {utilization_rate:.2%}, "
+                            f"CLIP 사용: {optimization_stats.get('clip_available', False)}")
             
             # 결과 통합
             integrated_data = await self._integrate_processing_results(
@@ -192,6 +210,11 @@ class SystemCoordinator:
                 integrated_data
             )
             
+            # ✅ JSX 생성 로깅
+            await self.logging_manager.log_jsx_generation_completion(
+                len(jsx_results.get('jsx_components', [])), jsx_results
+            )
+            
             self.logger.info(f"생성된 JSX 컴포넌트: {len(jsx_results.get('jsx_components', []))}")
             
             # 최종 결과 패키징
@@ -199,10 +222,18 @@ class SystemCoordinator:
                 integrated_data, jsx_results, input_data
             )
             
-            # ✅ 결과 저장 (완전히 개선된 file_manager 활용)
+            # ✅ 다양성 최적화 메타데이터 추가
+            final_result["diversity_optimization"] = {
+                "applied": unified_results.get("diversity_optimization_applied", False),
+                "total_images_processed": len(image_results),
+                "total_images_used": unified_results.get("total_images_used", 0),
+                "optimization_stats": unified_results.get("optimization_stats", {})
+            }
+            
+            # 결과 저장
             await self._save_results_with_file_manager(final_result)
             
-            self.logger.info("3단계: 통합 멀티모달 처리 완료")
+            self.logger.info("3단계: 통합 멀티모달 처리 완료 (이미지 다양성 최적화 포함)")
             return final_result
             
         except Exception as e:

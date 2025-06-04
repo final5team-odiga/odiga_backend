@@ -1,4 +1,5 @@
 import asyncio
+import numpy as np
 import json
 from typing import Dict, List, Any
 from crewai import Agent, Task, Crew
@@ -8,8 +9,8 @@ from utils.ai_search_isolation import AISearchIsolationManager
 from utils.pdf_vector_manager import PDFVectorManager
 from utils.session_isolation import SessionAwareMixin
 from utils.agent_communication_isolation import InterAgentCommunicationMixin
-
-
+from agents.Editor.image_diversity_manager import ImageDiversityManager
+from utils.logging_manager import LoggingManager
 
 class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
     """통합 멀티모달 에이전트 - AI Search 벡터 데이터 통합 활용"""
@@ -22,7 +23,8 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
 
 
         self.vector_manager = PDFVectorManager(isolation_enabled=True)
-
+        self.image_diversity_manager = ImageDiversityManager()
+        self.logging_manager = LoggingManager()
         self.__init_session_awareness__()
         self.__init_inter_agent_communication__()
         
@@ -30,7 +32,21 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
         self.content_structure_agent = self._create_content_structure_agent_with_ai_search()
         self.image_layout_agent = self._create_image_layout_agent_with_ai_search()
         self.semantic_coordinator_agent = self._create_semantic_coordinator_agent_with_ai_search()
+
+    async def process_data(self, input_data):
+        # 에이전트 작업 수행
+        result = await self._do_work(input_data)
         
+        # ✅ 응답 로그 저장
+        await self.logging_manager.log_agent_response(
+            agent_name=self.__class__.__name__,
+            agent_role="에이전트 역할 설명",
+            task_description="수행한 작업 설명",
+            response_data=result,  # 실제 응답 데이터만
+            metadata={"additional": "info"}
+        )
+        
+            
     def _create_content_structure_agent_with_ai_search(self):
         """AI Search 통합 콘텐츠 구조 에이전트"""
         return Agent(
@@ -357,52 +373,72 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
     async def _collect_relevant_ai_search_patterns(self, magazine_content: Dict,
                                              image_analysis: List[Dict],
                                              available_templates: List[str]) -> Dict:
-        """AI Search에서 관련 패턴 수집 (섹션별 처리 및 템플릿 할당 개선)"""
+        """AI Search 패턴 수집 + 이미지 다양성 최적화 통합"""
         
         sections = magazine_content.get("sections", [])
-        self.logger.info(f"처리할 섹션 수: {len(sections)}개")
+        self.logger.info(f"AI Search 패턴 수집: {len(sections)}개 섹션, {len(image_analysis)}개 이미지")
         
-        # ✅ 섹션 수만큼 템플릿 할당 (개선된 로직)
+        # ✅ 1단계: 이미지 다양성 최적화 적용
+        optimized_allocation = await self.image_diversity_manager.optimize_image_distribution(
+            image_analysis, sections
+        )
+        
+        # ✅ 2단계: 템플릿 선택 (기존 로직 유지)
         selected_templates = available_templates[:len(sections)]
         if len(selected_templates) < len(sections):
-            # 템플릿이 부족한 경우 순환 할당
             while len(selected_templates) < len(sections):
                 selected_templates.extend(available_templates)
             selected_templates = selected_templates[:len(sections)]
         
-        self.logger.info(f"할당된 템플릿: {selected_templates}")
-        
-        # ✅ 최소 템플릿 보장 (available_templates가 비어있는 경우)
+        # ✅ 최소 템플릿 보장
         if not selected_templates:
             selected_templates = [f"Section{i+1:02d}.jsx" for i in range(len(sections))]
             self.logger.warning(f"사용 가능한 템플릿이 없어 기본 템플릿 생성: {selected_templates}")
         
+        self.logger.info(f"할당된 템플릿: {selected_templates}")
+        
         try:
+            # ✅ 3단계: AI Search 패턴 수집 (기존 기능 유지)
             patterns = {
                 "text_patterns": [],
                 "image_patterns": [],
                 "integration_patterns": [],
-                "template_mapping": {}  # ✅ 템플릿 매핑 정보 추가
+                "template_mapping": {},
+                "diversity_optimization": {}  # ✅ 다양성 최적화 정보 추가
             }
             
-            # ✅ 템플릿별 매핑 정보 생성
+            # ✅ 템플릿별 매핑 정보 생성 (기존 로직 유지)
             for i, (section, template) in enumerate(zip(sections, selected_templates)):
-                patterns["template_mapping"][f"section_{i}"] = {
+                section_key = f"section_{i}"
+                allocation_data = optimized_allocation.get(section_key, {"images": [], "diversity_score": 0.0})
+                
+                patterns["template_mapping"][section_key] = {
                     "template": template,
                     "section_title": section.get("title", f"섹션 {i+1}"),
                     "section_index": i,
                     "content_length": len(section.get("content", "")),
-                    "assigned": True
+                    "assigned": True,
+                    # ✅ 다양성 최적화 정보 추가
+                    "assigned_images": allocation_data["images"],
+                    "diversity_score": allocation_data.get("diversity_score", 0.0),
+                    "quality_score": allocation_data.get("avg_quality", 0.5),
+                    "image_count": len(allocation_data["images"])
                 }
             
-            # 텍스트 기반 패턴 검색 (섹션별 처리)
+            # ✅ 4단계: 텍스트 기반 패턴 검색 (기존 로직 유지 + 다양성 정보 통합)
             if magazine_content and "sections" in magazine_content:
-                for i, section in enumerate(magazine_content["sections"][:len(selected_templates)]): # ✅ 템플릿 수만큼만 처리
-                    content = section.get("content", "")[:200] # 200자만 사용
+                for i, section in enumerate(magazine_content["sections"][:len(selected_templates)]):
+                    content = section.get("content", "")[:200]
                     section_title = section.get("title", f"섹션 {i+1}")
                     
-                    # ✅ 섹션별 쿼리 개선
-                    search_query = f"magazine text layout {section_title} {content}"
+                    # ✅ 다양성 최적화 정보를 검색 쿼리에 반영
+                    section_key = f"section_{i}"
+                    allocation_data = optimized_allocation.get(section_key, {})
+                    image_count = len(allocation_data.get("images", []))
+                    diversity_score = allocation_data.get("diversity_score", 0.0)
+                    
+                    # 개선된 검색 쿼리 (다양성 정보 포함)
+                    search_query = f"magazine text layout {section_title} {content} images:{image_count} diversity:{diversity_score:.2f}"
                     clean_query = self.isolation_manager.clean_query_from_azure_keywords(search_query)
                     
                     text_patterns = await asyncio.get_event_loop().run_in_executor(
@@ -414,33 +450,32 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
                         text_patterns, f"text_patterns_section_{i}_{section_title[:10]}"
                     )
                     
-                    # ✅ 섹션별 패턴에 템플릿 정보 추가
+                    # ✅ 패턴에 다양성 최적화 정보 추가
                     for pattern in isolated_text_patterns:
                         pattern["assigned_template"] = selected_templates[i]
                         pattern["section_index"] = i
                         pattern["section_title"] = section_title
+                        pattern["diversity_optimized"] = True
+                        pattern["assigned_images"] = allocation_data.get("images", [])
+                        pattern["diversity_score"] = diversity_score
                     
                     patterns["text_patterns"].extend(isolated_text_patterns)
-                    
                     self.logger.debug(f"섹션 {i} ({section_title}): {len(isolated_text_patterns)}개 텍스트 패턴 수집")
             
-            # 이미지 기반 패턴 검색 (템플릿 할당 고려)
+            # ✅ 5단계: 이미지 기반 패턴 검색 (다양성 최적화된 이미지 사용)
             if image_analysis:
-                # ✅ 이미지를 섹션별로 분배
-                images_per_section = max(1, len(image_analysis) // len(selected_templates))
-                
                 for i, template in enumerate(selected_templates):
-                    # 섹션별 이미지 할당
-                    start_idx = i * images_per_section
-                    end_idx = min(start_idx + images_per_section, len(image_analysis))
-                    section_images = image_analysis[start_idx:end_idx]
+                    section_key = f"section_{i}"
+                    allocation_data = optimized_allocation.get(section_key, {"images": []})
+                    section_images = allocation_data["images"]  # ✅ 다양성 최적화된 이미지 사용
                     
                     for j, image in enumerate(section_images):
                         location = image.get("location", "")
-                        image_name = image.get("image_name", f"image_{start_idx + j}")
+                        image_name = image.get("image_name", f"image_{i}_{j}")
+                        quality_score = image.get("overall_quality", 0.5)
                         
-                        # ✅ 템플릿별 이미지 검색 쿼리 개선
-                        search_query = f"magazine image layout {template} {location} {image_name}"
+                        # ✅ 품질 정보를 포함한 검색 쿼리
+                        search_query = f"magazine image layout {template} {location} {image_name} quality:{quality_score:.2f}"
                         clean_query = self.isolation_manager.clean_query_from_azure_keywords(search_query)
                         
                         image_patterns = await asyncio.get_event_loop().run_in_executor(
@@ -452,23 +487,29 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
                             image_patterns, f"image_patterns_template_{i}_{j}"
                         )
                         
-                        # ✅ 이미지 패턴에 템플릿 정보 추가
+                        # ✅ 이미지 패턴에 다양성 정보 추가
                         for pattern in isolated_image_patterns:
                             pattern["assigned_template"] = template
                             pattern["section_index"] = i
-                            pattern["image_index"] = start_idx + j
+                            pattern["image_index"] = j
                             pattern["image_name"] = image_name
+                            pattern["diversity_optimized"] = True
+                            pattern["quality_score"] = quality_score
+                            pattern["perceptual_hash"] = image.get("perceptual_hash", "")
                         
                         patterns["image_patterns"].extend(isolated_image_patterns)
                     
-                    self.logger.debug(f"템플릿 {template} (섹션 {i}): {len(section_images)}개 이미지, 패턴 수집 완료")
+                    self.logger.debug(f"템플릿 {template} (섹션 {i}): {len(section_images)}개 최적화된 이미지, 패턴 수집 완료")
             
-            # ✅ 통합 패턴 검색 (템플릿 할당 정보 포함)
-            total_sections = len(selected_templates)  # ✅ 실제 할당된 템플릿 수 사용
-            total_images = len(image_analysis)
-            template_types = list(set(selected_templates))  # 고유 템플릿 타입
+            # ✅ 6단계: 통합 패턴 검색 (다양성 최적화 정보 포함)
+            total_sections = len(selected_templates)
+            total_images_used = sum(len(optimized_allocation.get(f"section_{i}", {}).get("images", [])) 
+                                for i in range(total_sections))
+            template_types = list(set(selected_templates))
+            avg_diversity = np.mean([optimized_allocation.get(f"section_{i}", {}).get("diversity_score", 0.0) 
+                                    for i in range(total_sections)])
             
-            integration_query = f"magazine integration {total_sections} sections {total_images} images templates {' '.join(template_types[:3])}"
+            integration_query = f"magazine integration {total_sections} sections {total_images_used} images diversity:{avg_diversity:.2f} templates {' '.join(template_types[:3])}"
             clean_integration_query = self.isolation_manager.clean_query_from_azure_keywords(integration_query)
             
             integration_patterns = await asyncio.get_event_loop().run_in_executor(
@@ -477,20 +518,103 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
             )
             
             isolated_integration_patterns = self.isolation_manager.filter_contaminated_data(
-                integration_patterns, "integration_patterns"
+                integration_patterns, "integration_patterns_diversity_optimized"
             )
             
+            # ✅ 통합 패턴에 다양성 정보 추가
+            for pattern in isolated_integration_patterns:
+                pattern["diversity_optimization_applied"] = True
+                pattern["total_images_used"] = total_images_used
+                pattern["average_diversity_score"] = avg_diversity
             
             patterns["integration_patterns"] = isolated_integration_patterns
             
-            # ✅ 패턴 수집 결과 로깅 (개선된 정보)
-            self.logger.info(f"AI Search 패턴 수집 완료:")
+            # ✅ 7단계: 다양성 최적화 정보 저장
+            patterns["diversity_optimization"] = {
+                "applied": True,
+                "total_images_processed": len(image_analysis),
+                "total_images_used": total_images_used,
+                "utilization_rate": total_images_used / len(image_analysis) if image_analysis else 0,
+                "average_diversity_score": avg_diversity,
+                "optimization_stats": self.image_diversity_manager.get_optimization_statistics(),
+                "allocation_details": optimized_allocation
+            }
+            
+            # ✅ 8단계: 최적화된 조합 생성 (기존 형식과 호환)
+            optimal_combinations = []
+            for i, template in enumerate(selected_templates):
+                section_key = f"section_{i}"
+                allocation_data = optimized_allocation.get(section_key, {"images": []})
+                
+                optimal_combinations.append({
+                    "template": template,
+                    "assigned_images": allocation_data["images"],
+                    "diversity_optimized": True,
+                    "diversity_score": allocation_data.get("diversity_score", 0.0),
+                    "quality_score": allocation_data.get("avg_quality", 0.5),
+                    "image_count": len(allocation_data["images"])
+                })
+            
+            patterns["optimal_combinations"] = optimal_combinations
+            
+            # ✅ 결과 로깅 (개선된 정보)
+            self.logger.info(f"AI Search 패턴 수집 + 다양성 최적화 완료:")
             self.logger.info(f"  - 할당된 템플릿: {selected_templates}")
+            self.logger.info(f"  - 이미지 활용률: {patterns['diversity_optimization']['utilization_rate']:.2%}")
+            self.logger.info(f"  - 평균 다양성 점수: {avg_diversity:.3f}")
+            self.logger.info(f"  - 텍스트 패턴: {len(patterns['text_patterns'])}개")
+            self.logger.info(f"  - 이미지 패턴: {len(patterns['image_patterns'])}개")
+            self.logger.info(f"  - 통합 패턴: {len(patterns['integration_patterns'])}개")
             
             return patterns
             
         except Exception as e:
-            self.logger.error(f"AI Search 패턴 수집 실패: {e}")
+            self.logger.error(f"AI Search 패턴 수집 + 다양성 최적화 실패: {e}")
+            # ✅ 폴백: 기존 방식으로 처리
+            return await self._fallback_pattern_collection(magazine_content, image_analysis, available_templates)
+
+    # ✅ 폴백 메서드 추가
+    async def _fallback_pattern_collection(self, magazine_content: Dict, 
+                                        image_analysis: List[Dict], 
+                                        available_templates: List[str]) -> Dict:
+        """폴백: 기존 방식의 패턴 수집"""
+        self.logger.warning("폴백 모드: 기존 패턴 수집 방식 사용")
+        
+        sections = magazine_content.get("sections", [])
+        selected_templates = available_templates[:len(sections)]
+        
+        # 기본 순차 이미지 할당
+        images_per_section = max(1, len(image_analysis) // len(selected_templates)) if selected_templates else 1
+        
+        optimal_combinations = []
+        for i, template in enumerate(selected_templates):
+            start_idx = i * images_per_section
+            end_idx = min(start_idx + images_per_section, len(image_analysis))
+            assigned_images = image_analysis[start_idx:end_idx]
+            
+            optimal_combinations.append({
+                "template": template,
+                "assigned_images": assigned_images,
+                "diversity_optimized": False,
+                "diversity_score": 0.0,
+                "quality_score": 0.5,
+                "image_count": len(assigned_images),
+                "fallback_used": True
+            })
+        
+        return {
+            "selected_templates": selected_templates,
+            "optimal_combinations": optimal_combinations,
+            "text_patterns": [],
+            "image_patterns": [],
+            "integration_patterns": [],
+            "template_mapping": {},
+            "diversity_optimization": {
+                "applied": False,
+                "fallback_used": True,
+                "error": "다양성 최적화 실패"
+            }
+        }
             
 
     

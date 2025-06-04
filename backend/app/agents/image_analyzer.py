@@ -11,33 +11,33 @@ class ImageAnalyzerAgent:
 
     def create_agent(self):
         return Agent(
-            role="이미지 위치 식별 전문가",
-            goal="이미지에서 국가, 배경 정보, 촬영 위치를 정확하고 간결하게 식별",
-            backstory="""당신은 10년간 세계 각국의 여행 이미지를 분석해온 지리학 및 문화 전문가입니다.
+            role="지리적 위치 분석 전문가",
+            goal="이미지의 지리적 위치를 건축적, 환경적, 문화적 특징을 통해 정확히 식별",
+            backstory="""당신은 지리학 및 건축사학 전문가로서 다음 역량을 보유하고 있습니다:
 
     **전문 분야:**
-    - 지리학 박사 학위 보유
-    - 100개국 이상의 랜드마크 및 지역 특성 데이터베이스 구축
-    - 건축 양식, 자연 환경, 문화적 특징을 통한 위치 식별 전문성
-    - 이미지 기반 지리적 위치 추정 시스템 개발 경험
+    - 지리학 박사 학위 및 건축사학 연구
+    - 전 세계 도시 계획 및 건축 양식 데이터베이스 구축
+    - 위성 이미지 및 항공 사진 분석 전문성
+    - 문화적 랜드마크 및 지역 특성 식별 경험
 
     **분석 방법론:**
-    1. **건축 양식 분석**: 건물 스타일, 지붕 형태, 창문 구조를 통한 지역 특성 파악
-    2. **자연 환경 분석**: 식생, 지형, 기후 특성을 통한 지리적 위치 추정
-    3. **문화적 요소 분석**: 간판, 교통수단, 복장 등을 통한 국가/지역 식별
-    4. **랜드마크 식별**: 유명 건물, 다리, 광장 등 특정 위치 마커 인식
+    1. 건축 양식 분석: 건물 구조, 재료, 색상, 디자인 패턴
+    2. 환경 요소 분석: 지형, 식생, 기후 지표
+    3. 인프라 분석: 도로, 교통 시설, 공공 구조물
+    4. 문화 요소 분석: 간판, 언어, 전통적 요소
+    5. 사진의 구도와 색감
 
-    **응답 원칙:**
-    - 정확하고 간결한 정보만 제공
-    - 추측보다는 확실한 정보 우선
-    - 구체적인 위치명 제공 (가능한 경우)
-    - 불확실한 경우 "추정" 또는 "유사" 표현 사용
+    **출력 원칙:**
+    - 객관적이고 구체적인 지리적 정보만 제공
+    - 확실한 증거에 기반한 분석
+    - 위치 특정에 필요한 핵심 정보 집중
 
     **출력 형식:**
-    반드시 다음 3가지 정보만 간결하게 제공:
-    1. 국가: 정확한 국가명
-    2. 배경 정보: 도시/자연/해안 등 환경 유형
-    3. 촬영 위치: 구체적 장소명 또는 지역명""",
+    국가: [정확한 국가명]
+    도시: [구체적 도시/지역명]  
+    촬영 위치: [상세 장소명]
+    자세한 설명: [사진 고유 특징 키워드]""",
             verbose=True,
             llm=self.llm,
             multimodal=True
@@ -67,14 +67,29 @@ class ImageAnalyzerAgent:
                     "messages": [
                         {
                             "role": "system",
-                            "content": "당신은 이미지에서 위치를 정확하게 식별하는 전문가입니다. 반드시 다음 형식으로만 응답하세요:\n\n국가: [국가명]\n배경 정보: [도시/자연/해안/산악 등]\n촬영 위치: [구체적 장소명 또는 지역명]\n\n추가 설명이나 서술은 하지 마세요."
+                            "content": """당신은 지리적 위치 식별 전문가입니다. 이미지의 지리적, 건축적, 문화적 특징을 분석하여 위치를 특정합니다.
+
+                분석 기준:
+                - 건축물의 양식과 구조적 특징
+                - 자연환경과 지형적 요소
+                - 도시 인프라와 교통 시설
+                - 문화적 표식과 언어적 단서
+                - 사진의 구도와 색감
+
+                출력 형식:
+                국가: [국가명]
+                도시: [도시/지역명]
+                촬영 위치: [구체적 장소명]
+                자세한 설명: [사진 고유 특징]
+
+                분석 시 지리적 정보만 제공하고 다른 내용은 언급하지 마세요."""
                         },
                         {
                             "role": "user",
                             "content": [
                                 {
                                     "type": "text",
-                                    "text": "이 이미지의 위치를 다음 형식으로 정확히 식별해주세요:\n\n국가: \n배경 정보: \n촬영 위치: "
+                                    "text": "이 이미지의 지리적 위치를 다음 형식으로 분석해주세요:\n\n국가:\n도시:\n촬영 위치:\n자세한 설명:\n\n건축물, 자연환경, 문화적 요소를 기반으로 위치를 특정해주세요."
                                 },
                                 {
                                     "type": "image_url",
@@ -85,10 +100,9 @@ class ImageAnalyzerAgent:
                             ]
                         }
                     ],
-                    "temperature": 0.1,  # 더 정확한 응답을 위해 낮춤
-                    "max_tokens": 100    # 간결한 응답을 위해 줄임
+                    "temperature": 0.1,
+                    "max_tokens": 150
                 }
-
  
                 api_url = f"{os.getenv('AZURE_API_BASE')}/openai/deployments/{os.getenv('AZURE_OPENAI_DEPLOYMENT_NAME')}/chat/completions?api-version={os.getenv('AZURE_API_VERSION')}"
                 
@@ -97,13 +111,42 @@ class ImageAnalyzerAgent:
                         result_data = await response.json()
                         result = result_data['choices'][0]['message']['content']
                         
+                        # 결과 형식 검증 및 정제
+                        lines = result.strip().split('\n')
+                        parsed_result = {}
+                        
+                        for line in lines:
+                            if ':' in line:
+                                key, value = line.split(':', 1)
+                                key = key.strip()
+                                value = value.strip()
+                                
+                                if key == "국가":
+                                    parsed_result["country"] = value
+                                elif key == "도시":
+                                    parsed_result["city"] = value
+                                elif key == "촬영 위치":
+                                    parsed_result["location"] = value
+                                elif key == "자세한 설명":
+                                    parsed_result["description"] = value
+                        
                         analysis_result = {
                             "image_name": image.name,
                             "image_url": image_url,
-                            "location": result
+                            "country": parsed_result.get("country", "미상"),
+                            "city": parsed_result.get("city", "미상"),
+                            "location": parsed_result.get("location", "미상"),
+                            "description": parsed_result.get("description", "특징없음"),
+                            "raw_location": result,
+                            "confidence_score": 0.9 if all(k in parsed_result for k in ["country", "city", "location"]) else 0.5
                         }
                         
-                        print(f"이미지 '{image.name}' 분석 완료: {result}")
+                        print(f"이미지 '{image.name}' 정밀 분석 완료:")
+                        print(f"  국가: {parsed_result.get('country', '미상')}")
+                        print(f"  도시: {parsed_result.get('city', '미상')}")
+                        print(f"  위치: {parsed_result.get('location', '미상')}")
+                        print(f"  특징: {parsed_result.get('description', '특징없음')}")
+                        
                         return analysis_result
                     else:
                         error_text = await response.text()
