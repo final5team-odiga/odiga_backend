@@ -19,7 +19,7 @@ from agents.jsx.unified_jsx_generator import UnifiedJSXGenerator
 from utils.template_scanner import TemplateScanner
 
 # Cosmos DB 관련 import
-from db.cosmos_connection import image_container, magazine_container, logging_container
+from db.cosmos_connection import image_container, magazine_container, logging_container, temmplate_container
 from db.db_utils import save_to_cosmos
 
 
@@ -483,13 +483,36 @@ class SystemCoordinator:
             # self.file_manager.save_json(outputs_data, outputs_path)
 
             # ✅ 2. template_data.json 저장 (File Manager에 위임)
+            # template_data = final_result.get("template_data", {})
+            # if template_data and template_data.get("content_sections"):
+            #     template_path = os.path.join(
+            #         self.file_manager.output_folder, "template_data.json")
+            #     await self.file_manager.save_template_data_async(template_data, template_path)
+            #     self.logger.info(
+            #         f"✅ template_data.json 저장: {len(template_data.get('content_sections', []))}개 섹션")
+
+            # ✅ 2. template_data를 Cosmos DB에 저장 (로컬 파일 대신)
             template_data = final_result.get("template_data", {})
             if template_data and template_data.get("content_sections"):
-                template_path = os.path.join(
-                    self.file_manager.output_folder, "template_data.json")
-                await self.file_manager.save_template_data_async(template_data, template_path)
+                # template_data에 필요한 메타데이터 추가
+                template_document = {
+                    "id": f"template_{int(asyncio.get_event_loop().time())}",
+                    "template_id": template_data.get("template_id", f"template_{int(asyncio.get_event_loop().time())}"),
+                    "content_sections": template_data.get("content_sections", []),
+                    "selected_templates": template_data.get("selected_templates", []),
+                    "semantic_analysis": template_data.get("semantic_analysis", {}),
+                    "optimized_layouts": template_data.get("optimized_layouts", []),
+                    "integration_metadata": template_data.get("integration_metadata", {}),
+                    "created_at": asyncio.get_event_loop().time(),
+                    "document_type": "template_data"
+                }
+
+                # Cosmos DB에 저장 (파티션 키: template_id)
+                save_to_cosmos(temmplate_container, template_document,
+                               partition_key_field='user_id')
+
                 self.logger.info(
-                    f"✅ template_data.json 저장: {len(template_data.get('content_sections', []))}개 섹션")
+                    f"✅ template_data Cosmos DB 저장 완료: {len(template_data.get('content_sections', []))}개 섹션")
 
             #  3. React 앱 생성 요청
             jsx_components = final_result.get("jsx_components", [])
