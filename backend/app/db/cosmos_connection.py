@@ -14,7 +14,7 @@ DATABASE_NAME = os.getenv("DATABASE_NAME")
 MAGAZINE_CONTAINER = os.getenv("MAGAZINE_CONTAINER")
 IMAGE_CONTAINER = os.getenv("IMAGE_CONTAINER")
 LOGGING_CONTAINER = os.getenv("LOGGING_CONTAINER")
-
+TEMPLATE_CONTAINER = os.getenv("TEMPLATE_CONTAINER")
 # Cosmos 클라이언트 초기화
 try:
     client = CosmosClient(COSMOS_ENDPOINT, COSMOS_KEY)
@@ -26,3 +26,4 @@ except Exception as e:
 magazine_container = database.get_container_client(MAGAZINE_CONTAINER)
 image_container = database.get_container_client(IMAGE_CONTAINER)
 logging_container = database.get_container_client(LOGGING_CONTAINER)
+template_container = database.get_container_client(TEMPLATE_CONTAINER)

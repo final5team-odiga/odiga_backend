@@ -5,7 +5,7 @@ def save_to_cosmos(container, data, partition_key_field):
     """
     container: Cosmos DB 컨테이너 객체
     data: dict (저장할 데이터)
-    partition_key_field: str (파티션 키로 사용할 필드명, 예: '이미지 - user_id' 또는 '매거진 - mag_id' , '로깅-session_id')
+    partition_key_field: str (파티션 키로 사용할 필드명, 예: '이미지 - user_id' 또는 '매거진 - mag_id' , '로깅-session_id', '템플릿-user_id')
     """
     try:
         # id 필드가 없으면 생성
