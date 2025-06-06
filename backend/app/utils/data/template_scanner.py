@@ -2,7 +2,7 @@ import asyncio
 import aiofiles
 from typing import List, Dict
 from pathlib import Path
-from utils.hybridlogging import get_hybrid_logger
+from utils.log.hybridlogging import get_hybrid_logger
 
 class TemplateScanner:
     """JSX 템플릿 동적 스캔 및 관리"""

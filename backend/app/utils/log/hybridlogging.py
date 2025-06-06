@@ -4,7 +4,7 @@ import os
 from typing import List, Dict, Any
 import sys
 import io
-from utils.agent_decision_logger import get_agent_logger
+from utils.log.agent_decision_logger import get_agent_logger
 
 
 if sys.platform.startswith('win'):
@@ -13,207 +13,56 @@ if sys.platform.startswith('win'):
     sys.stderr = io.TextIOWrapper(sys.stderr.detach(), encoding='utf-8')
 
 class HybridLogger:
-    def __init__(self, name: str, agent_logger=None):  # ✅ 파라미터 추가
-        self.class_name = name
-        self.standard_logger = logging.getLogger(name)
+    def __init__(self, name: str = None):
+        self.name = name or self.__class__.__name__
+        self.logger = logging.getLogger(self.name)
+        self.agent_logger = None
+        self.setup_logging()
         
-        self.agent_logger = agent_logger or self._create_safe_agent_logger()
-        
-        if not self.standard_logger.handlers:
-            # 콘솔 핸들러
-            console_handler = logging.StreamHandler(sys.stdout)
-            console_handler.setLevel(logging.INFO)
-            
-            # ✅ UTF-8 인코딩 지원 포매터
-            formatter = logging.Formatter(
-                '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                datefmt='%Y-%m-%d %H:%M:%S'
-            )
-            
-            console_handler.setFormatter(formatter)
-            self.standard_logger.addHandler(console_handler)
-            self.standard_logger.setLevel(logging.INFO)
-
-        # 하이브리드 로깅 상태
-        self.hybrid_enabled = True
-        self.fallback_mode = False
-        self.standard_logger.info(f"{self.class_name} 하이브리드 로깅 시스템 초기화 완료")
-
-
-    def _setup_standard_logger(self):
-        """표준 로거 설정"""
+    def setup_logging(self):
+        """로깅 설정"""
         try:
-            # 핸들러가 없는 경우에만 추가
-            if not self.standard_logger.handlers:
-                # 콘솔 핸들러
-                console_handler = logging.StreamHandler()
-                console_handler.setLevel(logging.INFO)
-                
-                # 포맷터
-                formatter = logging.Formatter(
-                    '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-                )
-                console_handler.setFormatter(formatter)
-                
-                self.standard_logger.addHandler(console_handler)
-                self.standard_logger.setLevel(logging.INFO)
-                
-                # 파일 핸들러 (선택적)
-                log_dir = "./logs"
-                os.makedirs(log_dir, exist_ok=True)
-                file_handler = logging.FileHandler(
-                    os.path.join(log_dir, f"{self.class_name}.log")
-                )
-                file_handler.setLevel(logging.DEBUG)
-                file_handler.setFormatter(formatter)
-                self.standard_logger.addHandler(file_handler)
-                
-        except Exception as e:
-            print(f"표준 로거 설정 실패: {e}")
+            from utils.log.agent_decision_logger import AgentDecisionLogger
+            self.agent_logger = AgentDecisionLogger()
+        except ImportError:
+            self.logger.warning("AgentDecisionLogger를 불러올 수 없습니다. 표준 로깅으로 진행합니다.")
+    
+    def debug(self, msg: str):
+        self.logger.debug(msg)
+    
+    def info(self, msg: str):
+        self.logger.info(msg)
+    
+    def warning(self, msg: str):
+        self.logger.warning(msg)
+    
+    def error(self, msg: str):
+        self.logger.error(msg)
+    
+    def critical(self, msg: str):
+        self.logger.critical(msg)
 
-    def _create_safe_agent_logger(self):
-        """안전한 에이전트 로거 생성"""
-        try:
-            return get_agent_logger()
-        except Exception as e:
-            self.standard_logger.warning(f"에이전트 로거 생성 실패, 안전 모드 사용: {e}")
-            self.fallback_mode = True
-            return SafeAgentLogger(self.standard_logger)
-
-    # ==================== 표준 로깅 메서드들 ====================
-    
-    def info(self, message, *args, **kwargs):
-        try:
-            # ✅ 이모지 안전 처리
-            safe_message = self._make_emoji_safe(message)
-            return self.standard_logger.info(safe_message, *args, **kwargs)
-        except UnicodeEncodeError:
-            # 이모지 제거 후 재시도
-            emoji_free_message = self._remove_emojis(message)
-            return self.standard_logger.info(emoji_free_message, *args, **kwargs)
-    
-    def error(self, message, *args, **kwargs):
-        try:
-            safe_message = self._make_emoji_safe(message)
-            return self.standard_logger.error(safe_message, *args, **kwargs)
-        except UnicodeEncodeError:
-            emoji_free_message = self._remove_emojis(message)
-            return self.standard_logger.error(emoji_free_message, *args, **kwargs)
-    
-    def warning(self, message, *args, **kwargs):
-        try:
-            safe_message = self._make_emoji_safe(message)
-            return self.standard_logger.warning(safe_message, *args, **kwargs)
-        except UnicodeEncodeError:
-            emoji_free_message = self._remove_emojis(message)
-            return self.standard_logger.warning(emoji_free_message, *args, **kwargs)
-    
-    def debug(self, message, *args, **kwargs):
-        try:
-            safe_message = self._make_emoji_safe(message)
-            return self.standard_logger.debug(safe_message, *args, **kwargs)
-        except UnicodeEncodeError:
-            emoji_free_message = self._remove_emojis(message)
-            return self.standard_logger.debug(emoji_free_message, *args, **kwargs)
-    
-    def _make_emoji_safe(self, message: str) -> str:
-        """이모지를 안전하게 처리"""
-        if sys.platform.startswith('win'):
-            try:
-                # UTF-8로 인코딩 가능한지 테스트
-                message.encode('utf-8')
-                return message
-            except UnicodeEncodeError:
-                return self._remove_emojis(message)
-        return message
-    
-    def _remove_emojis(self, message: str) -> str:
-        """이모지 제거 또는 대체"""
-        import re
-        
-        # 이모지 매핑
-        emoji_map = {
-            '📦': '[PACKAGE]',
-            '✅': '[SUCCESS]',
-            '❌': '[ERROR]',
-            '⚠️': '[WARNING]',
-            '📱': '[MOBILE]',
-            '🎨': '[ART]',
-            '🚀': '[ROCKET]',
-            '📊': '[CHART]',
-            '🛡️': '[SHIELD]',
-            '📝': '[NOTE]',
-            '📁': '[FOLDER]'
-        }
-        
-        # 이모지 대체
-        for emoji, replacement in emoji_map.items():
-            message = message.replace(emoji, replacement)
-        
-        # 남은 이모지 제거 (유니코드 범위 기반)
-        emoji_pattern = re.compile(
-            "["
-            "\U0001F600-\U0001F64F"  # 감정 표현
-            "\U0001F300-\U0001F5FF"  # 기호 및 픽토그램
-            "\U0001F680-\U0001F6FF"  # 교통 및 지도
-            "\U0001F1E0-\U0001F1FF"  # 국기
-            "\U00002702-\U000027B0"  # 기타 기호
-            "\U000024C2-\U0001F251"
-            "]+", 
-            flags=re.UNICODE
-        )
-        
-        return emoji_pattern.sub('[EMOJI]', message)
-
-
-
-    # ==================== 에이전트 로깅 메서드들 ====================
-    
     def log_agent_decision(self, agent_name: str, agent_role: str = None, 
                           input_data: Dict = None, decision_process: Dict = None, 
                           output_result: Dict = None, reasoning: str = "", 
                           confidence_score: float = 0.8, context: Dict = None,
                           performance_metrics: Dict = None) -> str:
-        """에이전트 결정 로깅 - 호환성 보장"""
-        try:
-            # 기본값 설정으로 누락된 인수 문제 해결
-            agent_role = agent_role or f"{agent_name} 에이전트"
-            input_data = input_data or {}
-            decision_process = decision_process or {"steps": ["결정 과정 기록"]}
-            output_result = output_result or {"result": "처리 완료"}
-            reasoning = reasoning or "에이전트 결정 처리"
-            
-            # 에이전트 로거가 있는 경우
-            if self.agent_logger and hasattr(self.agent_logger, 'log_agent_decision'):
-                return self.agent_logger.log_agent_decision(
-                    agent_name=agent_name,
-                    agent_role=agent_role,
-                    input_data=input_data,
-                    decision_process=decision_process,
-                    output_result=output_result,
-                    reasoning=reasoning,
-                    confidence_score=confidence_score,
-                    context=context,
-                    performance_metrics=performance_metrics
-                )
-            else:
-                # 폴백: log_agent_real_output 사용
-                return self.log_agent_real_output(
-                    agent_name=agent_name,
-                    agent_role=agent_role,
-                    task_description=str(input_data),
-                    final_answer=str(output_result),
-                    reasoning_process=reasoning,
-                    raw_input=input_data,
-                    raw_output=output_result,
-                    performance_metrics=performance_metrics
-                )
-                
-        except Exception as e:
-            self.error(f"에이전트 결정 로깅 실패: {e}")
-            # 최종 폴백: 표준 로깅
-            self.info(f"Agent Decision (Fallback) - {agent_name}: {reasoning}")
-            return f"fallback_{agent_name}_{int(time.time())}"
+        """에이전트 결정 로깅 - AgentDecisionLogger로 위임"""
+        if self.agent_logger:
+            return self.agent_logger.log_agent_decision(
+                agent_name=agent_name,
+                agent_role=agent_role,
+                input_data=input_data,
+                decision_process=decision_process,
+                output_result=output_result,
+                reasoning=reasoning,
+                confidence_score=confidence_score,
+                context=context,
+                performance_metrics=performance_metrics
+            )
+        else:
+            self.info(f"Agent Decision - {agent_name}: {reasoning}")
+            return f"standard_{agent_name}_{int(time.time())}"
 
     def log_agent_real_output(self, agent_name: str, agent_role: str = None,
                              task_description: str = "", final_answer: str = "",
@@ -221,95 +70,40 @@ class HybridLogger:
                              raw_input: Any = None, raw_output: Any = None,
                              performance_metrics: Dict = None, error_logs: List[Dict] = None,
                              info_data: Dict = None) -> str:
-        """에이전트 실제 출력 로깅"""
-        try:
-            # 기본값 설정
-            agent_role = agent_role or f"{agent_name} 에이전트"
-            task_description = task_description or "작업 수행"
-            final_answer = final_answer or "처리 완료"
-            
-            if self.agent_logger and hasattr(self.agent_logger, 'log_agent_real_output'):
-                return self.agent_logger.log_agent_real_output(
-                    agent_name=agent_name,
-                    agent_role=agent_role,
-                    task_description=task_description,
-                    final_answer=final_answer,
-                    reasoning_process=reasoning_process,
-                    execution_steps=execution_steps or [],
-                    raw_input=raw_input,
-                    raw_output=raw_output,
-                    performance_metrics=performance_metrics or {},
-                    error_logs=error_logs or [],
-                    info_data=info_data or {}
-                )
-            else:
-                # 표준 로거로 폴백
-                self.info(f"Agent Output - {agent_name} ({agent_role}): {task_description}")
-                return f"standard_{agent_name}_{int(time.time())}"
-                
-        except Exception as e:
-            self.error(f"에이전트 출력 로깅 실패: {e}")
-            self.info(f"Agent Output (Error Fallback) - {agent_name}: {task_description}")
-            return f"error_fallback_{agent_name}_{int(time.time())}"
+        """에이전트 실제 출력 로깅 - AgentDecisionLogger로 위임"""
+        if self.agent_logger:
+            return self.agent_logger.log_agent_real_output(
+                agent_name=agent_name,
+                agent_role=agent_role,
+                task_description=task_description,
+                final_answer=final_answer,
+                reasoning_process=reasoning_process,
+                execution_steps=execution_steps,
+                raw_input=raw_input,
+                raw_output=raw_output,
+                performance_metrics=performance_metrics,
+                error_logs=error_logs,
+                info_data=info_data
+            )
+        else:
+            self.info(f"Agent Output - {agent_name}: {task_description}")
+            return f"standard_{agent_name}_{int(time.time())}"
 
     def log_agent_interaction(self, source_agent: str, target_agent: str,
                              interaction_type: str, data_transferred: Dict,
                              success: bool = True) -> str:
-        """에이전트 간 상호작용 로깅"""
-        try:
-            if self.agent_logger and hasattr(self.agent_logger, 'log_agent_interaction'):
-                return self.agent_logger.log_agent_interaction(
-                    source_agent=source_agent,
-                    target_agent=target_agent,
-                    interaction_type=interaction_type,
-                    data_transferred=data_transferred,
-                    success=success
-                )
-            else:
-                # 폴백: 상호작용을 출력으로 로깅
-                return self.log_agent_real_output(
-                    agent_name=f"{source_agent}_to_{target_agent}",
-                    agent_role="에이전트 상호작용",
-                    task_description=f"{interaction_type} 상호작용",
-                    final_answer=f"데이터 전달 {'성공' if success else '실패'}",
-                    raw_input={"source": source_agent, "target": target_agent},
-                    raw_output=data_transferred,
-                    performance_metrics={"success": success}
-                )
-                
-        except Exception as e:
-            self.error(f"에이전트 상호작용 로깅 실패: {e}")
-            self.info(f"Agent Interaction (Fallback) - {source_agent} -> {target_agent}: {interaction_type}")
-            return f"interaction_fallback_{int(time.time())}"
-
-    def get_learning_insights(self, target_agent: str = None) -> Dict:
-        """에이전트 학습 인사이트 추출"""
-        try:
-            if self.agent_logger and hasattr(self.agent_logger, 'get_learning_insights'):
-                return self.agent_logger.get_learning_insights(target_agent)
-            else:
-                return self._create_fallback_insights(target_agent)
-                
-        except Exception as e:
-            self.error(f"학습 인사이트 추출 실패: {e}")
-            return self._create_fallback_insights(target_agent)
-
-    def _create_fallback_insights(self, target_agent: str = None) -> Dict:
-        """폴백 인사이트 생성"""
-        return {
-            "target_agent": target_agent or "unknown",
-            "analysis_timestamp": time.time(),
-            "total_outputs_analyzed": 0,
-            "patterns": ["hybrid_fallback_mode"],
-            "recommendations": ["하이브리드 로거 폴백 모드에서 실행"],
-            "key_insights": f"하이브리드 로거 폴백 모드 - {self.class_name}",
-            "fallback_mode": True,
-            "logger_status": {
-                "standard_logger_available": True,
-                "agent_logger_available": not self.fallback_mode,
-                "hybrid_enabled": self.hybrid_enabled
-            }
-        }
+        """에이전트 간 상호작용 로깅 - AgentDecisionLogger로 위임"""
+        if self.agent_logger:
+            return self.agent_logger.log_agent_interaction(
+                source_agent=source_agent,
+                target_agent=target_agent,
+                interaction_type=interaction_type,
+                data_transferred=data_transferred,
+                success=success
+            )
+        else:
+            self.info(f"Agent Interaction - {source_agent} -> {target_agent}: {interaction_type}")
+            return f"interaction_{int(time.time())}"
 
     # ==================== 하이브리드 전용 메서드들 ====================
     
@@ -419,25 +213,21 @@ class HybridLogger:
     def get_logger_status(self) -> Dict:
         """로거 상태 정보 반환"""
         return {
-            "class_name": self.class_name,
-            "standard_logger_name": self.standard_logger.name,
-            "agent_logger_available": self.agent_logger is not None and not self.fallback_mode,
+            "class_name": self.name,
+            "standard_logger_name": self.logger.name,
+            "agent_logger_available": self.agent_logger is not None,
             "agent_logger_type": type(self.agent_logger).__name__,
-            "hybrid_enabled": self.hybrid_enabled,
-            "fallback_mode": self.fallback_mode,
-            "handlers_count": len(self.standard_logger.handlers),
-            "log_level": self.standard_logger.level
+            "handlers_count": len(self.logger.handlers),
+            "log_level": self.logger.level
         }
 
     def enable_hybrid_mode(self):
         """하이브리드 모드 활성화"""
-        self.hybrid_enabled = True
-        self.info("하이브리드 로깅 모드 활성화")
+        self.logger.info("하이브리드 로깅 모드 활성화")
 
     def disable_hybrid_mode(self):
         """하이브리드 모드 비활성화 (표준 로깅만 사용)"""
-        self.hybrid_enabled = False
-        self.info("하이브리드 로깅 모드 비활성화 - 표준 로깅만 사용")
+        self.logger.info("하이브리드 로깅 모드 비활성화 - 표준 로깅만 사용")
 
     def test_logging_system(self):
         """로깅 시스템 테스트"""
@@ -719,19 +509,20 @@ def create_hybrid_logger(class_name: str, agent_logger_factory=None) -> HybridLo
             agent_logger = agent_logger_factory()
         else:
             try:
-                from utils.agent_decision_logger import get_agent_logger
+                from utils.log.agent_decision_logger import get_agent_logger
                 agent_logger = get_agent_logger()
             except ImportError:
                 agent_logger = None
 
         # ✅ 하이브리드 로거 생성 (올바른 파라미터 전달)
-        hybrid_logger = HybridLogger(class_name, agent_logger)
+        hybrid_logger = HybridLogger(class_name)
+        hybrid_logger.agent_logger = agent_logger
         return hybrid_logger
 
     except Exception as e:
         # ✅ 최종 폴백: 표준 로거만 사용 (올바른 파라미터 전달)
         print(f"하이브리드 로거 생성 실패, 표준 로거 사용: {e}")
-        return HybridLogger(class_name, None)  # ✅ None을 명시적으로 전달
+        return HybridLogger(class_name)  # ✅ None을 명시적으로 전달
 
 
 def get_hybrid_logger(class_name: str = None) -> HybridLogger:

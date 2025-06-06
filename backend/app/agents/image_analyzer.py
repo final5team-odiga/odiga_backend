@@ -51,7 +51,7 @@ class ImageAnalyzerAgent:
                 print(f"\n=== 이미지 {image_index}: '{image.name}' 분석 중 ===")
                 
                 # 이미지 URL 생성
-                from utils.blob_storage import BlobStorageManager
+                from utils.data.blob_storage import BlobStorageManager
                 blob_manager = BlobStorageManager()
                 image_url = blob_manager.get_image_url(image)
                 print(f"이미지 URL: {image_url}")

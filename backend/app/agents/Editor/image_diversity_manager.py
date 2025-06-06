@@ -11,19 +11,20 @@ from sklearn.cluster import DBSCAN
 from sklearn.metrics.pairwise import cosine_similarity
 import torch
 import open_clip
-from utils.hybridlogging import get_hybrid_logger
-from utils.session_isolation import SessionAwareMixin
-from utils.logging_manager import LoggingManager
+from utils.log.hybridlogging import HybridLogger
+from utils.isolation.session_isolation import SessionAwareMixin
+from utils.log.logging_manager import LoggingManager
+
 
 class ImageDiversityManager(SessionAwareMixin):
     """이미지 다양성 관리 및 중복 방지 전문 에이전트"""
     
-    def __init__(self, similarity_threshold: int = 40, diversity_weight: float = 0.3):
+    def __init__(self, logger: 'HybridLogger', similarity_threshold: int = 40, diversity_weight: float = 0.3):
         super().__init__()
-        self.logger = get_hybrid_logger(self.__class__.__name__)
+        self.logger = logger
+        self.logging_manager = LoggingManager(self.logger)
         self.similarity_threshold = similarity_threshold
         self.diversity_weight = diversity_weight
-        self.logging_manager = LoggingManager()
         self.processed_hashes: Set[str] = set()
         self.image_clusters: Dict[str, List[Dict]] = {}
         self.image_embeddings_cache: Dict[str, np.ndarray] = {}
@@ -56,7 +57,6 @@ class ImageDiversityManager(SessionAwareMixin):
         }
         
         self.logger.info("ImageDiversityManager 초기화 완료")
-
 
     async def process_data(self, input_data):
         # 에이전트 작업 수행
@@ -715,10 +715,7 @@ class ImageDiversityManager(SessionAwareMixin):
             }
             
             # ✅ LoggingManager 사용
-            from utils.logging_manager import LoggingManager
-            logging_manager = LoggingManager()
-            
-            await logging_manager.log_agent_response(
+            await self.logging_manager.log_agent_response(
                 agent_name="ImageDiversityManager",
                 agent_role="이미지 다양성 관리 및 중복 방지 전문 에이전트",
                 task_description=f"이미지 다양성 최적화: {len(original_images)}개 → {total_allocated}개 할당",

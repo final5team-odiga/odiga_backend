@@ -1,16 +1,17 @@
 import asyncio
 import numpy as np
 import json
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from crewai import Agent, Task, Crew
 from custom_llm import get_azure_llm
-from utils.hybridlogging import get_hybrid_logger
-from utils.ai_search_isolation import AISearchIsolationManager
-from utils.pdf_vector_manager import PDFVectorManager
-from utils.session_isolation import SessionAwareMixin
-from utils.agent_communication_isolation import InterAgentCommunicationMixin
+from utils.log.hybridlogging import get_hybrid_logger
+from utils.isolation.ai_search_isolation import AISearchIsolationManager
+from utils.data.pdf_vector_manager import PDFVectorManager
+from utils.isolation.session_isolation import SessionAwareMixin
+from utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
 from agents.Editor.image_diversity_manager import ImageDiversityManager
-from utils.logging_manager import LoggingManager
+from utils.log.logging_manager import LoggingManager
+from db.magazine_db_utils import MagazineDBUtils
 
 class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
     """통합 멀티모달 에이전트 - AI Search 벡터 데이터 통합 활용"""
@@ -23,8 +24,8 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
 
 
         self.vector_manager = PDFVectorManager(isolation_enabled=True)
-        self.image_diversity_manager = ImageDiversityManager()
-        self.logging_manager = LoggingManager()
+        self.image_diversity_manager = ImageDiversityManager(self.logger)
+        self.logging_manager = LoggingManager(self.logger)
         self.__init_session_awareness__()
         self.__init_inter_agent_communication__()
         
@@ -169,17 +170,27 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
             return "결과 처리 실패"
         
     async def process_magazine_unified(self, magazine_content: Dict, image_analysis: List[Dict], 
-                                     available_templates: List[str]) -> Dict:
+                                     available_templates: List[str], user_id: str = "unknown_user") -> Dict:
         """AI Search 통합 매거진 처리 - 벡터 데이터와 멀티모달 분석의 완벽한 융합"""
         
         self.logger.info("=== AI Search 통합 멀티모달 매거진 처리 시작 ===")
         
-        # AI Search 벡터 검색으로 관련 패턴 사전 수집
-        relevant_patterns = await self._collect_relevant_ai_search_patterns(magazine_content, image_analysis, available_templates)
-        
-        # 1단계: AI Search 기반 멀티모달 분석 태스크 생성
-        content_analysis_task = Task(
-            description=f"""
+        try:
+            # magazine_id가 있으면 Cosmos DB에서 최신 데이터 조회
+            if "magazine_id" in magazine_content:
+                magazine_data = await MagazineDBUtils.get_magazine_by_id(magazine_content["magazine_id"])
+                if magazine_data:
+                    magazine_content = magazine_data.get("content", magazine_content)
+                    
+                    # 이미지 분석 결과도 Cosmos DB에서 조회 (변경된 저장 방식 적용)
+                    image_analysis = await MagazineDBUtils.get_images_by_magazine_id(magazine_content["magazine_id"])
+            
+            # AI Search 벡터 검색으로 관련 패턴 사전 수집
+            relevant_patterns = await self._collect_relevant_ai_search_patterns(magazine_content, image_analysis, available_templates)
+            
+            # 1단계: AI Search 기반 멀티모달 분석 태스크 생성
+            content_analysis_task = Task(
+                description=f"""
 다음 매거진 콘텐츠와 이미지 분석 결과를 AI Search 벡터 데이터와 함께 분석하여 최적의 텍스트 구조를 설계하세요:
 
 **매거진 콘텐츠:**
@@ -203,18 +214,21 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
 6. AI Search 데이터 기반 글의 형태, 문장 길이, 글의 맺음 최적화
 7. 벡터 패턴을 참조한 제목, 부제목, 본문 구조 결정
 
+**사용자 정보:**
+- 사용자 ID: {user_id}
+
 **출력 형식:**
 - 구조화된 섹션별 분석 결과 (AI Search 패턴 반영)
 - 각 섹션의 제목, 부제목, 본문 정제 (벡터 데이터 기반)
 - 이미지 연관성 점수 포함 (AI Search 매칭)
 - 템플릿 매핑 추천 (벡터 검색 기반)
-            """,
-            expected_output="AI Search 강화 구조화된 텍스트 분석 결과 (JSON 형식)",
-            agent=self.content_structure_agent
-        )
-        
-        image_layout_task = Task(
-            description=f"""
+""",
+                expected_output="AI Search 강화 구조화된 텍스트 분석 결과 (JSON 형식)",
+                agent=self.content_structure_agent
+            )
+            
+            image_layout_task = Task(
+                description=f"""
 다음 이미지 분석 결과와 텍스트 내용을 AI Search 벡터 데이터와 함께 고려하여 최적의 이미지 배치 전략을 수립하세요:
 
 **이미지 분석 결과:**
@@ -239,56 +253,70 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
 - 벡터 데이터 참조 이미지-텍스트 의미적 연관성 점수
 - AI Search 기반 시각적 균형 최적화 방안
 - 벡터 검색 결과 반영 배치 우선순위 및 근거
-            """,
-            expected_output="AI Search 강화 구조화된 이미지 배치 전략 (JSON 형식)",
-            agent=self.image_layout_agent
-        )
-        
-        # 2단계: AI Search 통합 병렬 분석 실행
-        analysis_crew = Crew(
-            agents=[self.content_structure_agent, self.image_layout_agent],
-            tasks=[content_analysis_task, image_layout_task],
-            verbose=True
-        )
-        
-        analysis_results = await asyncio.get_event_loop().run_in_executor(
-            None, analysis_crew.kickoff
-        )
+                """,
+                expected_output="AI Search 강화 구조화된 이미지 배치 전략 (JSON 형식)",
+                agent=self.image_layout_agent
+            )
+            
+            # 2단계: AI Search 통합 병렬 분석 실행
+            analysis_crew = Crew(
+                agents=[self.content_structure_agent, self.image_layout_agent],
+                tasks=[content_analysis_task, image_layout_task],
+                verbose=True
+            )
+            
+            analysis_results = await asyncio.get_event_loop().run_in_executor(
+                None, analysis_crew.kickoff
+            )
 
-        processed_results = self._safely_process_crew_results(analysis_results)
-        
-        # 3단계: AI Search 기반 의미적 조율 태스크
-        coordination_task = Task(
-            description=f"""
-            **AI Search 강화 텍스트 구조 분석 결과:**
-            {processed_results.get('content_analysis', '분석 결과 없음')}
+            processed_results = self._safely_process_crew_results(analysis_results)
+            
+            # 3단계: AI Search 기반 의미적 조율 태스크
+            coordination_task = Task(
+                description=f"""
+                **AI Search 강화 텍스트 구조 분석 결과:**
+                {processed_results.get('content_analysis', '분석 결과 없음')}
 
-            **AI Search 강화 이미지 배치 전략:**
-            {processed_results.get('image_layout', '배치 전략 없음')}
-            """,
-            expected_output="AI Search 통합 최종 매거진 구조 (JSON 형식)",
-            agent=self.semantic_coordinator_agent
-        )
-        
-        # 4단계: AI Search 기반 최종 조율 실행
-        coordination_crew = Crew(
-            agents=[self.semantic_coordinator_agent],
-            tasks=[coordination_task],
-            verbose=True
-        )
-        
-        final_result = await asyncio.get_event_loop().run_in_executor(
-            None, coordination_crew.kickoff
-        )
-        
-        # 5단계: AI Search 통합 결과 후처리 및 검증
-        processed_result = await self._process_unified_result_with_ai_search(
-            final_result, magazine_content, image_analysis, available_templates, relevant_patterns
-        )
-        
-        self.logger.info("=== AI Search 통합 멀티모달 매거진 처리 완료 ===")
-        
-        return processed_result
+                **AI Search 강화 이미지 배치 전략:**
+                {processed_results.get('image_layout', '배치 전략 없음')}
+                """,
+                expected_output="AI Search 통합 최종 매거진 구조 (JSON 형식)",
+                agent=self.semantic_coordinator_agent
+            )
+            
+            # 4단계: AI Search 기반 최종 조율 실행
+            coordination_crew = Crew(
+                agents=[self.semantic_coordinator_agent],
+                tasks=[coordination_task],
+                verbose=True
+            )
+            
+            final_result = await asyncio.get_event_loop().run_in_executor(
+                None, coordination_crew.kickoff
+            )
+            
+            # 5단계: AI Search 통합 결과 후처리 및 검증
+            processed_result = await self._process_unified_result_with_ai_search(
+                final_result, magazine_content, image_analysis, available_templates, relevant_patterns, user_id
+            )
+            
+            # 처리된 결과를 Cosmos DB에 업데이트 - 매거진 콘텐츠만 저장
+            if "magazine_id" in magazine_content:
+                await MagazineDBUtils.update_magazine_content(magazine_content["magazine_id"], {
+                    "content": magazine_content,
+                    "processed_content": processed_result,
+                    "status": "processed"
+                })
+            
+            self.logger.info("=== AI Search 통합 멀티모달 매거진 처리 완료 ===")
+            
+            return processed_result
+            
+        except Exception as e:
+            self.logger.error(f"AI Search 통합 매거진 처리 실패: {e}")
+            return self._generate_ai_search_fallback_result(
+                magazine_content, image_analysis, available_templates, {}, e, user_id
+            )
     
     def _safely_process_crew_results(self, crew_results) -> Dict:
         """CrewAI 결과를 안전하게 처리 (동기 방식으로 수정)"""
@@ -620,7 +648,7 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
     
     async def _process_unified_result_with_ai_search(self, crew_result: Any, magazine_content: Dict,
                                                    image_analysis: List[Dict], available_templates: List[str],
-                                                   ai_search_patterns: Dict) -> Dict:
+                                                   ai_search_patterns: Dict, user_id: str = "unknown_user") -> Dict:
         """AI Search 통합 결과 후처리"""
         
         try:
@@ -658,6 +686,9 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
             if "selected_templates" not in parsed_result:
                 parsed_result["selected_templates"] = available_templates[:len(parsed_result["content_sections"])]
             
+            # 사용자 ID 추가
+            parsed_result["user_id"] = user_id
+            
             # AI Search 강화 메타데이터 추가
             parsed_result["integration_metadata"] = {
                 "source": "unified_multimodal_agent_ai_search",
@@ -693,7 +724,7 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
             
             # AI Search 기반 폴백 결과 생성
             return self._generate_ai_search_fallback_result(
-                magazine_content, image_analysis, available_templates, ai_search_patterns, e
+                magazine_content, image_analysis, available_templates, ai_search_patterns, e, user_id
             )
     
     def _generate_ai_search_based_structure(self, magazine_content: Dict, image_analysis: List[Dict],
@@ -842,78 +873,84 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
         return section
     
     def _generate_ai_search_fallback_result(self, magazine_content: Dict, image_analysis: List[Dict],
-                                      available_templates: List[str], ai_search_patterns: Dict, error: Exception) -> Dict:
+                                      available_templates: List[str], ai_search_patterns: Dict, error: Exception, user_id: str) -> Dict:
         """AI Search 기반 폴백 결과 생성 (원본 데이터 활용)"""
         
-        #  원본 데이터 활용
-        original_sections = magazine_content.get("sections", [])
-        fallback_sections = []
-        
-        for i, template in enumerate(available_templates[:3]):
-            #  magazine_content에서 원본 데이터 추출
-            original_section = original_sections[i] if i < len(original_sections) else {}
+        try:
+            # 원본 섹션 활용
+            original_sections = magazine_content.get("sections", [])
+            fallback_sections = []
             
-            section = {
-                "template": template,
-                #  원본 제목 사용 (없으면 기본값)
-                "title": original_section.get("title", f"여행 이야기 {i+1}"),
-                "subtitle": "특별한 순간들",
-                #  원본 콘텐츠 사용 (오류 메시지 추가)
-                "body": f"{original_section.get('content', '멋진 여행 경험을 공유합니다.')[:300]}... (AI Search 통합 처리 중 오류 발생: {str(error)[:100]})",
-                "tagline": "TRAVEL & CULTURE",
-                #  image_analysis에서 이미지 할당
-                "images": self._assign_fallback_images(image_analysis, i),
-                "metadata": {
-                    "fallback_used": True,
-                    "error": str(error),
-                    "ai_search_attempted": True,
-                    "original_content_preserved": True,
-                    "original_title_used": bool(original_section.get("title")),
-                    "original_content_used": bool(original_section.get("content"))
+            for i, template in enumerate(available_templates[:len(original_sections)]):
+                original_section = original_sections[i] if i < len(original_sections) else {}
+                
+                # 기본 섹션 구조 생성
+                section = {
+                    "template": template,
+                    "title": original_section.get("title", f"여행 이야기 {i+1}"),
+                    "subtitle": "특별한 순간들",
+                    "body": original_section.get("content", "멋진 여행 경험을 공유합니다.")[:500],
+                    "tagline": "TRAVEL & CULTURE",
+                    "images": self._assign_fallback_images(image_analysis, i),
+                    "metadata": {
+                        "fallback_mode": True,
+                        "error_handled": str(error),
+                        "original_content_preserved": True,
+                        "original_title_used": bool(original_section.get("title")),
+                        "original_content_used": bool(original_section.get("content"))
+                    }
+                }
+                
+                fallback_sections.append(section)
+            
+            return {
+                "user_id": user_id,  # 사용자 ID 추가
+                "selected_templates": available_templates[:len(fallback_sections)],
+                "content_sections": fallback_sections,
+                "integration_metadata": {
+                    "source": "unified_multimodal_agent_fallback",
+                    "total_sections": len(fallback_sections),
+                    "multimodal_processing": False,
+                    "semantic_optimization": False,
+                    "ai_search_enhanced": False,
+                    "vector_patterns_used": False,
+                    "isolation_applied": True,
+                    "error_details": {
+                        "error_type": error.__class__.__name__,
+                        "error_message": str(error)
+                    },
+                    "fallback_stats": {
+                        "templates_available": len(available_templates),
+                        "images_available": len(image_analysis),
+                        "sections_generated": len(fallback_sections)
+                    }
                 }
             }
-            
-            #  AI Search 패턴이 있으면 적용 (원본 데이터 기반)
-            text_patterns = ai_search_patterns.get("text_patterns", [])
-            if text_patterns and i < len(text_patterns):
-                pattern = text_patterns[i]
-                # 원본 제목을 기반으로 패턴 적용
-                section["title"] = self._apply_text_pattern_to_title(section["title"], pattern)
-                section["metadata"]["text_pattern_applied"] = True
-            
-            #  이미지 패턴 적용
-            image_patterns = ai_search_patterns.get("image_patterns", [])
-            if image_patterns and i < len(image_patterns):
-                pattern = image_patterns[i]
-                section = self._apply_ai_search_image_pattern(section, pattern)
-                section["metadata"]["image_pattern_applied"] = True
-            
-            fallback_sections.append(section)
-        
-        return {
-            "selected_templates": available_templates[:3],
-            "content_sections": fallback_sections,
-            "integration_metadata": {
-                "source": "unified_multimodal_agent_ai_search_fallback",
-                "total_sections": len(fallback_sections),
-                "fallback_used": True,
-                "error": str(error),
-                "ai_search_enhanced": len(ai_search_patterns.get("text_patterns", [])) > 0,
-                "vector_patterns_used": len(ai_search_patterns.get("text_patterns", [])) > 0,
-                "isolation_applied": True,
-                "original_data_preserved": True,  #  원본 데이터 보존 표시
-                "ai_search_patterns": {
-                    "text_patterns_count": len(ai_search_patterns.get("text_patterns", [])),
-                    "image_patterns_count": len(ai_search_patterns.get("image_patterns", [])),
-                    "integration_patterns_count": len(ai_search_patterns.get("integration_patterns", []))
-                },
-                "fallback_statistics": {  #  폴백 통계 추가
-                    "original_sections_available": len(original_sections),
-                    "images_available": len(image_analysis),
-                    "sections_generated": len(fallback_sections)
+        except Exception as e:
+            self.logger.error(f"AI Search 폴백 결과 생성 실패: {e}")
+            return {
+                "user_id": user_id,
+                "selected_templates": [],
+                "content_sections": [],
+                "integration_metadata": {
+                    "source": "unified_multimodal_agent_fallback",
+                    "total_sections": 0,
+                    "multimodal_processing": False,
+                    "semantic_optimization": False,
+                    "ai_search_enhanced": False,
+                    "vector_patterns_used": False,
+                    "isolation_applied": True,
+                    "error_details": {
+                        "error_type": e.__class__.__name__,
+                        "error_message": str(e)
+                    },
+                    "fallback_stats": {
+                        "templates_available": 0,
+                        "images_available": 0,
+                        "sections_generated": 0
+                    }
                 }
             }
-        }
 
     def _assign_fallback_images(self, image_analysis: List[Dict], section_index: int) -> List[str]:
         """폴백 모드에서 이미지 할당"""

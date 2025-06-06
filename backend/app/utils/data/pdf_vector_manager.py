@@ -11,7 +11,7 @@ from pathlib import Path
 
 # AI Search 격리 시스템 import
 try:
-    from utils.ai_search_isolation import AISearchIsolationManager
+    from utils.isolation.ai_search_isolation import AISearchIsolationManager
     ISOLATION_AVAILABLE = True
 except ImportError:
     print("⚠️ AI Search 격리 모듈을 찾을 수 없습니다. 기본 모드로 실행됩니다.")

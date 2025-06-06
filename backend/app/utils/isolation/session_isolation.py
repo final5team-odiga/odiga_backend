@@ -8,10 +8,10 @@ import json
 import time
 import uuid
 import threading
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Dict
 from dataclasses import dataclass
 from pathlib import Path
-from utils.ai_search_isolation import AISearchIsolationManager
+from utils.isolation.ai_search_isolation import AISearchIsolationManager
 
 @dataclass
 class SessionConfig:
@@ -35,60 +35,56 @@ class SessionManager:
                     cls._instance = super().__new__(cls)
         return cls._instance
     
-    def __init__(self):
+    def __init__(self, isolation_manager=None):
         if not hasattr(self, 'initialized'):
             self.sessions = {}
-            self.session_data = {}
             self.session_locks = {}
-            self.isolation_manager = AISearchIsolationManager()
+            self.session_data = {}
+            self.isolation_manager = isolation_manager
             self.initialized = True
             print("🔒 SessionManager 초기화 완료")
     
-    def create_session(self, isolation_level: str = "strict") -> str:
+    def create_session(self, session_id: str = None) -> str:
         """새 세션 생성"""
-        session_id = f"session_{int(time.time())}_{uuid.uuid4().hex[:8]}"
-        
-        config = SessionConfig(
-            session_id=session_id,
-            isolation_level=isolation_level,
-            data_retention_hours=24,
-            enable_cross_session_learning=False,
-            vector_index_isolation=True
-        )
-        
-        with self._lock:
-            self.sessions[session_id] = config
+        if session_id is None:
+            session_id = f"session_{int(time.time() * 1000000)}"
+            
+        if session_id not in self.sessions:
+            self.sessions[session_id] = True
+            self.session_locks[session_id] = threading.Lock()
             self.session_data[session_id] = {
                 "created_at": time.time(),
                 "agent_results": {},
-                "vector_data": {},
-                "shared_state": {},
                 "contamination_log": []
             }
-            self.session_locks[session_id] = threading.Lock()
-        
-        # 세션별 디렉토리 생성
-        self._create_session_directory(session_id)
-        
-        print(f"🆕 새 세션 생성: {session_id} (격리 수준: {isolation_level})")
+            
         return session_id
     
-    def get_session_data_path(self, session_id: str) -> str:
-        """세션별 데이터 경로 반환"""
-        return f"./output/sessions/{session_id}"
+    def end_session(self, session_id: str):
+        """세션 종료"""
+        if session_id in self.sessions:
+            del self.sessions[session_id]
+            del self.session_locks[session_id]
+            del self.session_data[session_id]
+    
+    def get_session_data(self, session_id: str) -> Dict:
+        """세션 데이터 조회"""
+        if session_id not in self.sessions:
+            raise ValueError(f"세션 {session_id}가 존재하지 않습니다")
+        return self.session_data[session_id]
     
     def get_isolated_vector_index(self, session_id: str) -> str:
         """세션별 격리된 벡터 인덱스명 반환"""
         return f"magazine-vector-{session_id}"
     
     def store_agent_result(self, session_id: str, agent_name: str, result: Any):
-        """세션별 에이전트 결과 저장"""
+        """세션별 에이전트 결과 저장 (메모리에만 저장)"""
         if session_id not in self.sessions:
             raise ValueError(f"세션 {session_id}가 존재하지 않습니다")
         
         with self.session_locks[session_id]:
             # AI Search 오염 검사
-            if self.isolation_manager.is_contaminated(result, f"{agent_name}_result"):
+            if self.isolation_manager and self.isolation_manager.is_contaminated(result, f"{agent_name}_result"):
                 print(f"🚫 세션 {session_id}: {agent_name} 결과에서 오염 감지")
                 self.session_data[session_id]["contamination_log"].append({
                     "agent": agent_name,
@@ -106,8 +102,6 @@ class SessionManager:
                 "isolation_verified": True
             })
             
-            # 세션별 파일로 저장
-            self._save_session_data(session_id)
             return True
     
     def get_agent_results(self, session_id: str, agent_name: str) -> List[Any]:
@@ -170,29 +164,14 @@ class SessionManager:
             print(f"🗑️ 만료된 세션 정리: {session_id}")
     
     def _create_session_directory(self, session_id: str):
-        """세션별 디렉토리 생성"""
-        session_path = Path(self.get_session_data_path(session_id))
-        session_path.mkdir(parents=True, exist_ok=True)
-        
-        # 세션 설정 파일 생성
-        config_path = session_path / "session_config.json"
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump({
-                "session_id": session_id,
-                "created_at": time.time(),
-                "isolation_level": self.sessions[session_id].isolation_level
-            }, f, indent=2)
+        """세션별 디렉토리 생성 (비활성화)"""
+        print(f"[파일 저장 비활성화] 세션 디렉토리 생성 요청 무시: {session_id}")
+        return
     
     def _save_session_data(self, session_id: str):
-        """세션 데이터 파일 저장"""
-        session_path = Path(self.get_session_data_path(session_id))
-        data_path = session_path / "session_data.json"
-        
-        try:
-            with open(data_path, 'w', encoding='utf-8') as f:
-                json.dump(self.session_data[session_id], f, indent=2, default=str)
-        except Exception as e:
-            print(f"⚠️ 세션 데이터 저장 실패 {session_id}: {e}")
+        """세션 데이터 파일 저장 (비활성화)"""
+        print(f"[파일 저장 비활성화] 세션 데이터 저장 요청 무시: {session_id}")
+        return
     
     def _cleanup_session(self, session_id: str):
         """세션 정리"""
@@ -204,11 +183,7 @@ class SessionManager:
             if session_id in self.session_locks:
                 del self.session_locks[session_id]
         
-        # 세션 디렉토리 정리
-        session_path = Path(self.get_session_data_path(session_id))
-        if session_path.exists():
-            import shutil
-            shutil.rmtree(session_path)
+        print(f"[세션 정리] 세션 {session_id} 정리 완료")
 
 class SessionAwareMixin:
     """세션 인식 믹스인 클래스"""

@@ -1,11 +1,17 @@
 # main.py (PDF 생성 부분만 수정)
 import os
 import sys
+
+# Add project root to sys.path
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import asyncio
 from agents.system_coordinator import SystemCoordinator
-from utils.hybridlogging import get_hybrid_logger
-from utils.template_scanner import TemplateScanner
-from backend.app.utils.pdf_generater import PDFGenerationService
+from utils.log.hybridlogging import get_hybrid_logger
+from utils.data.pdf_vector_manager import PDFVectorManager
+from service.pdf_generater import PDFGenerationService
 
 if sys.platform.startswith('win'):
     os.environ['PYTHONIOENCODING'] = 'utf-8'
@@ -17,16 +23,11 @@ async def main():
 
     try:
         system_coordinator = SystemCoordinator()
-        template_scanner = TemplateScanner()
-        available_templates = await template_scanner.scan_jsx_templates()
-
-        if not available_templates:
-            logger.warning("JSX 템플릿을 찾을 수 없습니다. 기본 템플릿을 생성합니다.")
-            available_templates = await template_scanner.create_default_templates()
-
-        final_result = await system_coordinator.coordinate_complete_magazine_generation(
-            available_templates=available_templates
-        )
+        
+        # PDFVectorManager를 초기화하고 인덱스 연결 상태 확인
+        pdf_vector_manager = PDFVectorManager()
+        # 매거진 생성 실행
+        final_result = await system_coordinator.coordinate_complete_magazine_generation()
 
         print("🧪 final_result =", final_result)
 
@@ -36,13 +37,12 @@ async def main():
 === 매거진 생성 완료 ===
 - 총 섹션 수: {processing_summary.get('total_sections', 0)}
 - JSX 컴포넌트 수: {processing_summary.get('total_jsx_components', 0)}
-- 사용된 템플릿: {len(available_templates)}개
+- 사용된 템플릿: {processing_summary.get('templates_used', 0)}개
 - 의미적 신뢰도: {processing_summary.get('semantic_confidence', 0.0):.2f}
 - 멀티모달 최적화: {processing_summary.get('multimodal_optimization', False)}
 - 반응형 디자인: {processing_summary.get('responsive_design', False)}
 """)
         
-
         logger.info("JSX 파일 기반으로 PDF 생성 시작...")
         pdf_service = PDFGenerationService()
         output_pdf_path = os.path.abspath("magazine_result.pdf")

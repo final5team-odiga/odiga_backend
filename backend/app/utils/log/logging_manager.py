@@ -1,45 +1,27 @@
 import asyncio
 import json
 import time
-from typing import Dict, Any, List
-from utils.agent_decision_logger import get_agent_logger
+from typing import Dict, Any, List, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from utils.log.hybridlogging import HybridLogger
 
 class LoggingManager:
     """에이전트 응답 로그 전문 관리자 - 각 에이전트의 실제 응답 데이터만 수집"""
     
-    def __init__(self):
-        self.logger = get_agent_logger()
-        self.agent_responses = {}  # 에이전트별 응답 저장소
+    def __init__(self, logger: 'HybridLogger'):
+        self.logger = logger
         self.response_counter = 0
         
     async def log_agent_response(self, agent_name: str, agent_role: str, 
                                 task_description: str, response_data: Any,
                                 metadata: Dict = None) -> str:
-        """에이전트 응답 로그 저장 (핵심 메서드)"""
+        """에이전트 응답 로깅 - AgentDecisionLogger로 위임"""
         try:
-            response_id = f"{agent_name}_{int(time.time() * 1000000)}"
-            
-            # 응답 데이터 정제
+            response_id = f"response_{self.response_counter}_{int(time.time())}"
             processed_response = self._process_response_data(response_data)
             
-            log_entry = {
-                "response_id": response_id,
-                "agent_name": agent_name,
-                "agent_role": agent_role,
-                "task_description": task_description,
-                "response_data": processed_response,
-                "response_length": len(str(processed_response)),
-                "timestamp": time.time(),
-                "metadata": metadata or {}
-            }
-            
-            # 에이전트별 응답 저장
-            if agent_name not in self.agent_responses:
-                self.agent_responses[agent_name] = []
-            
-            self.agent_responses[agent_name].append(log_entry)
-            
-            # agent_decision_logger에 저장
+            # AgentDecisionLogger로 위임
             await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self.logger.log_agent_real_output(
@@ -47,11 +29,9 @@ class LoggingManager:
                     agent_role=agent_role,
                     task_description=task_description,
                     final_answer=processed_response,
-                    reasoning_process=f"에이전트 응답 로그 수집: {len(str(processed_response))}자",
                     performance_metrics={
                         "response_length": len(str(processed_response)),
                         "response_type": type(response_data).__name__,
-                        "processing_success": True,
                         "log_entry_id": response_id
                     }
                 )
@@ -61,7 +41,7 @@ class LoggingManager:
             return response_id
             
         except Exception as e:
-            print(f"에이전트 응답 로그 저장 실패 {agent_name}: {e}")
+            self.logger.error(f"에이전트 응답 로그 저장 실패 {agent_name}: {e}")
             return "log_save_failed"
     
     def _process_response_data(self, response_data: Any) -> str:

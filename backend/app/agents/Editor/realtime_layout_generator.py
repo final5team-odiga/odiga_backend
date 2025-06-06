@@ -1,14 +1,14 @@
 import asyncio
 import json
 import time
-from typing import Dict, List
+from typing import Dict, List, Any
 from custom_llm import get_azure_llm
-from utils.hybridlogging import get_hybrid_logger
-from utils.ai_search_isolation import AISearchIsolationManager
-from utils.pdf_vector_manager import PDFVectorManager
-from utils.session_isolation import SessionAwareMixin
-from utils.agent_communication_isolation import InterAgentCommunicationMixin
-from utils.logging_manager import LoggingManager
+from utils.log.hybridlogging import get_hybrid_logger
+from utils.isolation.ai_search_isolation import AISearchIsolationManager
+from utils.data.pdf_vector_manager import PDFVectorManager
+from utils.isolation.session_isolation import SessionAwareMixin
+from utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
+from utils.log.logging_manager import LoggingManager
 
 class RealtimeLayoutGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
     """실시간 레이아웃 생성기 - AI Search 벡터 데이터 기반 레이아웃 생성"""
@@ -17,7 +17,7 @@ class RealtimeLayoutGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
         self.llm = get_azure_llm()
         self.logger = get_hybrid_logger(self.__class__.__name__)
         self._setup_logging_system()
-        self.logging_manager = LoggingManager()
+        self.logging_manager = LoggingManager(self.logger)
         # AI Search 격리 시스템 추가
         self.isolation_manager = AISearchIsolationManager()
         # PDF 벡터 매니저 추가 (격리 활성화)
@@ -1103,3 +1103,212 @@ JSON 형식으로 출력하세요:
         layout["optimization_metadata"]["pattern_responsive_applied"] = len(patterns) > 0
         
         return layout
+
+    async def generate_layout_strategy_for_section(self, section_data: Dict) -> Dict:
+        """
+        주어진 단일 섹션의 의미 분석 정보를 바탕으로 템플릿에 독립적인 이상적인 레이아웃 전략을 생성합니다.
+        이 메서드는 템플릿 목록 없이 작동하며, 콘텐츠의 본질적인 특성에 집중합니다.
+        
+        Args:
+            section_data (Dict): 섹션 데이터 및 메타데이터
+                {
+                    'title': '섹션 제목',
+                    'subtitle': '부제목',
+                    'final_content': '최종 콘텐츠',
+                    'metadata': {
+                        'style': '스타일',
+                        'emotion': '감정 톤',
+                        'keywords': ['키워드1', '키워드2'],
+                        'image_count': 이미지 수
+                    }
+                }
+        
+        Returns:
+            Dict: 레이아웃 전략 JSON
+                {
+                    'layout_type': '레이아웃 타입',
+                    'visual_hierarchy': ['요소1', '요소2', ...],
+                    'image_placement': '이미지 배치',
+                    'text_flow': '텍스트 흐름',
+                    'emotional_focus': '감정적 초점',
+                    'key_features': ['특징1', '특징2', ...]
+                }
+        """
+        # 로그 시작
+        title = section_data.get('title', '제목 없음')
+        self.logger.info(f"섹션 '{title}'에 대한 이상적인 레이아웃 전략 생성 시작")
+        
+        try:
+            # 메타데이터 추출
+            metadata = section_data.get('metadata', {})
+            
+            # 1. AI Search에서 일반적인 레이아웃 패턴 검색
+            query_text = self._create_general_layout_query(metadata)
+            layout_patterns = await self._search_layout_patterns(query_text, title)
+            
+            # 2. LLM 프롬프트 생성 (전략 생성을 위해)
+            prompt = self._create_strategy_generation_prompt(section_data, layout_patterns)
+            
+            # 3. LLM을 통해 전략 생성
+            response = await self.llm.ainvoke(prompt)
+            
+            # JSON 파싱
+            try:
+                strategy = json.loads(response)
+            except json.JSONDecodeError:
+                # JSON 형식이 아닌 경우, 정규식으로 추출 시도
+                import re
+                json_pattern = r'\{[\s\S]*\}'
+                match = re.search(json_pattern, response)
+                if match:
+                    strategy = json.loads(match.group(0))
+                else:
+                    raise ValueError("응답에서 JSON을 추출할 수 없습니다")
+            
+            # 메타데이터 보강
+            strategy["section_title"] = title
+            strategy["pattern_enhanced"] = len(layout_patterns) > 0
+            strategy["ai_search_patterns_used"] = len(layout_patterns)
+            
+            self.logger.info(f"섹션 '{title}' 레이아웃 전략 생성 성공 (패턴 {len(layout_patterns)}개 사용)")
+            return strategy
+            
+        except Exception as e:
+            self.logger.error(f"레이아웃 전략 생성 실패 (섹션 '{title}'): {str(e)}")
+            # 오류 발생 시, 기본 폴백 전략 반환
+            return self._get_fallback_strategy_for_section(section_data)
+    
+    def _create_general_layout_query(self, metadata: Dict) -> str:
+        """전략 생성을 위한 AI Search 검색 쿼리를 생성합니다."""
+        image_count = metadata.get('image_count', 0)
+        style = metadata.get('style', 'modern')
+        emotion = metadata.get('emotion', 'neutral')
+        
+        if image_count == 0:
+            query = f"{style} {emotion} text-focused article layout"
+        elif image_count == 1:
+            query = f"{style} {emotion} single featured image layout"
+        elif image_count <= 3:
+            query = f"{style} {emotion} balanced grid layout with {image_count} images"
+        else:
+            query = f"{style} {emotion} dynamic gallery for multiple images"
+        
+        return query
+
+    async def _search_layout_patterns(self, query: str, section_identifier: str) -> List[Dict]:
+        """AI Search를 통해 일반적인 레이아웃 패턴을 검색합니다."""
+        try:
+            # AI Search 키워드 필터링 (격리)
+            clean_query = self.isolation_manager.clean_query_from_azure_keywords(query)
+            
+            # 벡터 검색 실행 (magazine-vector-index에서 레이아웃 패턴 검색)
+            layout_patterns = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.vector_manager.search_similar_layouts(
+                    clean_query, "magazine-vector-index", top_k=5
+                )
+            )
+            
+            # 격리된 패턴만 반환
+            isolated_patterns = self.isolation_manager.filter_contaminated_data(
+                layout_patterns, f"layout_strategy_patterns_{section_identifier}"
+            )
+            
+            self.logger.debug(f"레이아웃 패턴 검색: '{query}' -> {len(isolated_patterns)}개 패턴 확보")
+            return isolated_patterns
+        except Exception as e:
+            self.logger.error(f"레이아웃 패턴 검색 실패: {str(e)}")
+            return []
+            
+    def _create_strategy_generation_prompt(self, section_data: Dict, patterns: List[Dict]) -> str:
+        """레이아웃 전략 생성을 위한 LLM 프롬프트를 구성합니다."""
+        title = section_data.get('title', '')
+        content_preview = section_data.get('final_content', '')[:200] + '...' if len(section_data.get('final_content', '')) > 200 else section_data.get('final_content', '')
+        metadata = section_data.get('metadata', {})
+        
+        # 메타데이터 추출
+        style = metadata.get('style', 'modern')
+        emotion = metadata.get('emotion', 'neutral')
+        keywords = metadata.get('keywords', [])
+        image_count = metadata.get('image_count', 0)
+        
+        # 키워드를 문자열로 변환
+        if isinstance(keywords, list):
+            keywords_str = ', '.join(keywords)
+        else:
+            keywords_str = str(keywords)
+        
+        # 패턴 정보 구성
+        pattern_context = ""
+        if patterns:
+            pattern_info = []
+            for p in patterns[:3]:  # 최대 3개 패턴만 참조
+                pattern_info.append(f"- {p.get('layout_type', '균형형')} (이미지: {p.get('image_placement', '상단')}, 텍스트: {p.get('text_flow', '단일컬럼')})")
+            pattern_context = "참고할 수 있는 AI Search 레이아웃 패턴:\n" + "\n".join(pattern_info)
+
+        return f"""
+다음 콘텐츠 정보를 바탕으로, 이 섹션에 가장 이상적인 레이아웃 '전략'을 JSON 형식으로 상세히 설계해주세요. 
+이 전략은 나중에 이 설계도에 가장 잘 맞는 실제 JSX 템플릿을 찾는 데 사용됩니다.
+
+### 섹션 정보:
+- 제목: {title}
+- 내용 미리보기: {content_preview}
+
+### 콘텐츠 특성:
+- 스타일: {style}
+- 감정 톤: {emotion}
+- 키워드: {keywords_str}
+- 이미지 수: {image_count}
+
+{pattern_context}
+
+### 설계 요구사항:
+1. 콘텐츠의 특성(스타일, 감정, 이미지 수)을 종합하여 레이아웃 타입을 결정하세요.
+2. 텍스트, 이미지 등 핵심 요소들의 시각적 계층 구조를 정의하세요.
+3. 독자의 시선 흐름, 이미지 배치, 텍스트 흐름 등을 구체적으로 명시하세요.
+
+### 출력 형식 (JSON):
+{{
+    "layout_type": "텍스트 중심 | 이미지 중심 | 균형형 | 그리드 | 갤러리",
+    "visual_hierarchy": ["주요 요소1", "중간 요소2", "보조 요소3"],
+    "image_placement": "상단 | 하단 | 좌측 | 우측 | 분산형 | 없음",
+    "text_flow": "단일 컬럼 | 다중 컬럼 | 자유형",
+    "emotional_focus": "콘텐츠의 감정을 극대화하기 위한 시각적 강조점",
+    "key_features": ["콘텐츠의 핵심 특징을 나타내는 키워드 배열"]
+}}
+
+JSON 형식으로만 응답하세요. 설명이나 다른 텍스트는 포함하지 마세요.
+"""
+
+    def _get_fallback_strategy_for_section(self, section_data: Dict) -> Dict:
+        """LLM 호출 실패 시 사용할 기본 레이아웃 전략을 반환합니다."""
+        metadata = section_data.get('metadata', {})
+        image_count = metadata.get('image_count', 0)
+        title = section_data.get('title', '제목 없음')
+        
+        self.logger.warning(f"섹션 '{title}'에 대한 폴백 레이아웃 전략을 사용합니다.")
+        
+        if image_count > 0:
+            return {
+                "layout_type": "균형형",
+                "visual_hierarchy": ["이미지", "제목", "본문"],
+                "image_placement": "상단",
+                "text_flow": "단일 컬럼",
+                "emotional_focus": "이미지 강조",
+                "key_features": ["default", "balanced", "image-focused"],
+                "section_title": title,
+                "pattern_enhanced": False,
+                "ai_search_patterns_used": 0
+            }
+        else:
+            return {
+                "layout_type": "텍스트 중심",
+                "visual_hierarchy": ["제목", "부제목", "본문"],
+                "image_placement": "없음",
+                "text_flow": "단일 컬럼",
+                "emotional_focus": "가독성",
+                "key_features": ["default", "text-centric", "readability"],
+                "section_title": title,
+                "pattern_enhanced": False,
+                "ai_search_patterns_used": 0
+            }

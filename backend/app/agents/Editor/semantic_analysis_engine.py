@@ -4,16 +4,17 @@ import numpy as np
 import open_clip
 import time
 import torch
-from typing import Dict, List
+from typing import Dict, List, Any, Optional
 from sklearn.metrics.pairwise import cosine_similarity
 from custom_llm import get_azure_llm
-from utils.hybridlogging import get_hybrid_logger
-from utils.ai_search_isolation import AISearchIsolationManager
-from utils.pdf_vector_manager import PDFVectorManager
-from utils.session_isolation import SessionAwareMixin
-from utils.agent_communication_isolation import InterAgentCommunicationMixin
+from utils.log.hybridlogging import get_hybrid_logger
+from utils.isolation.ai_search_isolation import AISearchIsolationManager
+from utils.data.pdf_vector_manager import PDFVectorManager
+from utils.isolation.session_isolation import SessionAwareMixin
+from utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
 from agents.Editor.image_diversity_manager import ImageDiversityManager
-from utils.logging_manager import LoggingManager
+from utils.log.logging_manager import LoggingManager
+from db.magazine_db_utils import MagazineDBUtils
 
 class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
     """의미적 분석 엔진 - 텍스트와 이미지의 의미적 연관성 분석 (AI Search 통합)"""
@@ -25,10 +26,10 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
         self.isolation_manager = AISearchIsolationManager()
         # PDF 벡터 매니저 추가 (격리 활성화)
         self.vector_manager = PDFVectorManager(isolation_enabled=True)
-        self.logging_manager = LoggingManager()
+        self.logging_manager = LoggingManager(self.logger)
         self.__init_session_awareness__()
         self.__init_inter_agent_communication__()
-        self.image_diversity_manager = ImageDiversityManager()
+        self.image_diversity_manager = ImageDiversityManager(self.logger)
 
         self._setup_logging_system()
 
@@ -36,8 +37,6 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
         """로그 저장 시스템 설정"""
         self.log_enabled = True
         self.response_counter = 0
-
-
 
     async def process_data(self, input_data):
         # 에이전트 작업 수행
@@ -71,7 +70,7 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
             
             response_id = f"SemanticAnalysis_{int(time.time() * 1000000)}"
             
-            self.store_result(response_data)
+            # self.store_result(response_data)  # 세션 저장 제거 - 사용되지 않음
             
             self.logger.info(f"📦 SemanticAnalysisEngine 응답 저장: {response_id}")
             return response_id
@@ -80,71 +79,82 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
             self.logger.error(f"로그 저장 실패: {e}")
             return "log_save_failed"
         
-
-
-        
     async def analyze_text_image_semantics(self, magazine_content: Dict, image_analysis: List[Dict]) -> Dict:
         """의미적 텍스트-이미지 매칭 (구조 통일)"""
         
-        sections = magazine_content.get("sections", [])
-        if not sections:
-            # ✅ 빈 섹션이어도 구조는 유지
-            return {
-                "text_semantics": [],
-                "semantic_mappings": [],
-                "analysis_metadata": {
-                    "sections_processed": 0,
-                    "images_processed": len(image_analysis) if image_analysis else 0,
-                    "success": True,
-                    "empty_sections": True
+        try:
+            # magazine_id가 있으면 Cosmos DB에서 최신 데이터 조회
+            if "magazine_id" in magazine_content:
+                magazine_data = await MagazineDBUtils.get_magazine_by_id(magazine_content["magazine_id"])
+                if magazine_data:
+                    magazine_content = magazine_data.get("content", magazine_content)
+                    
+                    # 이미지 분석 결과도 Cosmos DB에서 조회 (변경된 저장 방식 적용)
+                    image_analysis = await MagazineDBUtils.get_images_by_magazine_id(magazine_content["magazine_id"])
+            
+            sections = magazine_content.get("sections", [])
+            if not sections:
+                return self._generate_clean_fallback_result(magazine_content, image_analysis)
+            
+            if not image_analysis:
+                # ✅ 이미지가 없어도 텍스트 분석은 수행
+                text_semantics = await self._extract_text_semantics_with_vector_search(magazine_content)
+                return {
+                    "text_semantics": text_semantics,
+                    "semantic_mappings": self._create_text_only_mappings(text_semantics),
+                    "analysis_metadata": {
+                        "sections_processed": len(sections),
+                        "images_processed": len(image_analysis) if image_analysis else 0,
+                        "success": True,
+                        "text_only_mode": True
+                    }
                 }
-            }
-        
-        if not image_analysis:
-            # ✅ 이미지가 없어도 텍스트 분석은 수행
+            
+            # ✅ 정상적인 텍스트-이미지 분석
+            # CLIP 모델 초기화 확인
+            await self._ensure_clip_initialization()
+            
+            # 텍스트 의미 분석
             text_semantics = await self._extract_text_semantics_with_vector_search(magazine_content)
-            return {
+            
+            # 이미지 의미 분석
+            image_semantics = await self._extract_image_semantics_with_layout_patterns_batch(image_analysis)
+            
+            # 의미적 매칭 수행
+            semantic_mappings = await self._perform_enhanced_semantic_matching(
+                text_semantics, image_semantics, sections, image_analysis
+            )
+            
+            # ✅ 통일된 구조로 반환
+            result = {
                 "text_semantics": text_semantics,
-                "semantic_mappings": self._create_text_only_mappings(text_semantics),
+                "image_semantics": image_semantics,
+                "semantic_mappings": semantic_mappings,
+                "optimal_combinations": await self._generate_optimal_combinations_with_ai_search(semantic_mappings),
                 "analysis_metadata": {
                     "sections_processed": len(sections),
-                    "images_processed": 0,
-                    "success": True,
-                    "text_only_mode": True
+                    "images_processed": len(image_analysis),
+                    "text_sections_analyzed": len(text_semantics),
+                    "image_sections_analyzed": len(image_semantics),
+                    "mappings_created": len(semantic_mappings),
+                    "clip_available": getattr(self, 'clip_available', False),
+                    "success": True
                 }
             }
-        
-        # ✅ 정상적인 텍스트-이미지 분석
-        # CLIP 모델 초기화 확인
-        await self._ensure_clip_initialization()
-        
-        # 텍스트 의미 분석
-        text_semantics = await self._extract_text_semantics_with_vector_search(magazine_content)
-        
-        # 이미지 의미 분석
-        image_semantics = await self._extract_image_semantics_with_layout_patterns_batch(image_analysis)
-        
-        # 의미적 매칭 수행
-        semantic_mappings = await self._perform_enhanced_semantic_matching(
-            text_semantics, image_semantics, sections, image_analysis
-        )
-        
-        # ✅ 통일된 구조로 반환
-        return {
-            "text_semantics": text_semantics,
-            "image_semantics": image_semantics,
-            "semantic_mappings": semantic_mappings,
-            "optimal_combinations": await self._generate_optimal_combinations_with_ai_search(semantic_mappings),
-            "analysis_metadata": {
-                "sections_processed": len(sections),
-                "images_processed": len(image_analysis),
-                "text_sections_analyzed": len(text_semantics),
-                "image_sections_analyzed": len(image_semantics),
-                "mappings_created": len(semantic_mappings),
-                "clip_available": getattr(self, 'clip_available', False),
-                "success": True
-            }
-        }
+            
+            # 분석 결과를 매거진에 업데이트
+            if "magazine_id" in magazine_content:
+                await MagazineDBUtils.update_magazine_content(magazine_content["magazine_id"], {
+                    "content": magazine_content,
+                    "semantic_analysis": result,
+                    "status": "analyzed"
+                })
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"의미적 분석 실패: {e}")
+            return self._generate_clean_fallback_result(magazine_content, image_analysis)
 
     def _create_text_only_mappings(self, text_semantics: List[Dict]) -> List[Dict]:
         """텍스트만 있을 때의 매핑 생성"""
@@ -175,91 +185,149 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
                 self.logger.warning(f"⚠️ CLIP 모델 초기화 실패, 품질 기반 매칭 사용: {e}")
                 self.clip_available = False
 
-
     async def _perform_enhanced_semantic_matching(self, text_semantics: List[Dict], 
-                                            image_semantics: List[Dict],
-                                            sections: List[Dict], 
-                                            image_analysis: List[Dict]) -> List[Dict]:
+                                                image_semantics: List[Dict],
+                                                sections: List[Dict], 
+                                                image_analysis: List[Dict]) -> List[Dict]:
         """강화된 의미적 매칭 (빈 결과 방지)"""
         
         if not text_semantics:
-            self.logger.warning("텍스트 의미 분석 결과 없음")
-            return []
+            self.logger.warning("텍스트 의미 분석 결과 없음. 빈 매핑 반환.")
+            return [] # 빈 리스트 반환
         
         # CLIP 기반 매칭 시도
-        if self.clip_available and image_analysis:
+        if self.clip_available and image_analysis and image_semantics: # image_semantics도 확인
             try:
-                return await self._perform_clip_based_matching(text_semantics, image_analysis, sections)
+                # image_analysis 대신 image_semantics를 전달하여 분석된 정보를 활용하도록 고려 가능
+                # 여기서는 image_analysis (원본 이미지 정보 리스트)를 계속 사용
+                clip_mappings = await self._perform_clip_based_matching(text_semantics, image_analysis, sections)
+                if clip_mappings: # CLIP 매칭 결과가 있다면 반환
+                    return clip_mappings
+                else:
+                    self.logger.warning("CLIP 매칭 결과가 비었음. 키워드 기반으로 폴백 시도.")
             except Exception as e:
-                self.logger.error(f"CLIP 매칭 실패: {e}")
+                self.logger.error(f"CLIP 매칭 중 심각한 오류 발생: {e}. 키워드 기반으로 폴백 시도.")
         
-        # 키워드 기반 매칭 (CLIP 실패 시)
+        # 키워드 기반 매칭 (CLIP 실패 또는 결과 없음 시)
+        # image_analysis 대신 image_semantics를 전달하는 것을 고려할 수 있으나, 현재 구조 유지
         if image_analysis:
-            return await self._perform_keyword_based_matching(text_semantics, image_analysis)
+            self.logger.info("키워드 기반 매칭 수행.")
+            keyword_mappings = await self._perform_keyword_based_matching(text_semantics, image_analysis)
+            if keyword_mappings:
+                return keyword_mappings
+            else:
+                self.logger.warning("키워드 기반 매칭 결과도 비었음. 텍스트 전용 매핑으로 폴백.")
         
-        # 텍스트만 있는 경우
-        return self._create_text_only_mappings(text_semantics)
+        # 이미지 분석 결과가 아예 없거나 모든 매칭 시도가 실패한 경우, 텍스트 전용 매핑 생성
+        self.logger.info("텍스트 전용 매핑 생성.")
+        return self. _create_text_only_mappings(text_semantics)
 
     async def _perform_clip_based_matching(self, text_semantics: List[Dict], 
-                                        image_analysis: List[Dict], 
-                                        sections: List[Dict]) -> List[Dict]:
-        """CLIP 기반 의미적 매칭"""
+                                            image_analysis: List[Dict], # 전체 이미지 분석 결과 (URL 등 포함)
+                                            sections: List[Dict]) -> List[Dict]: # 원본 텍스트 섹션 (참고용)
+        """CLIP 기반 의미적 매칭. 각 텍스트 섹션과 전체 이미지 풀 간의 유사도를 계산하여 매핑."""
         
-        # 텍스트 임베딩 생성
-        section_texts = []
-        for i, section in enumerate(sections):
-            text = section.get("title", "") + " " + section.get("content", "")[:200]
-            section_texts.append(text)
-        
-        section_embeddings = await self._generate_clip_text_embeddings(section_texts)
-        
-        # 이미지 임베딩 생성 (ImageDiversityManager 캐시 활용)
-        image_embeddings = []
-        for img in image_analysis:
-            url = img.get("image_url", "")
-            if hasattr(self, 'image_diversity_manager') and url in self.image_diversity_manager.image_embeddings_cache:
-                image_embeddings.append(self.image_diversity_manager.image_embeddings_cache[url])
-            else:
-                # 실시간 임베딩 생성
-                try:
-                    embedding = await self._generate_clip_image_embeddings_from_data(url)
-                    image_embeddings.append(embedding)
-                except:
-                    image_embeddings.append(np.zeros(512))  # 폴백 임베딩
-        
-        if not image_embeddings:
-            return self._create_text_only_mappings(text_semantics)
-        
-        # 유사도 계산
-        from sklearn.metrics.pairwise import cosine_similarity
-        similarity_matrix = cosine_similarity(section_embeddings, np.array(image_embeddings))
-        
-        # 매핑 생성 (중복 제거 없이 모든 섹션에 이미지 할당)
-        semantic_mappings = []
-        
-        for i, text_section in enumerate(text_semantics):
-            # 상위 3개 이미지 선택
-            sim_scores = list(enumerate(similarity_matrix[i]))
-            sim_scores.sort(key=lambda x: x[1], reverse=True)
+        if not self.clip_available:
+            self.logger.warning("CLIP model not available for _perform_clip_based_matching. Returning empty list.")
+            return []
+
+        # 1. 텍스트 임베딩 생성
+        section_texts_for_embedding = []
+        valid_text_indices = [] # 임베딩 생성이 가능한 텍스트 섹션의 원본 인덱스
+        for i, ts_item in enumerate(text_semantics):
+            title = ts_item.get("title", "")
+            # content_preview가 있으면 사용, 없으면 원본 sections에서 가져오기 시도
+            content_preview = ts_item.get("content_preview", "")
+            if not content_preview and i < len(sections):
+                content_preview = sections[i].get("content", "")[:200]
             
-            image_matches = []
-            for idx, score in sim_scores[:3]:
-                if idx < len(image_analysis):
-                    match = image_analysis[idx].copy()
-                    match["image_index"] = idx
-                    match["similarity_score"] = float(score)
-                    image_matches.append(match)
+            text_for_embedding = (title + " " + content_preview).strip()[:500] # 임베딩할 텍스트 길이 제한 (예: 500자)
+            if not text_for_embedding: 
+                 text_for_embedding = "empty section" # 내용이 전혀 없으면 기본값 사용
+            section_texts_for_embedding.append(text_for_embedding)
+            valid_text_indices.append(ts_item.get("section_index", i)) # 원본 section_index 사용
+
+        if not section_texts_for_embedding:
+             self.logger.warning("No text content available in text_semantics for CLIP matching. Returning empty list.")
+             return []
+
+        text_embeddings_np = await self._generate_clip_text_embeddings(section_texts_for_embedding)
+        if text_embeddings_np.size == 0 or text_embeddings_np.shape[0] != len(section_texts_for_embedding):
+            self.logger.error("Failed to generate text embeddings or shape mismatch. Returning empty list.")
+            return []
+
+        # 2. 이미지 임베딩 생성
+        if not image_analysis: 
+            self.logger.info("No images provided for CLIP matching. Returning text-only mappings based on input text_semantics.")
+            # 이 경우, semantic_mappings에 image_matches를 빈 리스트로 채워서 반환할 수 있음
+            # 또는 _create_text_only_mappings와 유사한 구조로 여기서 직접 생성
+            # 여기서는 일단 빈 리스트 반환하여 _perform_enhanced_semantic_matching에서 처리하도록 함
+            return [] 
+
+        self.logger.info(f"Generating image embeddings for {len(image_analysis)} images for CLIP matching.")
+        image_embeddings_np = await self._generate_clip_image_embeddings_from_data(image_analysis)
+        
+        if image_embeddings_np.size == 0 or image_embeddings_np.shape[0] != len(image_analysis):
+            self.logger.warning("Image embeddings array is empty or shape mismatch for CLIP matching. Returning empty list.")
+            return []
+
+        # 3. 임베딩 차원 확인 및 2D로 변환 (필요시)
+        if text_embeddings_np.ndim == 1: text_embeddings_np = text_embeddings_np.reshape(1, -1)
+        if image_embeddings_np.ndim == 1: image_embeddings_np = image_embeddings_np.reshape(1, -1)
+        
+        if text_embeddings_np.shape[1] != image_embeddings_np.shape[1]:
+            self.logger.error(
+                f"Embedding dimension mismatch: Texts {text_embeddings_np.shape[1]}, Images {image_embeddings_np.shape[1]}. Cannot compute similarity."
+            )
+            return []
+
+        # 4. 코사인 유사도 계산 (모든 텍스트 섹션 vs 모든 이미지)
+        try:
+            # similarity_matrix[i, j]는 i번째 텍스트와 j번째 이미지 간의 유사도
+            similarity_matrix = cosine_similarity(text_embeddings_np, image_embeddings_np) 
+        except ValueError as ve:
+            self.logger.error(f"Error calculating cosine similarity: {ve}. Check embedding dimensions and content. Returning empty list.")
+            return []
+
+        # 5. semantic_mappings 생성
+        semantic_mappings_result = []
+        for i, original_text_section_info in enumerate(text_semantics): # 원본 text_semantics 리스트를 순회
+            # text_embeddings_np[i]에 해당하는 텍스트 섹션은 section_texts_for_embedding[i]
+            # original_text_section_info는 이 텍스트 섹션의 원본 메타데이터 (title, section_index 등)
             
-            semantic_mappings.append({
-                "text_section_index": text_section["section_index"],
-                "text_title": text_section["title"],
-                "image_matches": image_matches
+            # 현재 텍스트 섹션과 모든 이미지 간의 유사도 점수 벡터
+            image_scores_for_this_text_vector = similarity_matrix[i] 
+            
+            image_matches_for_section = []
+            for j, image_data_from_analysis in enumerate(image_analysis): # 전체 image_analysis 리스트 순회
+                similarity_score = float(image_scores_for_this_text_vector[j])
+                
+                # image_data_from_analysis는 이미 image_name, image_url 등의 정보를 포함
+                # 여기에 CLIP 유사도 점수 및 원본 이미지 리스트에서의 인덱스 추가
+                matched_image_info = {
+                    **image_data_from_analysis, 
+                    "similarity_score": round(similarity_score, 4), # 소수점 4자리
+                    "image_index": j # image_analysis 리스트에서의 인덱스 (키 이름 변경)
+                }
+                image_matches_for_section.append(matched_image_info)
+
+            # 각 섹션별 이미지 후보들을 유사도 높은 순으로 정렬
+            image_matches_for_section.sort(key=lambda x: x["similarity_score"], reverse=True)
+            
+            # (선택적) 상위 N개 이미지 필터링 (예: 상위 10개 또는 특정 임계값 이상)
+            # top_n_filter = 15
+            # image_matches_for_section = image_matches_for_section[:top_n_filter]
+
+            semantic_mappings_result.append({
+                "text_section_index": original_text_section_info.get("section_index"), # 원본 text_semantics의 section_index 사용
+                "text_title": original_text_section_info.get("title"), # 원본 title 사용
+                "image_matches": image_matches_for_section # 이 텍스트 섹션에 대한 모든 이미지 후보군 (정렬됨)
             })
         
-        return semantic_mappings
+        return semantic_mappings_result
 
     async def _perform_keyword_based_matching(self, text_semantics: List[Dict], 
-                                            image_analysis: List[Dict]) -> List[Dict]:
+                                                image_analysis: List[Dict]) -> List[Dict]:
         """키워드 기반 의미적 매칭 (CLIP 대안)"""
         
         semantic_mappings = []
@@ -344,25 +412,135 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
         return min(similarity, 1.0)
 
     async def _generate_clip_text_embeddings(self, texts: List[str]) -> np.ndarray:
+        """텍스트 리스트에 대한 CLIP 텍스트 임베딩 생성"""
+        if not self.clip_available or not texts:
+            self.logger.warning("CLIP model not available or no texts provided for text embedding.")
+            # 적절한 차원의 0 벡터 또는 빈 배열 반환
+            output_dim = 512 # 기본값
+            if hasattr(self, 'clip_model') and hasattr(self.clip_model, 'text_projection') and self.clip_model.text_projection is not None:
+                 # 모델에서 실제 output 차원을 가져오려고 시도 (예시, 실제 모델 구조에 따라 다름)
+                 if isinstance(self.clip_model.text_projection, torch.Tensor): # Check if it's a Tensor
+                    output_dim = self.clip_model.text_projection.shape[-1]
+                 elif isinstance(self.clip_model.text_projection, torch.nn.Parameter):
+                    output_dim = self.clip_model.text_projection.shape[-1]
+                 # 다른 가능한 속성들 (예: self.clip_model.transformer.width)
+                 elif hasattr(self.clip_model, 'transformer') and hasattr(self.clip_model.transformer, 'width'):
+                     output_dim = self.clip_model.transformer.width
 
-        with torch.no_grad():
-            text_tokens = open_clip.tokenize(texts).to(self.device)
-            text_features = self.clip_model.encode_text(text_tokens)
-            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-            return text_features.cpu().numpy()
+
+            return np.zeros((len(texts), output_dim), dtype=np.float32) if texts else np.array([])
+
+        try:
+            with torch.no_grad():
+                    # `open_clip.tokenize`는 텍스트 리스트를 직접 받음
+                text_tokens = open_clip.tokenize(texts).to(self.device)
+                text_features = self.clip_model.encode_text(text_tokens)
+                text_features /= text_features.norm(dim=-1, keepdim=True)
+                return text_features.cpu().numpy().astype(np.float32)
+        except Exception as e:
+            self.logger.error(f"Error generating CLIP text embeddings: {e}")
+            output_dim = 512 # 기본값
+            if hasattr(self, 'clip_model') and hasattr(self.clip_model, 'text_projection') and self.clip_model.text_projection is not None:
+                if isinstance(self.clip_model.text_projection, torch.Tensor): # Check if it's a Tensor
+                    output_dim = self.clip_model.text_projection.shape[-1]
+                elif isinstance(self.clip_model.text_projection, torch.nn.Parameter):
+                    output_dim = self.clip_model.text_projection.shape[-1]
+                elif hasattr(self.clip_model, 'transformer') and hasattr(self.clip_model.transformer, 'width'):
+                    output_dim = self.clip_model.transformer.width
+
+            return np.zeros((len(texts), output_dim), dtype=np.float32)
+
 
     async def _generate_clip_image_embeddings_from_data(self, images: List[Dict]) -> np.ndarray:
-        embeddings = []
-        for img in images:
-            url = img.get("image_url")
-            if url and hasattr(self, "image_diversity_manager") and url in self.image_diversity_manager.image_embeddings_cache:
-                embeddings.append(self.image_diversity_manager.image_embeddings_cache[url])
-            else:
-                # fallback: zeros
-                embeddings.append(np.zeros(512))
-        return np.array(embeddings)
+        """
+        주어진 이미지 데이터 리스트에서 CLIP 이미지 임베딩을 생성.
+        캐시된 임베딩이 있으면 사용하고, 없으면 새로 계산.
+        개별 이미지 로드/처리 실패 시 해당 이미지에 대해서는 0 벡터를 사용.
+        """
+        if not self.clip_available or not hasattr(self, 'clip_model') or not hasattr(self, 'clip_preprocess'):
+            self.logger.warning("CLIP model not available for generating image embeddings.")
+            output_dim = 512 # Fallback dimension if model is not fully available
+            if hasattr(self, 'clip_model') and hasattr(self.clip_model, 'visual') and hasattr(self.clip_model.visual, 'output_dim'):
+                output_dim = self.clip_model.visual.output_dim
+            return np.zeros((len(images), output_dim), dtype=np.float32)
 
-    # _generate_optimal_combinations_with_ai_search는 기존 로직에서 중복 방지와 의미적 매칭만 유지
+        all_embeddings = [None] * len(images) # Initialize with placeholders
+        
+        # Attempt to get output dimension from the model
+        try:
+            output_dim = self.clip_model.visual.output_dim
+        except AttributeError:
+            self.logger.error("Cannot determine CLIP model output dimension. Using fallback 512.")
+            output_dim = 512 # Fallback dimension
+            # If we can't get output_dim, it's a critical model issue, return all zeros
+            return np.zeros((len(images), output_dim), dtype=np.float32)
+
+        pil_images_to_process = []
+        indices_for_pil_images = [] # Tracks original indices of images that will be processed by CLIP
+
+        for idx, image_data in enumerate(images):
+            image_url = image_data.get("image_url")
+            if not image_url:
+                self.logger.warning(f"Image at index {idx} (name: {image_data.get('image_name', 'N/A')}) has no URL. Using zero vector.")
+                all_embeddings[idx] = np.zeros(output_dim, dtype=np.float32)
+                continue
+
+            # TODO: Implement caching mechanism if needed
+            # cached_embedding = self.vector_manager.get_cached_image_embedding(image_url)
+            # if cached_embedding is not None:
+            #     all_embeddings[idx] = cached_embedding
+            #     continue
+            
+            # If not cached, prepare for CLIP processing
+            try:
+                # Lazily import requests and PIL here if they are not commonly used elsewhere in this class
+                from PIL import Image
+                import requests
+                from io import BytesIO
+
+                response = requests.get(image_url, timeout=10)
+                response.raise_for_status() # Raise an exception for bad status codes
+                pil_img = Image.open(BytesIO(response.content)).convert("RGB")
+                pil_images_to_process.append(pil_img)
+                indices_for_pil_images.append(idx)
+            except requests.exceptions.RequestException as e:
+                self.logger.error(f"Failed to download image from URL {image_url} (index {idx}): {e}. Using zero vector.")
+                all_embeddings[idx] = np.zeros(output_dim, dtype=np.float32)
+            except Image.UnidentifiedImageError: # PIL anead PIL.Image.UnidentifiedImageError
+                self.logger.error(f"Cannot identify image file from URL {image_url} (index {idx}). It might be corrupted or not an image. Using zero vector.")
+                all_embeddings[idx] = np.zeros(output_dim, dtype=np.float32)
+            except Exception as e:
+                self.logger.error(f"An unexpected error occurred while loading or preprocessing image {image_url} (index {idx}): {e}. Using zero vector.")
+                all_embeddings[idx] = np.zeros(output_dim, dtype=np.float32)
+
+        if pil_images_to_process: # If there are any images to process with CLIP
+            try:
+                image_inputs = torch.stack([self.clip_preprocess(img) for img in pil_images_to_process]).to(self.device)
+                
+                with torch.no_grad(), torch.cuda.amp.autocast():
+                    image_features = self.clip_model.encode_image(image_inputs)
+                    image_features /= image_features.norm(dim=-1, keepdim=True)
+                
+                batch_embeddings_np = image_features.cpu().numpy().astype(np.float32)
+
+                # Place computed embeddings into the correct original positions
+                for i, original_idx in enumerate(indices_for_pil_images):
+                    all_embeddings[original_idx] = batch_embeddings_np[i]
+            
+            except Exception as e:
+                self.logger.error(f"Error during CLIP model image encoding batch: {e}. Using zero vectors for these images.")
+                for original_idx in indices_for_pil_images: # For images that were intended for this batch
+                    all_embeddings[original_idx] = np.zeros(output_dim, dtype=np.float32)
+        
+        # Ensure all placeholders are filled (should be, due to error handling above)
+        for idx_fill in range(len(all_embeddings)): # Renamed idx to idx_fill to avoid conflict
+            if all_embeddings[idx_fill] is None: # Should not happen if logic is correct
+                self.logger.error(f"Embedding for image at index {idx_fill} was unexpectedly None post-processing. Filling with zero vector.")
+                all_embeddings[idx_fill] = np.zeros(output_dim, dtype=np.float32)
+        
+        return np.array(all_embeddings).astype(np.float32)
+
+
     async def _generate_optimal_combinations_with_ai_search(self, semantic_mappings: List[Dict]) -> List[Dict]:
         """
         의미적 분석 결과를 기반으로 섹션별 최적 이미지 조합 생성 (중복 없이)
@@ -556,7 +734,7 @@ class SemanticAnalysisEngine(SessionAwareMixin, InterAgentCommunicationMixin):
             topic_patterns = [
                 r'주요[_\s]*주제[:\s]*([^\n\r,]+)',
                 r'키워드[:\s]*([^\n\r,]+)',
-                r'여행|베네치아|이탈리아|문화|예술'
+                r'여행|문화|예술'
             ]
             
             for pattern in topic_patterns:

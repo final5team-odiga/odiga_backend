@@ -1,10 +1,13 @@
 import asyncio
-from typing import Dict, List
+from typing import Dict, List, Any
 from crewai import Agent, Task, Crew
 from custom_llm import get_azure_llm
 from agents.contents.interview_agent import InterviewAgentManager
 from agents.contents.essay_agent import EssayAgentManager
-from utils.hybridlogging import get_hybrid_logger
+from agents.contents.content_planner import ContentPlannerAgent
+from agents.contents.content_refiner import ContentRefiner
+from utils.log.hybridlogging import get_hybrid_logger
+from utils.log.logging_manager import LoggingManager
 
 class ContentCreatorV2Agent:
     """인터뷰와 에세이 에이전트를 통합하는 새로운 콘텐츠 생성자 - 첫 번째 에이전트 (로그 수집만 - 비동기 처리)"""
@@ -13,7 +16,10 @@ class ContentCreatorV2Agent:
         self.llm = get_azure_llm()
         self.interview_manager = InterviewAgentManager()
         self.essay_manager = EssayAgentManager()
+        self.content_planner = ContentPlannerAgent()
+        self.content_refiner = ContentRefiner(max_section_length=1000)
         self.logger = get_hybrid_logger(self.__class__.__name__)
+        self.logging_manager = LoggingManager(self.logger)
 
     def create_agent(self):
         return Agent(
@@ -97,9 +103,6 @@ class ContentCreatorV2Agent:
         """텍스트와 이미지 분석 결과를 바탕으로 매거진 콘텐츠 생성 - 첫 번째 에이전트 (로그 수집만 - 비동기 처리)"""
         print("\n=== ContentCreatorV2: 첫 번째 에이전트 - 콘텐츠 생성 및 로그 수집 시작 (비동기 처리) ===")
         
-        # 첫 번째 에이전트이므로 이전 로그 활용 시도하지 않음
-        print("📝 첫 번째 에이전트로서 이전 로그 없음 - 새로운 로그 생성 시작 (비동기)")
-        
         # 1단계와 2단계: 인터뷰와 에세이 형식 병렬 처리
         print("1-2단계: 인터뷰와 에세이 형식 콘텐츠 병렬 생성 (비동기)")
         
@@ -112,22 +115,37 @@ class ContentCreatorV2Agent:
             interview_task, essay_task, image_task
         )
         
-        # **새로운 단계: 이미지-텍스트 의미적 연결 분석**
+        # 이미지-텍스트 의미적 연결 분석
         print("2.5단계: 이미지-텍스트 의미적 연결 분석 (비동기)")
         semantic_connections = await self._analyze_image_text_semantic_connections_async(
             interview_results, essay_results, image_analysis_results
         )
         
-        # 4단계: 모든 콘텐츠 활용 검증 (비동기)
+        # 콘텐츠 활용 검증
         await self._verify_content_completeness_async(interview_results, essay_results, texts)
         
-        # 5단계: 통합 매거진 콘텐츠 생성 (첫 번째 에이전트로서 기초 데이터 생성 - 비동기)
-        print("3단계: 모든 콘텐츠를 활용한 통합 매거진 생성 (첫 번째 에이전트 - 비동기)")
-        final_content = await self._integrate_all_content_as_first_agent_async(
-            interview_results, essay_results, image_info, texts, semantic_connections
+        # 새로운 3단계: 콘텐츠 분석 및 구조 설계
+        print("3단계: 콘텐츠 분석 및 구조 설계 (동적 섹션 결정)")
+        structure_plan = await self.content_planner.analyze_and_plan_structure(
+            interview_results, essay_results, image_analysis_results
         )
         
-        # 최종 통합 콘텐츠 생성 로깅 (첫 번째 에이전트 - 비동기)
+        # 새로운 4단계: 섹션별 콘텐츠 생성
+        print("4단계: 섹션별 콘텐츠 생성")
+        sections_with_content = await self._generate_section_content(
+            structure_plan, interview_results, essay_results, image_info, semantic_connections
+        )
+        
+        # 새로운 5단계: 콘텐츠 분량 검토 및 지능적 분할
+        print("5단계: 콘텐츠 분량 검토 및 지능적 분할")
+        refined_sections = await self.content_refiner.refine_content(sections_with_content)
+        
+        # 최종 매거진 콘텐츠 조합
+        final_content = self._assemble_final_magazine_content(
+            structure_plan, refined_sections
+        )
+        
+        # 최종 통합 콘텐츠 생성 로깅
         await self._log_final_content_async(
             final_content, interview_results, essay_results, image_analysis_results, texts, semantic_connections
         )
@@ -508,138 +526,190 @@ class ContentCreatorV2Agent:
             )
         )
 
-    async def _integrate_all_content_as_first_agent_async(self, interview_results: Dict[str, str], essay_results: Dict[str, str],
-                                                        image_info: str, original_texts: List[str], semantic_connections: Dict) -> str:
-        """첫 번째 에이전트로서 모든 콘텐츠를 활용하여 최종 매거진 콘텐츠 생성 (비동기)"""
-        agent = self.create_agent()
+    async def _generate_section_content(self, structure_plan: Dict, interview_results: Dict[str, str], 
+                                      essay_results: Dict[str, str], image_info: str, 
+                                      semantic_connections: Dict) -> List[Dict]:
+        """구조 계획에 따라 각 섹션의 콘텐츠 생성"""
         
-        # 모든 인터뷰 콘텐츠 정리 (완전 활용)
+        sections = structure_plan.get('sections', [])
+        self.logger.info(f"{len(sections)}개 섹션에 대한 콘텐츠 생성 시작")
+        
+        # 모든 인터뷰 콘텐츠 정리
         interview_content = "\n\n".join([f"=== {key} ===\n{value}" for key, value in interview_results.items()])
         
-        # 모든 에세이 콘텐츠 정리 (완전 활용)
+        # 모든 에세이 콘텐츠 정리
         essay_content = "\n\n".join([f"=== {key} ===\n{value}" for key, value in essay_results.items()])
-        
-        # 원본 텍스트도 참고용으로 제공
-        original_content = "\n\n".join([f"=== 원본 텍스트 {i+1} ===\n{text}" for i, text in enumerate(original_texts)])
         
         # 의미적 연결 정보 포맷팅
         semantic_info = self._format_semantic_connections_for_prompt(semantic_connections)
         
-        integration_task = Task(
-            description=f"""
-**JSON 형식의 구조화된 매거진 콘텐츠 생성**
+        sections_with_content = []
+        agent = self.create_agent()
+        
+        # 각 섹션별로 콘텐츠 생성
+        for section in sections:
+            section_id = section.get('section_id', '0')
+            title = section.get('title', '')
+            subtitle = section.get('subtitle', '')
+            summary = section.get('summary', '')
+            
+            self.logger.info(f"섹션 {section_id}: '{title}' 콘텐츠 생성 중")
+            
+            # 섹션별 콘텐츠 생성 태스크
+            section_task = Task(
+                description=f"""
+**섹션 {section_id} 콘텐츠 생성**
 
-제공된 모든 인터뷰, 에세이, 이미지 정보를 활용하여 완전한 JSON 형식의 매거진 콘텐츠를 생성하세요.
+당신은 여행 매거진의 한 섹션을 작성해야 합니다. 아래 정보를 바탕으로 해당 섹션에 적합한 내용을 작성하세요.
 
-**인터뷰 형식 콘텐츠:**
-{interview_content}
+**섹션 정보:**
+- 제목: {title}
+- 부제목: {subtitle}
+- 요약: {summary}
 
-**에세이 형식 콘텐츠:**
-{essay_content}
+**활용할 콘텐츠:**
+1. 인터뷰 형식 콘텐츠:
+{interview_content[:2000]}... (생략)
 
-**원본 텍스트 참고:**
-{original_content}
+2. 에세이 형식 콘텐츠:
+{essay_content[:2000]}... (생략)
 
-**이미지 정보:**
-{image_info}
+3. 이미지 정보:
+{image_info[:500]}... (생략)
 
-**이미지-텍스트 의미적 연결 분석 결과:**
-{semantic_info}
+4. 이미지-텍스트 의미적 연결:
+{semantic_info[:500]}... (생략)
 
-**JSON 생성 규칙:**
-1. 제공된 모든 인터뷰와 에세이 내용을 빠짐없이 활용
-2. 각 섹션은 독립적이면서도 전체 스토리가 연결되도록 구성
-3. 이미지 정보와 연결되는 시각적 묘사 포함
-4. 매거진 특유의 세련되고 감성적인 문체 사용
-5. 각 섹션의 body는 해당 섹션의 모든 관련 내용을 완전히 포함
+**작업 지시:**
+1. 이 섹션의 주제와 요약에 맞는 내용을 인터뷰와 에세이에서 찾아 자연스럽게 통합하세요.
+2. 이미지 정보와 연결되는 시각적 묘사를 포함하세요.
+3. 매거진 특유의 세련되고 감성적인 문체를 사용하세요.
+4. 글자 수 제한은 없습니다. 주제를 충분히 다루는 데 필요한 만큼 작성하세요.
+5. 다른 섹션과 중복되지 않도록 이 섹션의 주제에 집중하세요.
 
-**필수 출력 형식 (다른 텍스트 없이 오직 이 JSON만 출력):**
+**출력 형식:**
+아래 JSON 형식으로 출력하세요. 다른 설명이나 주석은 포함하지 마세요.
 
+```json
 {{
-  "magazine_title": "전체 매거진의 매력적인 제목",
-  "magazine_subtitle": "매거진의 흥미로운 부제목",
-  "sections": [
-    {{
-      "section_id": 1,
-      "title": "첫 번째 섹션 제목",
-      "subtitle": "첫 번째 섹션 부제목",
-      "body": "인터뷰와 에세이 내용을 바탕으로 한 완전한 본문. 여행의 시작, 첫인상, 설렘 등을 포함하여 풍부하게 작성. 이미지와 연결되는 시각적 묘사도 포함.",
-      "image_keywords": ["여행", "시작", "설렘", "첫인상"],
-      "content_type": "introduction",
-      "emotional_tone": "긍정적"
-    }},
-    {{
-      "section_id": 2,
-      "title": "두 번째 섹션 제목",
-      "subtitle": "두 번째 섹션 부제목", 
-      "body": "주요 경험과 감상을 담은 완전한 본문. 인터뷰와 에세이의 핵심 내용을 자연스럽게 통합하여 작성. 독자가 몰입할 수 있는 스토리텔링.",
-      "image_keywords": ["경험", "감상", "여행지", "문화"],
-      "content_type": "experience",
-      "emotional_tone": "성찰적"
-    }},
-    {{
-      "section_id": 3,
-      "title": "세 번째 섹션 제목",
-      "subtitle": "세 번째 섹션 부제목",
-      "body": "특별한 순간들과 만남을 담은 완전한 본문. 에세이의 성찰적 내용과 인터뷰의 생생한 경험을 조화롭게 구성.",
-      "image_keywords": ["만남", "순간", "사람", "교감"],
-      "content_type": "encounter",
-      "emotional_tone": "감동적"
-    }},
-    {{
-      "section_id": 4,
-      "title": "네 번째 섹션 제목",
-      "subtitle": "네 번째 섹션 부제목",
-      "body": "일상적 경험과 세부 사항들을 담은 완전한 본문. 모든 세부 내용을 포함하여 여행의 완전한 그림을 제공.",
-      "image_keywords": ["일상", "세부사항", "현실", "생활"],
-      "content_type": "daily_life",
-      "emotional_tone": "친근한"
-    }},
-    {{
-      "section_id": 5,
-      "title": "다섯 번째 섹션 제목",
-      "subtitle": "다섯 번째 섹션 부제목",
-      "body": "문화적 체험과 성찰을 담은 완전한 본문. 에세이 내용을 중심으로 깊이 있는 문화적 통찰을 제공.",
-      "image_keywords": ["문화", "체험", "성찰", "통찰"],
-      "content_type": "cultural_reflection",
-      "emotional_tone": "성찰적"
-    }},
-    {{
-      "section_id": 6,
-      "title": "여섯 번째 섹션 제목",
-      "subtitle": "여섯 번째 섹션 부제목",
-      "body": "여행의 의미와 마무리를 담은 완전한 본문. 모든 감상을 통합하여 여행의 전체적 의미를 제시하고 독자에게 여운을 남기는 마무리.",
-      "image_keywords": ["의미", "마무리", "여운", "성장"],
-      "content_type": "conclusion",
-      "emotional_tone": "성찰적이며 긍정적"
-    }}
-  ],
-  "total_sections": 6,
-  "content_summary": "제공된 모든 인터뷰와 에세이 내용을 완전히 활용한 풍부한 여행 매거진",
-  "image_integration_notes": "각 섹션은 해당하는 이미지의 시각적 특성과 감정적 톤을 반영하여 구성됨"
+  "section_id": "{section_id}",
+  "title": "{title}",
+  "subtitle": "{subtitle}",
+  "body": "이 섹션의 본문 내용..."
 }}
+```
 
 **중요 지침:**
-- 위의 JSON 형식만 출력하세요 (설명, 주석, 코드블록 마크다운 등 일체 포함하지 마세요)
-- 각 섹션의 body는 해당 섹션에 관련된 모든 인터뷰와 에세이 내용을 완전히 포함해야 합니다
-- 제공된 모든 콘텐츠가 6개 섹션에 빠짐없이 분배되어야 합니다
-- JSON 구문 오류가 없도록 따옴표, 쉼표, 중괄호를 정확히 사용하세요
-- 각 body는 최소 200자 이상, 최대 800자 이내로 작성하세요
+- 섹션의 주제와 요약에 맞는 내용만 포함하세요.
+- 모든 문장은 완전한 형태여야 합니다.
+- 이미지와 연결되는 시각적 묘사를 자연스럽게 포함하세요.
+- 인터뷰와 에세이의 내용을 자연스럽게 통합하세요.
 """,
-            agent=agent,
-            expected_output="완전한 JSON 형식의 구조화된 매거진 콘텐츠"
-        )
+                agent=agent,
+                expected_output=f"섹션 {section_id} '{title}'에 대한 JSON 형식의 콘텐츠"
+            )
+            
+            # 비동기 태스크 실행
+            response = await asyncio.get_event_loop().run_in_executor(
+                None, agent.execute_task, section_task
+            )
+            
+            # JSON 응답 추출 및 파싱
+            import json
+            import re
+            
+            # JSON 부분만 추출
+            json_match = re.search(r'```json\s*(.*?)\s*```', str(response), re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                json_str = str(response)
+            
+            # 불필요한 마크다운이나 설명 제거
+            json_str = re.sub(r'```(json)?|```', '', json_str).strip()
+            
+            try:
+                # JSON 파싱
+                section_content = json.loads(json_str)
+                sections_with_content.append(section_content)
+                self.logger.info(f"섹션 {section_id}: '{title}' 콘텐츠 생성 완료 ({len(section_content.get('body', ''))}자)")
+            except Exception as e:
+                self.logger.error(f"섹션 {section_id} 콘텐츠 파싱 실패: {e}")
+                # 실패 시 기본 콘텐츠 생성
+                sections_with_content.append({
+                    "section_id": section_id,
+                    "title": title,
+                    "subtitle": subtitle,
+                    "body": f"이 섹션에서는 {summary} 내용을 다룹니다."
+                })
         
-        # 비동기 태스크 실행
-        result = await asyncio.get_event_loop().run_in_executor(
-            None, agent.execute_task, integration_task
-        )
+        return sections_with_content
+
+    def _assemble_final_magazine_content(self, structure_plan: Dict, sections: List[Dict]) -> str:
+        """최종 매거진 콘텐츠 조합"""
         
-        # 결과 검증
-        final_content = str(result)
-        await self._verify_final_content_as_first_agent_async(final_content, interview_results, essay_results)
+        # 섹션을 ID 기준으로 정렬
+        sections.sort(key=lambda x: x.get('section_id', '0'))
         
-        return final_content
+        # 최종 매거진 콘텐츠 구조 생성
+        magazine_content = {
+            "magazine_title": structure_plan.get('proposed_title', '여행 경험'),
+            "magazine_subtitle": structure_plan.get('proposed_subtitle', '특별한 순간들'),
+            "sections": []
+        }
+        
+        # 섹션 정보 추가
+        for section in sections:
+            # 하위 섹션인 경우 (sub_section_id가 있는 경우)
+            if 'sub_section_id' in section:
+                parent_id = section.get('parent_section_id', '')
+                
+                # 이미 부모 섹션이 추가되었는지 확인
+                parent_found = False
+                for i, existing_section in enumerate(magazine_content['sections']):
+                    if existing_section.get('section_id') == parent_id:
+                        # 부모 섹션이 있으면 하위 섹션 배열 확인
+                        if 'sub_sections' not in existing_section:
+                            existing_section['sub_sections'] = []
+                        
+                        # 하위 섹션 추가
+                        existing_section['sub_sections'].append({
+                            "sub_section_id": section.get('sub_section_id', ''),
+                            "title": section.get('title', ''),
+                            "subtitle": section.get('subtitle', ''),
+                            "body": section.get('body', '')
+                        })
+                        parent_found = True
+                        break
+                
+                # 부모 섹션이 아직 추가되지 않았으면 임시 부모 섹션 생성
+                if not parent_found:
+                    magazine_content['sections'].append({
+                        "section_id": parent_id,
+                        "title": section.get('parent_section_title', f"섹션 {parent_id}"),
+                        "subtitle": "",
+                        "sub_sections": [{
+                            "sub_section_id": section.get('sub_section_id', ''),
+                            "title": section.get('title', ''),
+                            "subtitle": section.get('subtitle', ''),
+                            "body": section.get('body', '')
+                        }]
+                    })
+            else:
+                # 일반 섹션인 경우
+                magazine_content['sections'].append({
+                    "section_id": section.get('section_id', ''),
+                    "title": section.get('title', ''),
+                    "subtitle": section.get('subtitle', ''),
+                    "body": section.get('body', '')
+                })
+        
+        # 섹션 수 추가
+        magazine_content['total_sections'] = len(magazine_content['sections'])
+        
+        # JSON 문자열로 변환
+        import json
+        return json.dumps(magazine_content, ensure_ascii=False)
 
     def _format_semantic_connections_for_prompt(self, semantic_connections: Dict) -> str:
         """의미적 연결 정보를 프롬프트용으로 포맷팅"""
@@ -683,11 +753,9 @@ class ContentCreatorV2Agent:
                                      texts: List[str], semantic_connections: Dict):
         """최종 통합 콘텐츠 생성 로깅 (새로운 방식 적용)"""
         # ✅ LoggingManager 인스턴스 생성
-        from utils.logging_manager import LoggingManager
-        logging_manager = LoggingManager()
         
         # ✅ 새로운 로깅 방식으로 응답 데이터 저장
-        await logging_manager.log_agent_response(
+        await self.logging_manager.log_agent_response(
             agent_name="ContentCreatorV2Agent",
             agent_role="여행 콘텐츠 통합 편집자 (첫 번째 에이전트)",
             task_description=f"인터뷰 {len(interview_results)}개, 에세이 {len(essay_results)}개, 이미지 {len(image_analysis_results)}개를 통합한 매거진 콘텐츠 생성 (이미지-텍스트 의미적 연결 포함)",
@@ -818,20 +886,21 @@ class ContentCreatorV2Crew:
         )
 
     async def execute_content_creation(self, texts: List[str], image_analysis_results: List[Dict]) -> str:
-        """Crew를 통한 콘텐츠 생성 실행 (첫 번째 에이전트 - 비동기)"""
+        """Crew를 통한 콘텐츠 생성 실행 (동적 섹션 생성 방식)"""
         crew = self.create_crew()
         
-        print("\n=== ContentCreatorV2 Crew 실행 (첫 번째 에이전트 - 비동기) ===")
+        print("\n=== ContentCreatorV2 Crew 실행 (동적 섹션 생성) ===")
         print(f"- 입력 텍스트: {len(texts)}개")
         print(f"- 이미지 분석 결과: {len(image_analysis_results)}개")
-        print(f"- 역할: 첫 번째 에이전트 (로그 수집 시작)")
+        print(f"- 동적 섹션 생성: 활성화")
+        print(f"- 콘텐츠 분량 자동 조절: 활성화")
         print(f"- 이미지-텍스트 시너지: 활성화")
         
         # ContentCreatorV2Agent를 통한 콘텐츠 생성 (비동기)
         result = await self.content_creator.create_magazine_content(texts, image_analysis_results)
         
-        print("✅ ContentCreatorV2 Crew 실행 완료 (첫 번째 에이전트 - 비동기)")
-        print("✅ 후속 에이전트들을 위한 로그 데이터 생성 완료")
+        print("✅ ContentCreatorV2 Crew 실행 완료 (동적 섹션 생성)")
+        print("✅ 콘텐츠 분량 자동 조절 완료")
         print("✅ 이미지-텍스트 의미적 연결 강화 완료")
         
         return result
