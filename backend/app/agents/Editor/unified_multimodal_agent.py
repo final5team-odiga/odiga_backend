@@ -1,53 +1,751 @@
+import re
 import asyncio
 import numpy as np
 import json
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 from crewai import Agent, Task, Crew
 from custom_llm import get_azure_llm
-from utils.log.hybridlogging import get_hybrid_logger
+
+from agents.Editor.semantic_analysis_engine import SemanticAnalysisEngine
+from agents.Editor.image_diversity_manager import ImageDiversityManager
+from agents.jsx.template_selector import SectionStyleAnalyzer
+from agents.jsx.unified_jsx_generator import UnifiedJSXGenerator
+
 from utils.isolation.ai_search_isolation import AISearchIsolationManager
 from utils.data.pdf_vector_manager import PDFVectorManager
 from utils.isolation.session_isolation import SessionAwareMixin
 from utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
-from agents.Editor.image_diversity_manager import ImageDiversityManager
 from utils.log.logging_manager import LoggingManager
+
 from db.magazine_db_utils import MagazineDBUtils
 
 class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
-    """통합 멀티모달 에이전트 - AI Search 벡터 데이터 통합 활용"""
+    """통합 멀티모달 에이전트 - 템플릿 선택 및 JSX 생성 통합, CLIP 공유 및 벡터 통합"""
     
-    def __init__(self):
+    def __init__(self, vector_manager: PDFVectorManager, logger: Any):
         self.llm = get_azure_llm()
-        self.logger = get_hybrid_logger(self.__class__.__name__)
+        self.logger = logger
 
         self.isolation_manager = AISearchIsolationManager()
-
-
-        self.vector_manager = PDFVectorManager(isolation_enabled=True)
-        self.image_diversity_manager = ImageDiversityManager(self.logger)
+        self.vector_manager = vector_manager
+        
+        # ✅ CLIP 세션 공유를 위한 초기화
+        self._initialize_shared_clip_session()
+        
+        # ✅ 공유 CLIP 세션을 사용하는 컴포넌트들
+        self.semantic_engine = SemanticAnalysisEngine(self.logger, self.shared_clip_session)
+        self.image_diversity_manager = ImageDiversityManager(
+            self.vector_manager, self.logger
+        )
+        
+        # CLIP 세션 주입
+        self.image_diversity_manager.set_external_clip_session(
+            self.shared_clip_session.get("onnx_session"),
+            self.shared_clip_session.get("clip_preprocess")
+        )
+        
+        # ✅ 새로 통합되는 컴포넌트
+        self.template_selector = SectionStyleAnalyzer()
+        self.jsx_generator = UnifiedJSXGenerator()
+        self.jsx_generator.set_logger(logger)
+        
         self.logging_manager = LoggingManager(self.logger)
         self.__init_session_awareness__()
         self.__init_inter_agent_communication__()
         
-        # AI Search 통합 전문 에이전트들
+        # CrewAI 에이전트들
         self.content_structure_agent = self._create_content_structure_agent_with_ai_search()
         self.image_layout_agent = self._create_image_layout_agent_with_ai_search()
         self.semantic_coordinator_agent = self._create_semantic_coordinator_agent_with_ai_search()
 
+        # ✅ 원본 데이터 보존용 변수
+        self.current_magazine_content = None
+
+    def _initialize_shared_clip_session(self):
+        """✅ 공유 CLIP 세션 초기화 (중복 방지)"""
+        try:
+            import open_clip
+            import onnxruntime as ort
+            import os
+            
+            onnx_model_path = "models/clip_onnx/clip_visual.quant.onnx"
+            
+            # PyTorch 텍스트 모델
+            clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+                'ViT-B-32', pretrained='laion2b_s34b_b79k', device="cpu"
+            )
+            clip_model.eval()
+            
+            # ONNX 이미지 모델
+            onnx_session = None
+            if os.path.exists(onnx_model_path):
+                onnx_session = ort.InferenceSession(onnx_model_path, providers=['CPUExecutionProvider'])
+            
+            self.shared_clip_session = {
+                "clip_model": clip_model,
+                "clip_preprocess": clip_preprocess,
+                "onnx_session": onnx_session,
+                "clip_available": onnx_session is not None
+            }
+            
+            self.logger.info("✅ UnifiedMultimodalAgent: 공유 CLIP 세션 초기화 성공")
+            
+        except Exception as e:
+            self.logger.error(f"공유 CLIP 세션 초기화 실패: {e}")
+            self.shared_clip_session = {
+                "clip_model": None,
+                "clip_preprocess": None,
+                "onnx_session": None,
+                "clip_available": False
+            }
+
     async def process_data(self, input_data):
-        # 에이전트 작업 수행
         result = await self._do_work(input_data)
         
-        # ✅ 응답 로그 저장
         await self.logging_manager.log_agent_response(
             agent_name=self.__class__.__name__,
-            agent_role="에이전트 역할 설명",
-            task_description="수행한 작업 설명",
-            response_data=result,  # 실제 응답 데이터만
-            metadata={"additional": "info"}
+            agent_role="통합 멀티모달 처리 에이전트",
+            task_description="콘텐츠 구조화, 템플릿 선택, JSX 생성 통합 처리",
+            response_data=result,
+            metadata={"integrated_processing": True, "clip_shared": True}
         )
         
+        return result
+
+    async def process_magazine_unified(self, magazine_content: Dict, image_analysis: List[Dict], 
+                                     user_id: str = "unknown_user") -> Dict:
+        """✅ 완전 통합된 매거진 처리 - 메인 진입점"""
+        
+        self.logger.info("=== 완전 통합 멀티모달 매거진 처리 시작 ===")
+        
+        try:
+            # ✅ 원본 데이터 보존 (JSX 생성 시 사용)
+            self.current_magazine_content = magazine_content
             
+            # === 데이터 준비 단계 ===
+            if "magazine_id" in magazine_content and magazine_content["magazine_id"]:
+                self.logger.info(f"기존 매거진 ID로 데이터 조회: {magazine_content['magazine_id']}")
+                magazine_data = await MagazineDBUtils.get_magazine_by_id(magazine_content["magazine_id"])
+                if magazine_data:
+                    magazine_content = magazine_data.get("content", magazine_content)
+                    self.current_magazine_content = magazine_content
+                    image_analysis = await MagazineDBUtils.get_images_by_magazine_id(magazine_content["magazine_id"])
+            
+            # ✅ 중첩된 sub_sections 구조에서 텍스트 추출
+            texts_for_analysis = self._extract_texts_from_sections(magazine_content.get('sections', []))
+            
+            # 1. 의미 분석 (공유 CLIP 세션 사용)
+            self.logger.info("1단계: 공유 CLIP 기반 의미 분석 실행")
+            similarity_data = await self.semantic_engine.calculate_semantic_similarity(
+                texts_for_analysis, image_analysis
+            )
+            
+            # 2. 통합 벡터 패턴 수집 (AI Search + JSX 템플릿)
+            self.logger.info("2단계: 통합 벡터 패턴 수집")
+            unified_patterns = await self._collect_unified_vector_patterns(
+                magazine_content, image_analysis
+            )
+            
+            # 3. 이미지 다양성 최적화 (벡터 통합 + 공유 CLIP)
+            self.logger.info("3단계: 벡터 통합 이미지 다양성 최적화")
+            optimization_result = await self.image_diversity_manager.optimize_image_distribution(
+                image_analysis, magazine_content.get('sections', []), unified_patterns
+            )
+            
+            # 4. CrewAI 기반 콘텐츠 구조화
+            self.logger.info("4단계: CrewAI 기반 콘텐츠 구조화")
+            structured_content = await self._execute_crew_analysis(
+                magazine_content, image_analysis, similarity_data, unified_patterns, user_id
+            )
+            
+            # ✅ 5. 통합된 템플릿 선택 및 JSX 생성
+            self.logger.info("5단계: 통합 템플릿 선택 및 JSX 생성")
+            final_sections = await self._process_sections_with_templates_and_jsx(
+                structured_content, unified_patterns, optimization_result
+            )
+            
+            # 6. 최종 결과 구성
+            result = {
+                "content_sections": final_sections,
+                "processing_metadata": {
+                    "unified_processing": True,
+                    "template_selection_integrated": True,
+                    "jsx_generation_integrated": True,
+                    "total_sections": len(final_sections),
+                    "ai_search_enhanced": True,
+                    "diversity_optimized": True,
+                    "clip_shared": True,
+                    "vector_integrated": True,
+                    "subsection_processing": True
+                }
+            }
+            
+            # 7. 결과 로깅
+            if "magazine_id" in magazine_content and magazine_content["magazine_id"]:
+                self.logger.info(f"멀티모달 처리 결과 로깅: {magazine_content['magazine_id']}")
+                await self.logging_manager.log_multimodal_processing_completion(result)
+            
+            self.logger.info("=== 완전 통합 멀티모달 매거진 처리 완료 ===")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"통합 매거진 처리 실패: {e}")
+            return self._create_fallback_result(magazine_content, image_analysis)
+
+    def _extract_texts_from_sections(self, sections: List[Dict]) -> List[str]:
+        """✅ 중첩된 sub_sections 구조에서 텍스트 추출"""
+        texts = []
+        
+        for section in sections:
+            sub_sections = section.get("sub_sections", [])
+            
+            if sub_sections:
+                # sub_sections가 있는 경우, 각 sub_section의 body에서 텍스트 추출
+                for sub_section in sub_sections:
+                    body_text = sub_section.get("body", "")
+                    if body_text and len(body_text.strip()) > 0:
+                        texts.append(body_text)
+            else:
+                # sub_sections가 없는 경우, 최상위 content 또는 body에서 추출
+                content_text = section.get("content", section.get("body", ""))
+                if content_text and len(content_text.strip()) > 0:
+                    texts.append(content_text)
+        
+        return texts
+
+    def _create_llm_context(self, magazine_content: Dict, image_analysis: List[Dict], 
+                        similarity_data: Dict, unified_patterns: Dict) -> str:
+        """
+        LLM(CrewAI) 에이전트를 위한 지능적이고 간결한 컨텍스트를 생성합니다.
+        중첩된 sub_sections 구조를 올바르게 처리하여 데이터 손실을 방지합니다.
+        """
+        
+        # 1. 매거진 콘텐츠 요약 (sub_sections 처리 기능 추가)
+        section_overviews = []
+        for section in magazine_content.get("sections", [])[:5]: # 최대 5개 섹션
+            overview = {
+                "section_id": section.get("section_id"),
+                "title": section.get("title")
+            }
+            
+            sub_sections = section.get("sub_sections")
+            if sub_sections:
+                # ✅ sub_sections가 있는 경우, 각 sub_section을 요약
+                overview["sub_section_previews"] = [
+                    {
+                        "sub_section_id": sub.get("sub_section_id"),
+                        "title": sub.get("title"),
+                        # ✅ body 필드에서 내용 미리보기 추출
+                        "content_preview": sub.get("body", "")[:150] + "..." if sub.get("body") else ""
+                    } for sub in sub_sections[:3] # 섹션당 최대 3개 하위 섹션
+                ]
+            else:
+                # ✅ sub_sections가 없는 경우, 최상위 content/body 필드에서 추출
+                overview["content_preview"] = section.get("content", section.get("body", ""))[:150] + "..." if section.get("content") or section.get("body") else ""
+                
+            section_overviews.append(overview)
+
+        magazine_summary = {
+            "magazine_title": magazine_content.get("magazine_title", "제목 없음"),
+            "total_sections": len(magazine_content.get("sections", [])),
+            "section_overviews": section_overviews
+        }
+
+        # 2. 이미지 분석 요약
+        image_summary = {
+            "total_images": len(image_analysis),
+            "image_previews": [
+                {
+                    "description": img.get("description", "설명 없음")[:100],
+                    "quality_score": round(img.get("overall_quality", 0), 2),
+                    "location": f"{img.get('city', '')}, {img.get('country', '')}"
+                } for img in image_analysis[:5] # 최대 5개 이미지
+            ]
+        }
+        
+        # 3. 의미 분석 요약 (JSON 직렬화 오류 수정 포함)
+        similarity_matrix = similarity_data.get("similarity_matrix", np.array([]))
+        similarity_summary = {
+            "text_image_similarity_exists": similarity_matrix.size > 0,
+            "average_similarity": float(np.mean(similarity_matrix)) if similarity_matrix.size > 0 else "N/A"
+        }
+
+        # 4. 통합 벡터 패턴 요약
+        pattern_summary = {
+            "total_pattern_sections": len(unified_patterns.get("section_mappings", {})),
+            "sample_pattern": next(iter(unified_patterns.get("section_mappings", {}).values()), {}).get("recommended_templates", [])[:1]
+        }
+
+        # 5. 최종 컨텍스트 조합
+        llm_context = {
+            "magazine_summary": magazine_summary,
+            "image_summary": image_summary,
+            "semantic_analysis_summary": similarity_summary,
+            "vector_pattern_summary": pattern_summary
+        }
+
+        return json.dumps(llm_context, ensure_ascii=False, indent=2)
+
+    async def _collect_unified_vector_patterns(self, magazine_content: Dict,
+                                             image_analysis: List[Dict]) -> Dict:
+        """✅ AI Search + JSX 템플릿 벡터 패턴 통합 수집"""
+        
+        sections = magazine_content.get("sections", [])
+        self.logger.info(f"통합 벡터 패턴 수집: {len(sections)}개 섹션, {len(image_analysis)}개 이미지")
+        
+        try:
+            unified_patterns = {
+                "ai_search_patterns": [],
+                "jsx_template_patterns": [],
+                "integration_patterns": [],
+                "section_mappings": {}
+            }
+            
+            section_index = 0  # 전체 섹션 인덱스 (하위 섹션 포함)
+            
+            for i, section in enumerate(sections):
+                # 하위 섹션이 있는지 확인
+                sub_sections = section.get("sub_sections", [])
+                
+                # 하위 섹션이 없는 경우 - 단일 섹션으로 처리
+                if not sub_sections:
+                    section_key = f"section_{section_index}"
+                    
+                    # 패턴 수집 및 융합
+                    patterns = await self._collect_section_patterns(section)
+                    unified_patterns["section_mappings"][section_key] = patterns
+                    
+                    section_index += 1
+                else:
+                    # 하위 섹션이 있는 경우 - 각 하위 섹션을 개별적으로 처리
+                    section_title = section.get("title", f"섹션 {i+1}")
+                    
+                    for j, sub_section in enumerate(sub_sections):
+                        section_key = f"section_{section_index}"
+                        
+                        # 상위 섹션의 제목을 하위 섹션 제목에 추가
+                        combined_title = f"{section_title}, {sub_section.get('title', '')}"
+                        
+                        # 하위 섹션 데이터 구성 (상위 섹션 정보 포함)
+                        enhanced_sub_section = {
+                            "title": combined_title,
+                            "subtitle": sub_section.get("subtitle", ""),
+                            "content": sub_section.get("body", ""),
+                            "section_id": sub_section.get("sub_section_id", ""),
+                            "parent_section_id": section.get("section_id", ""),
+                            "parent_section_title": section_title
+                        }
+                        
+                        # 패턴 수집 및 융합
+                        patterns = await self._collect_section_patterns(enhanced_sub_section)
+                        patterns.update({
+                            "is_subsection": True,
+                            "parent_section_id": section.get("section_id", ""),
+                            "parent_section_title": section_title
+                        })
+                        
+                        unified_patterns["section_mappings"][section_key] = patterns
+                        section_index += 1
+            
+            return unified_patterns
+            
+        except Exception as e:
+            self.logger.error(f"통합 벡터 패턴 수집 실패: {e}")
+            return {"section_mappings": {}}
+
+    async def _collect_section_patterns(self, section: Dict) -> Dict:
+        """개별 섹션의 패턴 수집"""
+        # 1. AI Search 패턴 수집
+        ai_search_query = self._build_ai_search_query(section)
+        ai_patterns = await self._search_ai_patterns(ai_search_query)
+        
+        # 2. JSX 템플릿 패턴 수집
+        jsx_query = self._build_jsx_template_query(section, ai_patterns)
+        jsx_patterns = await self._search_jsx_templates(jsx_query)
+        
+        # 3. 매거진 레이아웃 패턴 수집
+        magazine_query = self._build_magazine_layout_query(section, ai_patterns)
+        magazine_patterns = await self._search_magazine_patterns(magazine_query)
+        
+        # 4. 패턴 융합
+        return {
+            "ai_search_patterns": ai_patterns,
+            "jsx_template_patterns": jsx_patterns,
+            "magazine_layout_patterns": magazine_patterns,
+            "semantic_score": self._calculate_semantic_alignment(ai_patterns, jsx_patterns),
+            "recommended_templates": self._rank_templates(jsx_patterns, ai_patterns)
+        }
+
+    def _build_ai_search_query(self, section: Dict) -> str:
+        """AI Search 쿼리 생성"""
+        title = section.get("title", "")
+        content = section.get("content", section.get("body", ""))[:200]
+        
+        if section.get("parent_section_id") or section.get("parent_section_title"):
+            parent_title = section.get("parent_section_title", "")
+            return f"magazine layout section subsection {parent_title} {title} {content}"
+        else:
+            return f"magazine layout section {title} {content}"
+
+    def _build_jsx_template_query(self, section: Dict, ai_patterns: List[Dict]) -> str:
+        """JSX 템플릿 쿼리 생성"""
+        title = section.get("title", "")
+        style_hints = [p.get("style", "") for p in ai_patterns[:2]]
+        
+        if section.get("parent_section_id") or section.get("parent_section_title"):
+            parent_title = section.get("parent_section_title", "")
+            return f"jsx component subsection {parent_title} {title} {' '.join(style_hints)}"
+        else:
+            return f"jsx component section {title} {' '.join(style_hints)}"
+
+    def _build_magazine_layout_query(self, section: Dict, ai_patterns: List[Dict]) -> str:
+        """매거진 레이아웃 쿼리 생성"""
+        title = section.get("title", "")
+        layout_hints = [p.get("layout_type", "") for p in ai_patterns[:2]]
+        
+        if section.get("parent_section_id") or section.get("parent_section_title"):
+            parent_title = section.get("parent_section_title", "")
+            subsection_id = section.get("section_id", "")
+            return f"magazine layout design subsection {parent_title} {title} {subsection_id} {' '.join(layout_hints)}"
+        else:
+            section_id = section.get("section_id", "")
+            return f"magazine layout design section {title} {section_id} {' '.join(layout_hints)}"
+
+    async def _search_ai_patterns(self, query: str) -> List[Dict]:
+        """AI Search 패턴 검색"""
+        try:
+            clean_query = self.isolation_manager.clean_query_from_azure_keywords(query)
+            results = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.vector_manager.search_similar_layouts(
+                    clean_query, "text-semantic-patterns-index", top_k=5
+                )
+            )
+            return self.isolation_manager.filter_contaminated_data(results, f"ai_patterns_{hash(query)}")
+        except Exception as e:
+            self.logger.error(f"AI Search 패턴 검색 실패: {e}")
+            return []
+
+    async def _search_jsx_templates(self, query: str) -> List[Dict]:
+        """JSX 템플릿 벡터 검색"""
+        try:
+            clean_query = self.isolation_manager.clean_query_from_azure_keywords(query)
+            results = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.vector_manager.search_similar_layouts(
+                    clean_query, "jsx-component-vector-index", top_k=5
+                )
+            )
+            return self.isolation_manager.filter_contaminated_data(results, f"jsx_templates_{hash(query)}")
+        except Exception as e:
+            self.logger.error(f"JSX 템플릿 검색 실패: {e}")
+            return []
+
+    async def _search_magazine_patterns(self, query: str) -> List[Dict]:
+        """매거진 레이아웃 벡터 검색"""
+        try:
+            clean_query = self.isolation_manager.clean_query_from_azure_keywords(query)
+            results = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self.vector_manager.search_similar_layouts(
+                    clean_query, "magazine-vector-index", top_k=5
+                )
+            )
+            return self.isolation_manager.filter_contaminated_data(results, f"magazine_patterns_{hash(query)}")
+        except Exception as e:
+            self.logger.error(f"매거진 패턴 검색 실패: {e}")
+            return []
+
+    def _calculate_semantic_alignment(self, ai_patterns: List[Dict], jsx_patterns: List[Dict]) -> float:
+        """AI Search 패턴과 JSX 패턴 간 의미적 정렬도 계산"""
+        if not ai_patterns or not jsx_patterns:
+            return 0.0
+        return 0.8  # 임시 점수
+
+    def _rank_templates(self, jsx_patterns: List[Dict], ai_patterns: List[Dict]) -> List[str]:
+        """템플릿 순위 매기기"""
+        return [p.get("jsx_code", "DefaultTemplate.jsx") for p in jsx_patterns[:3]]
+
+    async def _execute_crew_analysis(self, magazine_content: Dict, image_analysis: List[Dict],
+                                   similarity_data: Dict, unified_patterns: Dict, user_id: str) -> Dict:
+        """CrewAI 기반 콘텐츠 구조화"""
+        try:
+            # 1. LLM에 전달할 초기 통합 컨텍스트 생성
+            llm_context = self._create_llm_context(
+                magazine_content, image_analysis, similarity_data, unified_patterns
+            )
+            
+            # 2. 콘텐츠 구조 분석 태스크 실행
+            self.logger.info("CrewAI: 콘텐츠 구조 분석 시작...")
+            content_analysis_task = self._create_content_analysis_task(llm_context, user_id)
+            content_crew = Crew(agents=[self.content_structure_agent], tasks=[content_analysis_task], verbose=False)
+            content_result = content_crew.kickoff()
+            processed_content_result = await self._process_crew_results(content_result)
+            
+            # 3. 이미지 레이아웃 분석 태스크 실행
+            self.logger.info("CrewAI: 이미지 레이아웃 분석 시작...")
+            image_layout_task = self._create_image_layout_task(llm_context)
+            image_crew = Crew(agents=[self.image_layout_agent], tasks=[image_layout_task], verbose=False)
+            image_result = image_crew.kickoff()
+            processed_image_result = await self._process_crew_results(image_result)
+            
+            # 4. 의미적 조율 태스크 실행
+            self.logger.info("CrewAI: 최종 의미적 조율 시작...")
+            coordination_context = f"""
+# 조율 작업 지시
+
+다음은 텍스트 구조 분석 결과와 이미지 배치 전략입니다. 두 결과를 종합하여 최종 매거진 구조를 완성하세요.
+
+## 1. 텍스트 구조 분석 결과
+{self._summarize_data_for_prompt(processed_content_result)}
+
+## 2. 이미지 배치 전략
+{self._summarize_data_for_prompt(processed_image_result)}
+
+## 조율 목표
+- 텍스트 구조와 이미지 배치가 의미적으로, 시각적으로 완벽하게 조화를 이루도록 하세요.
+- 전체적인 완성도를 높여 독자에게 최고의 경험을 제공하는 최종 구조를 JSON 형식으로 출력하세요.
+"""
+            coordination_task = self._create_coordination_task(coordination_context)
+            coordination_crew = Crew(agents=[self.semantic_coordinator_agent], tasks=[coordination_task], verbose=False)
+            final_result = coordination_crew.kickoff()
+            
+            return await self._process_crew_results(final_result)
+            
+        except Exception as e:
+            self.logger.error(f"CrewAI 분석 실패: {e}")
+            return self._create_fallback_content_result(magazine_content)
+
+    def _summarize_data_for_prompt(self, data: Any, max_len: int = 3000) -> str:
+        """
+        LLM 프롬프트를 위해 데이터를 안전하게 요약하고 직렬화합니다.
+        Numpy 데이터 타입을 처리하고, 재귀적으로 중첩된 구조를 요약하여 429 오류를 방지합니다.
+        """
+        try:
+            # 1. Numpy 데이터 타입 처리 (JSON 직렬화 오류 방지)
+            if isinstance(data, np.ndarray):
+                if data.size > 10:
+                    return f"Numpy array with shape {data.shape}. Sample: {data.flatten()[:5].tolist()}"
+                return data.tolist()
+            if isinstance(data, (np.float32, np.float64)):
+                return float(data)
+            if isinstance(data, (np.int32, np.int64)):
+                return int(data)
+
+            # 2. 딕셔너리 데이터 타입 처리
+            if isinstance(data, dict):
+                summary_dict = {}
+                for key, value in data.items():
+                    summary_dict[key] = self._summarize_data_for_prompt(value, max_len=500)
+                
+                json_str = json.dumps(summary_dict, ensure_ascii=False, indent=2)
+
+            # 3. 리스트 데이터 타입 처리
+            elif isinstance(data, list):
+                if len(data) > 3:
+                    summary_list = [f"List with {len(data)} items. First 2 items summarized:"]
+                    for item in data[:2]:
+                        summary_list.append(self._summarize_data_for_prompt(item, max_len=500))
+                    json_str = "\n".join(summary_list)
+                else:
+                    json_str = json.dumps([self._summarize_data_for_prompt(item, max_len=500) for item in data], ensure_ascii=False, indent=2)
+
+            # 4. 그 외 데이터 타입 (문자열, 숫자 등) 처리
+            else:
+                json_str = str(data)
+
+            # 5. 최종 길이 제한 (안전장치)
+            if len(json_str) > max_len:
+                return json_str[:max_len] + f"... (내용이 너무 길어 {len(json_str)}자에서 잘림)"
+                
+            return json_str
+        except Exception as e:
+            self.logger.error(f"데이터 요약 중 오류 발생: {e}")
+            return f"Error summarizing data: {str(data)[:200]}..."
+
+    async def _process_sections_with_templates_and_jsx(self, structured_content: Dict, 
+                                                     unified_patterns: Dict, 
+                                                     optimization_result: Dict) -> List[Dict]:
+        """✅ 중첩된 sub_sections 구조를 올바르게 처리하는 통합 버전"""
+        
+        try:
+            # CrewAI 구조화 결과에서 섹션 정보 추출
+            if isinstance(structured_content, str):
+                try:
+                    structured_content = json.loads(structured_content)
+                except json.JSONDecodeError:
+                    self.logger.warning("구조화된 콘텐츠 JSON 파싱 실패, 원본 데이터 사용")
+                    structured_content = {}
+            
+            # ✅ 원본 매거진 데이터 가져오기
+            original_magazine_content = self.current_magazine_content
+            sections = original_magazine_content.get("sections", [])
+            
+            final_sections = []
+            
+            for i, section in enumerate(sections):
+                section_id = section.get("section_id", str(i + 1))
+                
+                # ✅ 핵심: sub_sections 구조 인식 및 처리
+                sub_sections = section.get("sub_sections", [])
+                
+                if sub_sections:
+                    # sub_sections가 있는 경우: 각 sub_section을 개별 JSX로 생성
+                    for j, sub_section in enumerate(sub_sections):
+                        sub_section_data = await self._process_single_subsection(
+                            section, sub_section, unified_patterns, optimization_result, i, j
+                        )
+                        if sub_section_data:
+                            final_sections.append(sub_section_data)
+                else:
+                    # sub_sections가 없는 경우: 기존 방식으로 처리
+                    section_data = await self._process_single_section_legacy(
+                        section, unified_patterns, optimization_result, i
+                    )
+                    if section_data:
+                        final_sections.append(section_data)
+            
+            self.logger.info(f"✅ 최종 JSX 생성 완료: {len(final_sections)}개 컴포넌트")
+            return final_sections
+            
+        except Exception as e:
+            self.logger.error(f"섹션 처리 실패: {e}")
+            return self._create_fallback_sections()
+
+    async def _process_single_subsection(self, parent_section: Dict, sub_section: Dict, 
+                                       unified_patterns: Dict, optimization_result: Dict, 
+                                       section_index: int, subsection_index: int) -> Dict:
+        """개별 하위 섹션을 JSX로 변환"""
+        
+        try:
+            # ✅ 하위 섹션의 실제 콘텐츠 추출
+            sub_section_id = sub_section.get("sub_section_id", f"{section_index+1}-{subsection_index+1}")
+            title = sub_section.get("title", f"하위 섹션 {sub_section_id}")
+            subtitle = sub_section.get("subtitle", "")
+            content = sub_section.get("body", "")  # ✅ 실제 콘텐츠는 'body'에 있음
+            
+            # 상위 섹션 정보 포함
+            parent_title = parent_section.get("title", "")
+            combined_title = f"{parent_title}: {title}" if parent_title else title
+            
+            # 이미지 할당 (섹션 인덱스 기반)
+            section_key = f"section_{section_index}"
+            assigned_images = optimization_result.get("allocation_details", {}).get(section_key, {}).get("images", [])
+            
+            # JSX 생성을 위한 데이터 구성
+            enhanced_section_data = {
+                "section_id": sub_section_id,
+                "title": combined_title,
+                "subtitle": subtitle,
+                "content": content,  # ✅ 실제 콘텐츠 사용
+                "images": assigned_images[:5],  # 최대 5개 이미지
+                "layout_type": "subsection",
+                "metadata": {
+                    "is_subsection": True,
+                    "parent_section_id": parent_section.get("section_id"),
+                    "parent_section_title": parent_title
+                }
+            }
+            
+            # 템플릿 선택
+            template_code = await self.template_selector.analyze_and_select_template(enhanced_section_data)
+            
+            # JSX 생성
+            jsx_result = await self.jsx_generator.generate_jsx_from_template(
+                enhanced_section_data, template_code
+            )
+            
+            self.logger.info(f"✅ 하위 섹션 '{title}' JSX 생성 완료 (콘텐츠 길이: {len(content)}자)")
+            
+            return {
+                "title": combined_title,
+                "jsx_code": jsx_result.get("jsx_code", ""),
+                "metadata": jsx_result.get("metadata", {})
+            }
+            
+        except Exception as e:
+            self.logger.error(f"하위 섹션 처리 실패: {e}")
+            return self._create_fallback_section_data(sub_section.get("title", "섹션"))
+
+    async def _process_single_section_legacy(self, section: Dict, unified_patterns: Dict, 
+                                           optimization_result: Dict, section_index: int) -> Dict:
+        """기존 방식의 단일 섹션 처리 (sub_sections가 없는 경우)"""
+        
+        try:
+            section_id = section.get("section_id", str(section_index + 1))
+            title = section.get("title", f"섹션 {section_id}")
+            subtitle = section.get("subtitle", "")
+            content = section.get("content", section.get("body", ""))  # ✅ content 또는 body
+            
+            # 이미지 할당
+            section_key = f"section_{section_index}"
+            assigned_images = optimization_result.get("allocation_details", {}).get(section_key, {}).get("images", [])
+            
+            enhanced_section_data = {
+                "section_id": section_id,
+                "title": title,
+                "subtitle": subtitle,
+                "content": content,
+                "images": assigned_images[:5],
+                "layout_type": "standard",
+                "metadata": {
+                    "is_subsection": False
+                }
+            }
+            
+            # 템플릿 선택 및 JSX 생성
+            template_code = await self.template_selector.analyze_and_select_template(enhanced_section_data)
+            jsx_result = await self.jsx_generator.generate_jsx_from_template(enhanced_section_data, template_code)
+            
+            return {
+                "title": title,
+                "jsx_code": jsx_result.get("jsx_code", ""),
+                "metadata": jsx_result.get("metadata", {})
+            }
+            
+        except Exception as e:
+            self.logger.error(f"레거시 섹션 처리 실패: {e}")
+            return self._create_fallback_section_data(section.get("title", "섹션"))
+
+    async def _process_crew_results(self, crew_result):
+        """CrewAI 결과 안전하게 처리 (JSON 파싱 강화)"""
+        try:
+            if crew_result is None:
+                return "결과 없음"
+            
+            # CrewAI 결과에서 텍스트 추출
+            result_text = ""
+            if hasattr(crew_result, 'raw') and crew_result.raw:
+                result_text = crew_result.raw
+            elif hasattr(crew_result, 'result') and crew_result.result:
+                result_text = crew_result.result
+            elif hasattr(crew_result, 'output') and crew_result.output:
+                result_text = crew_result.output
+            else:
+                result_text = str(crew_result)
+            
+            # ✅ JSON 파싱 강화: 마크다운 코드 블록 제거
+            if isinstance(result_text, str):
+                # 마크다운 코드 블록 제거
+                json_match = re.search(r'```(?:json)?\s*([\s\S]+?)\s*```', result_text)
+                if json_match:
+                    result_text = json_match.group(1).strip()
+                
+                # JSON 파싱 시도
+                try:
+                    parsed_result = json.loads(result_text)
+                    return parsed_result
+                except json.JSONDecodeError as e:
+                    self.logger.warning(f"JSON 파싱 실패, 원본 텍스트 반환: {e}")
+                    return result_text
+            
+            return result_text if result_text else "분석 결과 없음"
+
+        except Exception as e:
+            self.logger.error(f"CrewAI 결과 처리 실패: {e}")
+            return f"결과 처리 실패: {e}"
+
+    # CrewAI 에이전트 생성 메서드들
     def _create_content_structure_agent_with_ai_search(self):
         """AI Search 통합 콘텐츠 구조 에이전트"""
         return Agent(
@@ -149,824 +847,140 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
             llm=self.llm,
             multimodal=True
         )
-    
-    async def _process_crew_results(self, crew_result):
-        """CrewAI 결과 안전하게 처리"""
-        try:
-            if crew_result is None:
-                return "결과 없음"
-            
-            # CrewOutput 객체인 경우
-            if hasattr(crew_result, 'raw'):
-                return crew_result.raw if crew_result.raw else "분석 결과 없음"
-            elif hasattr(crew_result, 'result'):
-                return crew_result.result if crew_result.result else "분석 결과 없음"
-            elif hasattr(crew_result, 'output'):
-                return crew_result.output if crew_result.output else "분석 결과 없음"
-            else:
-                return str(crew_result) if crew_result else "분석 결과 없음"
-        except Exception as e:
-            self.logger.error(f"CrewAI 결과 처리 실패: {e}")
-            return "결과 처리 실패"
-        
-    async def process_magazine_unified(self, magazine_content: Dict, image_analysis: List[Dict], 
-                                     available_templates: List[str], user_id: str = "unknown_user") -> Dict:
-        """AI Search 통합 매거진 처리 - 벡터 데이터와 멀티모달 분석의 완벽한 융합"""
-        
-        self.logger.info("=== AI Search 통합 멀티모달 매거진 처리 시작 ===")
-        
-        try:
-            # magazine_id가 있으면 Cosmos DB에서 최신 데이터 조회
-            if "magazine_id" in magazine_content:
-                magazine_data = await MagazineDBUtils.get_magazine_by_id(magazine_content["magazine_id"])
-                if magazine_data:
-                    magazine_content = magazine_data.get("content", magazine_content)
-                    
-                    # 이미지 분석 결과도 Cosmos DB에서 조회 (변경된 저장 방식 적용)
-                    image_analysis = await MagazineDBUtils.get_images_by_magazine_id(magazine_content["magazine_id"])
-            
-            # AI Search 벡터 검색으로 관련 패턴 사전 수집
-            relevant_patterns = await self._collect_relevant_ai_search_patterns(magazine_content, image_analysis, available_templates)
-            
-            # 1단계: AI Search 기반 멀티모달 분석 태스크 생성
-            content_analysis_task = Task(
-                description=f"""
-다음 매거진 콘텐츠와 이미지 분석 결과를 AI Search 벡터 데이터와 함께 분석하여 최적의 텍스트 구조를 설계하세요:
 
-**매거진 콘텐츠:**
-{json.dumps(magazine_content, ensure_ascii=False, indent=2)[:2000]}...
+    # CrewAI 태스크 생성 메서드들
+    def _create_content_analysis_task(self, llm_context, user_id):
+        return Task(
+            description=f"""
+다음 매거진 콘텐츠와 이미지 분석 결과를 통합 벡터 데이터와 함께 분석하여 최적의 텍스트 구조를 설계하세요:
 
-**이미지 분석 결과:**
-{json.dumps(image_analysis, ensure_ascii=False, indent=2)[:1000]}...
-
-**AI Search 관련 패턴:**
-{json.dumps(relevant_patterns.get("text_patterns", [])[:3], ensure_ascii=False, indent=2)}
-
-**사용 가능한 템플릿:**
-{available_templates}
-
-**AI Search 기반 분석 요구사항:**
-1. 벡터 검색 결과를 참조한 텍스트 내용의 주제별 구조 분석
-2. AI Search 패턴을 기반으로 한 각 섹션의 감정적 톤과 스타일 파악
-3. 벡터 데이터를 활용한 이미지와의 의미적 연관성 고려
-4. AI Search 레이아웃 패턴 기반 최적 구조 추천
-5. 벡터 검색 결과를 반영한 템플릿별 텍스트 배치 전략 수립
-6. AI Search 데이터 기반 글의 형태, 문장 길이, 글의 맺음 최적화
-7. 벡터 패턴을 참조한 제목, 부제목, 본문 구조 결정
+**종합 분석 요약:**
+{llm_context}
 
 **사용자 정보:**
 - 사용자 ID: {user_id}
 
+**통합 분석 요구사항:**
+1. AI Search + JSX 템플릿 + 매거진 레이아웃 패턴 기반 구조 분석
+2. 벡터 검색 결과를 활용한 최적 텍스트 배치
+3. 템플릿 선택을 위한 메타데이터 준비
+4. JSX 생성을 위한 구조화된 데이터 제공
+5. 공유 CLIP 세션 기반 의미적 연관성 고려
+
 **출력 형식:**
-- 구조화된 섹션별 분석 결과 (AI Search 패턴 반영)
-- 각 섹션의 제목, 부제목, 본문 정제 (벡터 데이터 기반)
-- 이미지 연관성 점수 포함 (AI Search 매칭)
-- 템플릿 매핑 추천 (벡터 검색 기반)
+- 구조화된 섹션별 분석 결과 (통합 패턴 반영)
+- 템플릿 선택을 위한 메타데이터 포함
+- JSX 생성 준비된 데이터 구조
 """,
-                expected_output="AI Search 강화 구조화된 텍스트 분석 결과 (JSON 형식)",
-                agent=self.content_structure_agent
-            )
-            
-            image_layout_task = Task(
-                description=f"""
-다음 이미지 분석 결과와 텍스트 내용을 AI Search 벡터 데이터와 함께 고려하여 최적의 이미지 배치 전략을 수립하세요:
+            expected_output="통합 벡터 패턴 기반 구조화된 텍스트 분석 결과 (JSON 형식)",
+            agent=self.content_structure_agent
+        )
 
-**이미지 분석 결과:**
-{json.dumps(image_analysis, ensure_ascii=False, indent=2)}
+    def _create_image_layout_task(self, llm_context):
+        return Task(
+            description=f"""
+다음 이미지 분석 결과와 텍스트 내용을 통합 벡터 데이터와 함께 고려하여 최적의 이미지 배치 전략을 수립하세요:
 
-**텍스트 맥락:**
-{json.dumps(magazine_content, ensure_ascii=False, indent=2)[:1500]}...
+**종합 분석 요약:**
+{llm_context}
 
-**AI Search 이미지 레이아웃 패턴:**
-{json.dumps(relevant_patterns.get("image_patterns", [])[:3], ensure_ascii=False, indent=2)}
-
-**AI Search 기반 배치 요구사항:**
-1. 벡터 검색 결과를 참조한 텍스트 내용과 이미지의 의미적 매칭
-2. AI Search 패턴 기반 시각적 균형을 고려한 이미지 크기 및 위치 결정
-3. 벡터 데이터를 활용한 독자의 시선 흐름을 고려한 배치 순서
-4. AI Search 레이아웃 패턴 기반 템플릿별 이미지 할당 최적화
-5. 벡터 검색 결과를 반영한 이미지 개수 및 크기 비율 결정
-6. AI Search 데이터 기반 이미지-텍스트 간격 최적화
+**통합 배치 요구사항:**
+1. AI Search + JSX 템플릿 + 매거진 레이아웃 패턴 기반 이미지 배치
+2. 벡터 검색 결과를 활용한 시각적 균형 최적화
+3. 템플릿별 이미지 할당 전략 수립
+4. JSX 컴포넌트 생성을 위한 배치 데이터 준비
+5. 공유 CLIP 세션 기반 이미지-텍스트 의미적 매칭
 
 **출력 형식:**
-- AI Search 패턴 기반 템플릿별 이미지 배치 전략
-- 벡터 데이터 참조 이미지-텍스트 의미적 연관성 점수
-- AI Search 기반 시각적 균형 최적화 방안
-- 벡터 검색 결과 반영 배치 우선순위 및 근거
-                """,
-                expected_output="AI Search 강화 구조화된 이미지 배치 전략 (JSON 형식)",
-                agent=self.image_layout_agent
-            )
-            
-            # 2단계: AI Search 통합 병렬 분석 실행
-            analysis_crew = Crew(
-                agents=[self.content_structure_agent, self.image_layout_agent],
-                tasks=[content_analysis_task, image_layout_task],
-                verbose=True
-            )
-            
-            analysis_results = await asyncio.get_event_loop().run_in_executor(
-                None, analysis_crew.kickoff
-            )
-
-            processed_results = self._safely_process_crew_results(analysis_results)
-            
-            # 3단계: AI Search 기반 의미적 조율 태스크
-            coordination_task = Task(
-                description=f"""
-                **AI Search 강화 텍스트 구조 분석 결과:**
-                {processed_results.get('content_analysis', '분석 결과 없음')}
-
-                **AI Search 강화 이미지 배치 전략:**
-                {processed_results.get('image_layout', '배치 전략 없음')}
-                """,
-                expected_output="AI Search 통합 최종 매거진 구조 (JSON 형식)",
-                agent=self.semantic_coordinator_agent
-            )
-            
-            # 4단계: AI Search 기반 최종 조율 실행
-            coordination_crew = Crew(
-                agents=[self.semantic_coordinator_agent],
-                tasks=[coordination_task],
-                verbose=True
-            )
-            
-            final_result = await asyncio.get_event_loop().run_in_executor(
-                None, coordination_crew.kickoff
-            )
-            
-            # 5단계: AI Search 통합 결과 후처리 및 검증
-            processed_result = await self._process_unified_result_with_ai_search(
-                final_result, magazine_content, image_analysis, available_templates, relevant_patterns, user_id
-            )
-            
-            # 처리된 결과를 Cosmos DB에 업데이트 - 매거진 콘텐츠만 저장
-            if "magazine_id" in magazine_content:
-                await MagazineDBUtils.update_magazine_content(magazine_content["magazine_id"], {
-                    "content": magazine_content,
-                    "processed_content": processed_result,
-                    "status": "processed"
-                })
-            
-            self.logger.info("=== AI Search 통합 멀티모달 매거진 처리 완료 ===")
-            
-            return processed_result
-            
-        except Exception as e:
-            self.logger.error(f"AI Search 통합 매거진 처리 실패: {e}")
-            return self._generate_ai_search_fallback_result(
-                magazine_content, image_analysis, available_templates, {}, e, user_id
-            )
-    
-    def _safely_process_crew_results(self, crew_results) -> Dict:
-        """CrewAI 결과를 안전하게 처리 (동기 방식으로 수정)"""
-        
-        try:
-            # CrewOutput 객체인지 확인
-            if hasattr(crew_results, 'tasks_output'):
-                # 여러 태스크 결과가 있는 경우
-                results = {}
-                tasks_output = crew_results.tasks_output
-                
-                # ✅ 비동기 호출 제거하고 동기 처리로 변경
-                if hasattr(tasks_output, '__getitem__'):
-                    try:
-                        # ✅ await 없이 직접 동기 처리
-                        results['content_analysis'] = self._process_crew_results_sync(tasks_output[0])
-                    except (IndexError, AttributeError):
-                        results['content_analysis'] = "분석 결과 없음"
-                    
-                    try:
-                        results['image_layout'] = self._process_crew_results_sync(tasks_output[1])
-                    except (IndexError, AttributeError):
-                        results['image_layout'] = "배치 전략 없음"
-                
-                return results
-                
-            # 단일 결과인 경우
-            elif hasattr(crew_results, 'raw') or hasattr(crew_results, 'output'):
-                single_result = self._process_crew_results_sync(crew_results)
-                return {
-                    'content_analysis': single_result,
-                    'image_layout': "단일 결과로 처리됨"
-                }
-            
-            # 리스트 형태인 경우 (기존 방식)
-            elif isinstance(crew_results, (list, tuple)):
-                results = {}
-                results['content_analysis'] = self._process_crew_results_sync(
-                    crew_results[0] if len(crew_results) > 0 else None
-                )
-                results['image_layout'] = self._process_crew_results_sync(
-                    crew_results[1] if len(crew_results) > 1 else None
-                )
-                return results
-            
-            else:
-                self.logger.warning(f"예상치 못한 CrewAI 결과 타입: {type(crew_results)}")
-                return {
-                    'content_analysis': "결과 처리 실패",
-                    'image_layout': "결과 처리 실패"
-                }
-                
-        except Exception as e:
-            self.logger.error(f"CrewAI 결과 처리 중 오류: {e}")
-            return {
-                'content_analysis': f"처리 오류: {str(e)}",
-                'image_layout': f"처리 오류: {str(e)}"
-            }
-
-    def _process_crew_results_sync(self, crew_result):
-        """CrewAI 결과 동기 처리 (비동기 버전의 동기 래퍼)"""
-        try:
-            if crew_result is None:
-                return "결과 없음"
-            
-            # CrewOutput 객체인 경우
-            if hasattr(crew_result, 'raw'):
-                return crew_result.raw if crew_result.raw else "분석 결과 없음"
-            elif hasattr(crew_result, 'result'):
-                return crew_result.result if crew_result.result else "분석 결과 없음"
-            elif hasattr(crew_result, 'output'):
-                return crew_result.output if crew_result.output else "분석 결과 없음"
-            else:
-                return str(crew_result) if crew_result else "분석 결과 없음"
-        except Exception as e:
-            self.logger.error(f"CrewAI 결과 처리 실패: {e}")
-            return "결과 처리 실패"
-
-
-
-
-    async def _collect_relevant_ai_search_patterns(self, magazine_content: Dict,
-                                             image_analysis: List[Dict],
-                                             available_templates: List[str]) -> Dict:
-        """AI Search 패턴 수집 + 이미지 다양성 최적화 통합"""
-        
-        sections = magazine_content.get("sections", [])
-        self.logger.info(f"AI Search 패턴 수집: {len(sections)}개 섹션, {len(image_analysis)}개 이미지")
-        
-        # ✅ 1단계: 이미지 다양성 최적화 적용
-        optimized_allocation = await self.image_diversity_manager.optimize_image_distribution(
-            image_analysis, sections
+- 통합 패턴 기반 이미지 배치 전략
+- 템플릿별 최적화된 이미지 할당
+- JSX 생성을 위한 배치 메타데이터
+            """,
+            expected_output="통합 벡터 패턴 기반 구조화된 이미지 배치 전략 (JSON 형식)",
+            agent=self.image_layout_agent
         )
-        
-        # ✅ 2단계: 템플릿 선택 (기존 로직 유지)
-        selected_templates = available_templates[:len(sections)]
-        if len(selected_templates) < len(sections):
-            while len(selected_templates) < len(sections):
-                selected_templates.extend(available_templates)
-            selected_templates = selected_templates[:len(sections)]
-        
-        # ✅ 최소 템플릿 보장
-        if not selected_templates:
-            selected_templates = [f"Section{i+1:02d}.jsx" for i in range(len(sections))]
-            self.logger.warning(f"사용 가능한 템플릿이 없어 기본 템플릿 생성: {selected_templates}")
-        
-        self.logger.info(f"할당된 템플릿: {selected_templates}")
-        
-        try:
-            # ✅ 3단계: AI Search 패턴 수집 (기존 기능 유지)
-            patterns = {
-                "text_patterns": [],
-                "image_patterns": [],
-                "integration_patterns": [],
-                "template_mapping": {},
-                "diversity_optimization": {}  # ✅ 다양성 최적화 정보 추가
-            }
-            
-            # ✅ 템플릿별 매핑 정보 생성 (기존 로직 유지)
-            for i, (section, template) in enumerate(zip(sections, selected_templates)):
-                section_key = f"section_{i}"
-                allocation_data = optimized_allocation.get(section_key, {"images": [], "diversity_score": 0.0})
-                
-                patterns["template_mapping"][section_key] = {
-                    "template": template,
-                    "section_title": section.get("title", f"섹션 {i+1}"),
-                    "section_index": i,
-                    "content_length": len(section.get("content", "")),
-                    "assigned": True,
-                    # ✅ 다양성 최적화 정보 추가
-                    "assigned_images": allocation_data["images"],
-                    "diversity_score": allocation_data.get("diversity_score", 0.0),
-                    "quality_score": allocation_data.get("avg_quality", 0.5),
-                    "image_count": len(allocation_data["images"])
-                }
-            
-            # ✅ 4단계: 텍스트 기반 패턴 검색 (기존 로직 유지 + 다양성 정보 통합)
-            if magazine_content and "sections" in magazine_content:
-                for i, section in enumerate(magazine_content["sections"][:len(selected_templates)]):
-                    content = section.get("content", "")[:200]
-                    section_title = section.get("title", f"섹션 {i+1}")
-                    
-                    # ✅ 다양성 최적화 정보를 검색 쿼리에 반영
-                    section_key = f"section_{i}"
-                    allocation_data = optimized_allocation.get(section_key, {})
-                    image_count = len(allocation_data.get("images", []))
-                    diversity_score = allocation_data.get("diversity_score", 0.0)
-                    
-                    # 개선된 검색 쿼리 (다양성 정보 포함)
-                    search_query = f"magazine text layout {section_title} {content} images:{image_count} diversity:{diversity_score:.2f}"
-                    clean_query = self.isolation_manager.clean_query_from_azure_keywords(search_query)
-                    
-                    text_patterns = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda q=clean_query: self.vector_manager.search_similar_layouts(q, "text-semantic-patterns-index", top_k=8)
-                    )
-                    
-                    isolated_text_patterns = self.isolation_manager.filter_contaminated_data(
-                        text_patterns, f"text_patterns_section_{i}_{section_title[:10]}"
-                    )
-                    
-                    # ✅ 패턴에 다양성 최적화 정보 추가
-                    for pattern in isolated_text_patterns:
-                        pattern["assigned_template"] = selected_templates[i]
-                        pattern["section_index"] = i
-                        pattern["section_title"] = section_title
-                        pattern["diversity_optimized"] = True
-                        pattern["assigned_images"] = allocation_data.get("images", [])
-                        pattern["diversity_score"] = diversity_score
-                    
-                    patterns["text_patterns"].extend(isolated_text_patterns)
-                    self.logger.debug(f"섹션 {i} ({section_title}): {len(isolated_text_patterns)}개 텍스트 패턴 수집")
-            
-            # ✅ 5단계: 이미지 기반 패턴 검색 (다양성 최적화된 이미지 사용)
-            if image_analysis:
-                for i, template in enumerate(selected_templates):
-                    section_key = f"section_{i}"
-                    allocation_data = optimized_allocation.get(section_key, {"images": []})
-                    section_images = allocation_data["images"]  # ✅ 다양성 최적화된 이미지 사용
-                    
-                    for j, image in enumerate(section_images):
-                        location = image.get("location", "")
-                        image_name = image.get("image_name", f"image_{i}_{j}")
-                        quality_score = image.get("overall_quality", 0.5)
-                        
-                        # ✅ 품질 정보를 포함한 검색 쿼리
-                        search_query = f"magazine image layout {template} {location} {image_name} quality:{quality_score:.2f}"
-                        clean_query = self.isolation_manager.clean_query_from_azure_keywords(search_query)
-                        
-                        image_patterns = await asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda q=clean_query: self.vector_manager.search_similar_layouts(q, "magazine-vector-index", top_k=8)
-                        )
-                        
-                        isolated_image_patterns = self.isolation_manager.filter_contaminated_data(
-                            image_patterns, f"image_patterns_template_{i}_{j}"
-                        )
-                        
-                        # ✅ 이미지 패턴에 다양성 정보 추가
-                        for pattern in isolated_image_patterns:
-                            pattern["assigned_template"] = template
-                            pattern["section_index"] = i
-                            pattern["image_index"] = j
-                            pattern["image_name"] = image_name
-                            pattern["diversity_optimized"] = True
-                            pattern["quality_score"] = quality_score
-                            pattern["perceptual_hash"] = image.get("perceptual_hash", "")
-                        
-                        patterns["image_patterns"].extend(isolated_image_patterns)
-                    
-                    self.logger.debug(f"템플릿 {template} (섹션 {i}): {len(section_images)}개 최적화된 이미지, 패턴 수집 완료")
-            
-            # ✅ 6단계: 통합 패턴 검색 (다양성 최적화 정보 포함)
-            total_sections = len(selected_templates)
-            total_images_used = sum(len(optimized_allocation.get(f"section_{i}", {}).get("images", [])) 
-                                for i in range(total_sections))
-            template_types = list(set(selected_templates))
-            avg_diversity = np.mean([optimized_allocation.get(f"section_{i}", {}).get("diversity_score", 0.0) 
-                                    for i in range(total_sections)])
-            
-            integration_query = f"magazine integration {total_sections} sections {total_images_used} images diversity:{avg_diversity:.2f} templates {' '.join(template_types[:3])}"
-            clean_integration_query = self.isolation_manager.clean_query_from_azure_keywords(integration_query)
-            
-            integration_patterns = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: self.vector_manager.search_similar_layouts(clean_integration_query, "magazine-vector-index", top_k=5)
-            )
-            
-            isolated_integration_patterns = self.isolation_manager.filter_contaminated_data(
-                integration_patterns, "integration_patterns_diversity_optimized"
-            )
-            
-            # ✅ 통합 패턴에 다양성 정보 추가
-            for pattern in isolated_integration_patterns:
-                pattern["diversity_optimization_applied"] = True
-                pattern["total_images_used"] = total_images_used
-                pattern["average_diversity_score"] = avg_diversity
-            
-            patterns["integration_patterns"] = isolated_integration_patterns
-            
-            # ✅ 7단계: 다양성 최적화 정보 저장
-            patterns["diversity_optimization"] = {
-                "applied": True,
-                "total_images_processed": len(image_analysis),
-                "total_images_used": total_images_used,
-                "utilization_rate": total_images_used / len(image_analysis) if image_analysis else 0,
-                "average_diversity_score": avg_diversity,
-                "optimization_stats": self.image_diversity_manager.get_optimization_statistics(),
-                "allocation_details": optimized_allocation
-            }
-            
-            # ✅ 8단계: 최적화된 조합 생성 (기존 형식과 호환)
-            optimal_combinations = []
-            for i, template in enumerate(selected_templates):
-                section_key = f"section_{i}"
-                allocation_data = optimized_allocation.get(section_key, {"images": []})
-                
-                optimal_combinations.append({
-                    "template": template,
-                    "assigned_images": allocation_data["images"],
-                    "diversity_optimized": True,
-                    "diversity_score": allocation_data.get("diversity_score", 0.0),
-                    "quality_score": allocation_data.get("avg_quality", 0.5),
-                    "image_count": len(allocation_data["images"])
-                })
-            
-            patterns["optimal_combinations"] = optimal_combinations
-            
-            # ✅ 결과 로깅 (개선된 정보)
-            self.logger.info(f"AI Search 패턴 수집 + 다양성 최적화 완료:")
-            self.logger.info(f"  - 할당된 템플릿: {selected_templates}")
-            self.logger.info(f"  - 이미지 활용률: {patterns['diversity_optimization']['utilization_rate']:.2%}")
-            self.logger.info(f"  - 평균 다양성 점수: {avg_diversity:.3f}")
-            self.logger.info(f"  - 텍스트 패턴: {len(patterns['text_patterns'])}개")
-            self.logger.info(f"  - 이미지 패턴: {len(patterns['image_patterns'])}개")
-            self.logger.info(f"  - 통합 패턴: {len(patterns['integration_patterns'])}개")
-            
-            return patterns
-            
-        except Exception as e:
-            self.logger.error(f"AI Search 패턴 수집 + 다양성 최적화 실패: {e}")
-            # ✅ 폴백: 기존 방식으로 처리
-            return await self._fallback_pattern_collection(magazine_content, image_analysis, available_templates)
 
-    # ✅ 폴백 메서드 추가
-    async def _fallback_pattern_collection(self, magazine_content: Dict, 
-                                        image_analysis: List[Dict], 
-                                        available_templates: List[str]) -> Dict:
-        """폴백: 기존 방식의 패턴 수집"""
-        self.logger.warning("폴백 모드: 기존 패턴 수집 방식 사용")
-        
-        sections = magazine_content.get("sections", [])
-        selected_templates = available_templates[:len(sections)]
-        
-        # 기본 순차 이미지 할당
-        images_per_section = max(1, len(image_analysis) // len(selected_templates)) if selected_templates else 1
-        
-        optimal_combinations = []
-        for i, template in enumerate(selected_templates):
-            start_idx = i * images_per_section
-            end_idx = min(start_idx + images_per_section, len(image_analysis))
-            assigned_images = image_analysis[start_idx:end_idx]
-            
-            optimal_combinations.append({
-                "template": template,
-                "assigned_images": assigned_images,
-                "diversity_optimized": False,
-                "diversity_score": 0.0,
-                "quality_score": 0.5,
-                "image_count": len(assigned_images),
-                "fallback_used": True
-            })
-        
+    def _create_coordination_task(self, coordination_context: str) -> Task:
+        """의미적 조율 태스크 생성"""
+        return Task(
+            description=coordination_context,
+            expected_output="텍스트와 이미지가 완벽하게 조율된 최종 매거진 구조 (JSON 형식)",
+            agent=self.semantic_coordinator_agent
+        )
+
+    # 폴백 메서드들
+    def _create_fallback_section_data(self, title: str) -> Dict:
+        """폴백 섹션 데이터 생성"""
         return {
-            "selected_templates": selected_templates,
-            "optimal_combinations": optimal_combinations,
-            "text_patterns": [],
-            "image_patterns": [],
-            "integration_patterns": [],
-            "template_mapping": {},
-            "diversity_optimization": {
-                "applied": False,
-                "fallback_used": True,
-                "error": "다양성 최적화 실패"
+            "title": title,
+            "jsx_code": f"""
+            export default function DefaultSection(props) {{
+              return (
+                <div className="section-container p-4 my-8">
+                  <h2 className="text-2xl font-bold mb-2">{title}</h2>
+                  <div className="content" dangerouslySetInnerHTML={{{{ __html: props.content }}}} />
+                </div>
+              );
+            }}
+            """,
+            "metadata": {
+                "template_applied": False,
+                "generation_method": "fallback",
+                "error": "섹션 처리 중 오류 발생"
             }
         }
-            
 
-    
-    async def _process_unified_result_with_ai_search(self, crew_result: Any, magazine_content: Dict,
-                                                   image_analysis: List[Dict], available_templates: List[str],
-                                                   ai_search_patterns: Dict, user_id: str = "unknown_user") -> Dict:
-        """AI Search 통합 결과 후처리"""
-        
-        try:
-            # CrewAI 결과 안전하게 추출
-            if hasattr(crew_result, 'raw'):
-                result_content = crew_result.raw
-            elif hasattr(crew_result, 'result'):
-                result_content = crew_result.result
-            elif hasattr(crew_result, 'output'):
-                result_content = crew_result.output
-            else:
-                result_content = str(crew_result)
-            
-            # 결과 파싱
-            if isinstance(result_content, str):
-                try:
-                    parsed_result = json.loads(result_content)
-                except json.JSONDecodeError:
-                    # JSON 파싱 실패 시 AI Search 패턴 기반 기본 구조 생성
-                    parsed_result = self._generate_ai_search_based_structure(
-                        magazine_content, image_analysis, available_templates, ai_search_patterns
-                    )
-            else:
-                parsed_result = result_content if isinstance(result_content, dict) else {}
-            
-            # 기본 구조 확인 및 보완
-            if not isinstance(parsed_result, dict):
-                parsed_result = self._generate_ai_search_based_structure(
-                    magazine_content, image_analysis, available_templates, ai_search_patterns
-                )
-            
-            # 필수 필드 보장
-            if "content_sections" not in parsed_result:
-                parsed_result["content_sections"] = []
-            if "selected_templates" not in parsed_result:
-                parsed_result["selected_templates"] = available_templates[:len(parsed_result["content_sections"])]
-            
-            # 사용자 ID 추가
-            parsed_result["user_id"] = user_id
-            
-            # AI Search 강화 메타데이터 추가
-            parsed_result["integration_metadata"] = {
-                "source": "unified_multimodal_agent_ai_search",
-                "total_sections": len(parsed_result["content_sections"]),
-                "multimodal_processing": True,
-                "semantic_optimization": True,
-                "ai_search_enhanced": True,
-                "vector_patterns_used": True,
-                "isolation_applied": True,
-                "agent_integration": {
-                    "content_structure": True,
-                    "image_layout": True,
-                    "semantic_coordination": True,
-                    "ai_search_integration": True
-                },
-                "ai_search_patterns": {
-                    "text_patterns_count": len(ai_search_patterns.get("text_patterns", [])),
-                    "image_patterns_count": len(ai_search_patterns.get("image_patterns", [])),
-                    "integration_patterns_count": len(ai_search_patterns.get("integration_patterns", []))
+    def _create_fallback_sections(self) -> List[Dict]:
+        """폴백 섹션들 생성"""
+        return [
+            {
+                "title": "기본 섹션",
+                "jsx_code": """
+                export default function DefaultSection(props) {
+                  return (
+                    <div className="section-container p-4 my-8">
+                      <h2 className="text-2xl font-bold mb-2">기본 섹션</h2>
+                      <div className="content" dangerouslySetInnerHTML={{ __html: props.content }} />
+                    </div>
+                  );
                 }
-            }
-            
-            # AI Search 패턴 기반 섹션 강화
-            enhanced_sections = await self._enhance_sections_with_ai_search(
-                parsed_result["content_sections"], ai_search_patterns
-            )
-            parsed_result["content_sections"] = enhanced_sections
-            
-            return parsed_result
-            
-        except Exception as e:
-            self.logger.error(f"AI Search 통합 결과 처리 실패: {e}")
-            
-            # AI Search 기반 폴백 결과 생성
-            return self._generate_ai_search_fallback_result(
-                magazine_content, image_analysis, available_templates, ai_search_patterns, e, user_id
-            )
-    
-    def _generate_ai_search_based_structure(self, magazine_content: Dict, image_analysis: List[Dict],
-                                          available_templates: List[str], ai_search_patterns: Dict) -> Dict:
-        """AI Search 패턴 기반 기본 구조 생성"""
-        
-        sections = []
-        text_patterns = ai_search_patterns.get("text_patterns", [])
-        image_patterns = ai_search_patterns.get("image_patterns", [])
-        
-        # 원본 콘텐츠에서 섹션 생성
-        original_sections = magazine_content.get("sections", [])
-        
-        for i, template in enumerate(available_templates[:len(original_sections)]):
-            original_section = original_sections[i] if i < len(original_sections) else {}
-            
-            # AI Search 패턴 기반 섹션 생성
-            section = {
-                "template": template,
-                "title": original_section.get("title", f"여행 이야기 {i+1}"),
-                "subtitle": "특별한 순간들",
-                "body": original_section.get("content", "멋진 여행 경험을 공유합니다.")[:500],
-                "tagline": "TRAVEL & CULTURE",
-                "images": [],
+                """,
                 "metadata": {
-                    "ai_search_enhanced": True,
-                    "text_patterns_applied": len(text_patterns) > 0,
-                    "image_patterns_applied": len(image_patterns) > 0
+                    "template_applied": False,
+                    "generation_method": "fallback",
+                    "error": "전체 섹션 처리 실패"
                 }
             }
-            
-            # AI Search 패턴 기반 개선
-            if text_patterns and i < len(text_patterns):
-                pattern = text_patterns[i]
-                section["title"] = self._apply_text_pattern_to_title(section["title"], pattern)
-                section["body"] = self._apply_text_pattern_to_body(section["body"], pattern)
-            
-            # 이미지 할당 (AI Search 패턴 기반)
-            if image_analysis and i < len(image_analysis):
-                assigned_images = image_analysis[i:i+2]  # 최대 2개 이미지
-                section["images"] = [img.get("image_url", "") for img in assigned_images if img.get("image_url")]
-            
-            sections.append(section)
-        
-        return {
-            "selected_templates": available_templates[:len(sections)],
-            "content_sections": sections
-        }
-    
-    def _apply_text_pattern_to_title(self, original_title: str, pattern: Dict) -> str:
-        """AI Search 패턴을 제목에 적용"""
-        
-        title_style = pattern.get("title_style", "")
-        if "descriptive" in title_style:
-            return f"{original_title}: 특별한 발견"
-        elif "emotional" in title_style:
-            return f"{original_title}의 감동"
-        else:
-            return original_title
-    
-    def _apply_text_pattern_to_body(self, original_body: str, pattern: Dict) -> str:
-        """AI Search 패턴을 본문에 적용"""
-        
-        text_style = pattern.get("text_structure", "")
-        conclusion_style = pattern.get("conclusion_style", "")
-        
-        enhanced_body = original_body
-        
-        # 글의 맺음 스타일 적용
-        if conclusion_style == "reflective":
-            enhanced_body += " 이 순간들이 오래도록 기억에 남을 것입니다."
-        elif conclusion_style == "inspiring":
-            enhanced_body += " 새로운 여행에 대한 영감을 얻게 됩니다."
-        
-        return enhanced_body
-    
-    async def _enhance_sections_with_ai_search(self, sections: List[Dict], ai_search_patterns: Dict) -> List[Dict]:
-        """AI Search 패턴으로 섹션 강화"""
-        
-        enhanced_sections = []
-        text_patterns = ai_search_patterns.get("text_patterns", [])
-        image_patterns = ai_search_patterns.get("image_patterns", [])
-        
-        for i, section in enumerate(sections):
-            enhanced_section = section.copy()
-            
-            # AI Search 텍스트 패턴 적용
-            if text_patterns and i < len(text_patterns):
-                pattern = text_patterns[i]
-                enhanced_section = self._apply_ai_search_text_pattern(enhanced_section, pattern)
-            
-            # AI Search 이미지 패턴 적용
-            if image_patterns and i < len(image_patterns):
-                pattern = image_patterns[i]
-                enhanced_section = self._apply_ai_search_image_pattern(enhanced_section, pattern)
-            
-            # AI Search 메타데이터 추가
-            enhanced_section["ai_search_metadata"] = {
-                "text_pattern_applied": i < len(text_patterns),
-                "image_pattern_applied": i < len(image_patterns),
-                "pattern_source": "ai_search_vector_database"
-            }
-            
-            enhanced_sections.append(enhanced_section)
-        
-        return enhanced_sections
-    
-    def _apply_ai_search_text_pattern(self, section: Dict, pattern: Dict) -> Dict:
-        """AI Search 텍스트 패턴을 섹션에 적용"""
-        
-        # 문장 길이 패턴 적용
-        sentence_length = pattern.get("sentence_length", "medium")
-        if sentence_length == "short":
-            # 짧은 문장으로 변환
-            body = section.get("body", "")
-            sentences = body.split(". ")
-            if len(sentences) > 2:
-                section["body"] = ". ".join(sentences[:2]) + "."
-        
-        # 글의 형태 패턴 적용
-        text_structure = pattern.get("text_structure", "narrative")
-        if text_structure == "descriptive":
-            section["subtitle"] = f"{section.get('subtitle', '')}: 생생한 현장"
-        elif text_structure == "conversational":
-            section["subtitle"] = f"{section.get('subtitle', '')}: 이야기가 있는 곳"
-        
-        return section
-    
-    def _apply_ai_search_image_pattern(self, section: Dict, pattern: Dict) -> Dict:
-        """AI Search 이미지 패턴을 섹션에 적용"""
-        
-        # 이미지 크기 패턴 적용
-        image_size = pattern.get("image_size", "medium")
-        placement = pattern.get("placement", "top")
-        
-        # 레이아웃 설정에 AI Search 패턴 반영
-        if "layout_config" not in section:
-            section["layout_config"] = {}
-        
-        section["layout_config"].update({
-            "ai_search_image_size": image_size,
-            "ai_search_placement": placement,
-            "pattern_enhanced": True
-        })
-        
-        return section
-    
-    def _generate_ai_search_fallback_result(self, magazine_content: Dict, image_analysis: List[Dict],
-                                      available_templates: List[str], ai_search_patterns: Dict, error: Exception, user_id: str) -> Dict:
-        """AI Search 기반 폴백 결과 생성 (원본 데이터 활용)"""
-        
-        try:
-            # 원본 섹션 활용
-            original_sections = magazine_content.get("sections", [])
-            fallback_sections = []
-            
-            for i, template in enumerate(available_templates[:len(original_sections)]):
-                original_section = original_sections[i] if i < len(original_sections) else {}
-                
-                # 기본 섹션 구조 생성
-                section = {
-                    "template": template,
-                    "title": original_section.get("title", f"여행 이야기 {i+1}"),
-                    "subtitle": "특별한 순간들",
-                    "body": original_section.get("content", "멋진 여행 경험을 공유합니다.")[:500],
-                    "tagline": "TRAVEL & CULTURE",
-                    "images": self._assign_fallback_images(image_analysis, i),
-                    "metadata": {
-                        "fallback_mode": True,
-                        "error_handled": str(error),
-                        "original_content_preserved": True,
-                        "original_title_used": bool(original_section.get("title")),
-                        "original_content_used": bool(original_section.get("content"))
-                    }
-                }
-                
-                fallback_sections.append(section)
-            
-            return {
-                "user_id": user_id,  # 사용자 ID 추가
-                "selected_templates": available_templates[:len(fallback_sections)],
-                "content_sections": fallback_sections,
-                "integration_metadata": {
-                    "source": "unified_multimodal_agent_fallback",
-                    "total_sections": len(fallback_sections),
-                    "multimodal_processing": False,
-                    "semantic_optimization": False,
-                    "ai_search_enhanced": False,
-                    "vector_patterns_used": False,
-                    "isolation_applied": True,
-                    "error_details": {
-                        "error_type": error.__class__.__name__,
-                        "error_message": str(error)
-                    },
-                    "fallback_stats": {
-                        "templates_available": len(available_templates),
-                        "images_available": len(image_analysis),
-                        "sections_generated": len(fallback_sections)
-                    }
-                }
-            }
-        except Exception as e:
-            self.logger.error(f"AI Search 폴백 결과 생성 실패: {e}")
-            return {
-                "user_id": user_id,
-                "selected_templates": [],
-                "content_sections": [],
-                "integration_metadata": {
-                    "source": "unified_multimodal_agent_fallback",
-                    "total_sections": 0,
-                    "multimodal_processing": False,
-                    "semantic_optimization": False,
-                    "ai_search_enhanced": False,
-                    "vector_patterns_used": False,
-                    "isolation_applied": True,
-                    "error_details": {
-                        "error_type": e.__class__.__name__,
-                        "error_message": str(e)
-                    },
-                    "fallback_stats": {
-                        "templates_available": 0,
-                        "images_available": 0,
-                        "sections_generated": 0
-                    }
-                }
-            }
+        ]
 
-    def _assign_fallback_images(self, image_analysis: List[Dict], section_index: int) -> List[str]:
-        """폴백 모드에서 이미지 할당"""
-        
-        if not image_analysis:
-            return []
-        
-        # 섹션별로 이미지 분배 (최대 2개씩)
-        start_index = section_index * 2
-        end_index = start_index + 2
-        
-        assigned_images = []
-        for i in range(start_index, min(end_index, len(image_analysis))):
-            image = image_analysis[i]
-            image_url = image.get("image_url", "")
-            if image_url:
-                assigned_images.append(image_url)
-        
-        return assigned_images
+    def _create_fallback_result(self, magazine_content: Dict, image_analysis: List[Dict]) -> Dict:
+        """전체 처리 실패 시 폴백 결과 생성"""
+        return {
+            "content_sections": self._create_fallback_sections(),
+            "processing_metadata": {
+                "unified_processing": False,
+                "template_selection_integrated": False,
+                "jsx_generation_integrated": False,
+                "total_sections": 1,
+                "error": "통합 매거진 처리 실패",
+                "fallback_used": True
+            }
+        }
+
+    def _create_fallback_content_result(self, magazine_content: Dict) -> str:
+        """콘텐츠 구조 분석 실패 시 기본 결과 생성"""
+        sections = magazine_content.get("sections", [])
+        result = {
+            "analysis": "fallback_content_analysis",
+            "sections": [
+                {
+                    "title": section.get("title", f"섹션 {i+1}"),
+                    "subtitle": section.get("subtitle", ""),
+                    "content_summary": section.get("content", "")[:100] + "...",
+                    "recommended_template": "DefaultTemplate.jsx"
+                }
+                for i, section in enumerate(sections)
+            ],
+            "status": "fallback"
+        }
+        return json.dumps(result)

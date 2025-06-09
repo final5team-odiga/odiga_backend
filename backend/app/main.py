@@ -24,8 +24,6 @@ async def main():
     try:
         system_coordinator = SystemCoordinator()
         
-        # PDFVectorManager를 초기화하고 인덱스 연결 상태 확인
-        pdf_vector_manager = PDFVectorManager()
         # 매거진 생성 실행
         final_result = await system_coordinator.coordinate_complete_magazine_generation()
 

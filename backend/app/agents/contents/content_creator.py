@@ -1,5 +1,7 @@
 import asyncio
-from typing import Dict, List, Any
+import re
+import json
+from typing import Dict, List, Any, Tuple
 from crewai import Agent, Task, Crew
 from custom_llm import get_azure_llm
 from agents.contents.interview_agent import InterviewAgentManager
@@ -99,16 +101,88 @@ class ContentCreatorV2Agent:
             llm=self.llm
         )
 
-    async def create_magazine_content(self, texts: List[str], image_analysis_results: List[Dict]) -> str:
+    def _parse_input_text_to_qa_map(self, raw_text: str) -> Dict[str, str]:
+        """
+        질문-답변 형식의 텍스트를 파싱하여 질문(Key)과 답변(Value)의 딕셔너리로 만듭니다.
+        질문에서 'qN' 접두어와 '{placeholder}'는 제거됩니다.
+        """
+        self.logger.info("입력 텍스트를 질문-답변 맵으로 파싱 시작")
+        print("\n=== 질문-답변 텍스트 파싱 시작 ===")
+        print(f"- 입력 텍스트 길이: {len(raw_text)} 자")
+
+        def clean_question(q_text: str) -> str:
+            # 원본 질문 저장
+            original = q_text.strip()
+            
+            # 'qN' 같은 접두어 제거
+            q_text = re.sub(r'^q\d+\s*', '', q_text)
+            
+            # '{...}' 같은 플레이스홀더에서 중괄호만 제거
+            q_text = q_text.replace('{', '').replace('}', '')
+            
+            # 앞뒤 공백 및 ':' 제거
+            cleaned = q_text.strip().replace(':', '').strip()
+            
+            if original != cleaned:
+                print(f"  * 질문 정규화: '{original}' -> '{cleaned}'")
+            
+            return cleaned
+
+        # 정규표현식을 사용하여 다음 패턴을 찾음:
+        # "q[숫자] [질문]" 다음에 줄바꿈, 그리고 선택적으로 ":"가 오는 경우
+        pattern = re.compile(r'^(q\d+.*?)\n(?::\s*)?((?:.|\n)*?)(?=^q\d+\s|\Z)', re.MULTILINE)
+        matches = pattern.findall(raw_text)
+
+        if not matches:
+            self.logger.warning("입력 텍스트에서 질문-답변 패턴을 찾지 못했습니다.")
+            print("⚠️ 질문-답변 패턴 매칭 실패!")
+            print("- 정규표현식 패턴: " + pattern.pattern)
+            print("- 원본 텍스트 일부:")
+            print("---")
+            print(raw_text[:200] + ("..." if len(raw_text) > 200 else ""))
+            print("---")
+            return {}
+
+        print(f"✓ {len(matches)}개의 질문-답변 패턴 매칭 성공")
+        
+        qa_map = {}
+        for i, (q, a) in enumerate(matches):
+            cleaned_q = clean_question(q)
+            
+            # 답변에서 '여행의 간단한 경로' 부분 필터링
+            trip_path_marker = "여행의 간단한 경로"
+            if trip_path_marker in a:
+                a = a.split(trip_path_marker)[0]
+            
+            cleaned_a = a.strip()
+            
+            qa_map[cleaned_q] = cleaned_a
+            
+            print(f"\n질문-답변 쌍 #{i+1}:")
+            print(f"- 원본 질문: '{q.strip()}'")
+            print(f"- 정규화된 질문: '{cleaned_q}'")
+            print(f"- 답변 (일부): '{cleaned_a[:50].replace(chr(10), ' ')}...'")
+            
+        self.logger.info(f"{len(qa_map)}개의 질문-답변 쌍을 성공적으로 파싱했습니다.")
+        print(f"=== 질문-답변 텍스트 파싱 완료: {len(qa_map)}개의 쌍 생성 ===\n")
+        return qa_map
+
+    async def create_magazine_content(self, raw_user_input, image_analysis_results: List[Dict]) -> str:
         """텍스트와 이미지 분석 결과를 바탕으로 매거진 콘텐츠 생성 - 첫 번째 에이전트 (로그 수집만 - 비동기 처리)"""
         print("\n=== ContentCreatorV2: 첫 번째 에이전트 - 콘텐츠 생성 및 로그 수집 시작 (비동기 처리) ===")
         
+        # 입력 파싱
+        qa_map = self._parse_input_text_to_qa_map(raw_user_input)
+        if not qa_map:
+            self.logger.error("파싱된 질문-답변이 없어 콘텐츠 생성을 중단합니다.")
+            return json.dumps({"error": "No valid Q&A pairs found in input."})
+
         # 1단계와 2단계: 인터뷰와 에세이 형식 병렬 처리
         print("1-2단계: 인터뷰와 에세이 형식 콘텐츠 병렬 생성 (비동기)")
         
         # 병렬 처리
-        interview_task = self._process_interview_async(texts)
-        essay_task = self._process_essay_async(texts)
+        interview_task = self._process_interview_async(qa_map)
+        essay_task = self._process_essay_async(qa_map)
         image_task = self._process_image_analysis_async(image_analysis_results)
         
         interview_results, essay_results, image_info = await asyncio.gather(
@@ -122,7 +196,7 @@ class ContentCreatorV2Agent:
         )
         
         # 콘텐츠 활용 검증
-        await self._verify_content_completeness_async(interview_results, essay_results, texts)
+        await self._verify_content_completeness_async(interview_results, essay_results, qa_map)
         
         # 새로운 3단계: 콘텐츠 분석 및 구조 설계
         print("3단계: 콘텐츠 분석 및 구조 설계 (동적 섹션 결정)")
@@ -147,7 +221,7 @@ class ContentCreatorV2Agent:
         
         # 최종 통합 콘텐츠 생성 로깅
         await self._log_final_content_async(
-            final_content, interview_results, essay_results, image_analysis_results, texts, semantic_connections
+            final_content, interview_results, essay_results, image_analysis_results, qa_map, semantic_connections
         )
         
         print(f"📝 ContentCreatorV2 (첫 번째 에이전트) 로그 수집 완료 (비동기)")
@@ -427,16 +501,16 @@ class ContentCreatorV2Agent:
         
         return len(common_words) / max(len(total_words), 1)
 
-    async def _process_interview_async(self, texts: List[str]) -> Dict[str, str]:
+    async def _process_interview_async(self, qa_map: Dict[str, str]) -> Dict[str, str]:
         """인터뷰 형식 처리 (비동기)"""
         return await asyncio.get_event_loop().run_in_executor(
-            None, self.interview_manager.process_all_interviews, texts
+            None, self.interview_manager.process_all_interviews, qa_map
         )
 
-    async def _process_essay_async(self, texts: List[str]) -> Dict[str, str]:
+    async def _process_essay_async(self, qa_map: Dict[str, str]) -> Dict[str, str]:
         """에세이 형식 처리 (비동기)"""
         return await asyncio.get_event_loop().run_in_executor(
-            None, self.essay_manager.run_all, texts
+            None, self.essay_manager.run_all, qa_map
         )
 
     async def _process_image_analysis_async(self, image_analysis_results: List[Dict]) -> str:
@@ -647,9 +721,34 @@ class ContentCreatorV2Agent:
 
     def _assemble_final_magazine_content(self, structure_plan: Dict, sections: List[Dict]) -> str:
         """최종 매거진 콘텐츠 조합"""
-        
+
+        def sort_key(section: Dict) -> Tuple[int, int]:
+            """섹션 및 하위 섹션을 올바르게 정렬하기 위한 키 함수"""
+            # 하위 섹션인 경우 (e.g., "1-1")
+            sub_section_id = section.get('sub_section_id')
+            if sub_section_id and '-' in str(sub_section_id):
+                try:
+                    parts = str(sub_section_id).split('-', 1)
+                    parent_id = int(parts[0])
+                    sub_id = int(parts[1])
+                    return (parent_id, sub_id)
+                except (ValueError, IndexError):
+                    return (999, 999)  # Fallback for malformed IDs
+
+            # 일반 섹션인 경우 (e.g., "1")
+            section_id = section.get('section_id')
+            if section_id:
+                try:
+                    # section_id가 숫자가 아닐 수 있는 경우를 대비
+                    return (int(section_id), 0)
+                except (ValueError, TypeError):
+                    return (999, 0)  # Fallback for malformed IDs
+            
+            # ID가 없는 예외 케이스
+            return (999, 999)
+
         # 섹션을 ID 기준으로 정렬
-        sections.sort(key=lambda x: x.get('section_id', '0'))
+        sections.sort(key=sort_key)
         
         # 최종 매거진 콘텐츠 구조 생성
         magazine_content = {
@@ -736,10 +835,10 @@ class ContentCreatorV2Agent:
         
         return "\n".join(formatted_info) if formatted_info else "의미적 연결 정보 없음"
 
-    async def _verify_content_completeness_async(self, interview_results: Dict[str, str], essay_results: Dict[str, str], original_texts: List[str]):
+    async def _verify_content_completeness_async(self, interview_results: Dict[str, str], essay_results: Dict[str, str], qa_map: Dict[str, str]):
         """콘텐츠 완전성 검증 (비동기)"""
         await asyncio.get_event_loop().run_in_executor(
-            None, self._verify_content_completeness, interview_results, essay_results, original_texts
+            None, self._verify_content_completeness, interview_results, essay_results, qa_map
         )
 
     async def _verify_final_content_as_first_agent_async(self, final_content: str, interview_results: Dict[str, str], essay_results: Dict[str, str]):
@@ -750,7 +849,7 @@ class ContentCreatorV2Agent:
 
     async def _log_final_content_async(self, final_content: str, interview_results: Dict[str, str],
                                      essay_results: Dict[str, str], image_analysis_results: List[Dict], 
-                                     texts: List[str], semantic_connections: Dict):
+                                     qa_map: Dict[str, str], semantic_connections: Dict):
         """최종 통합 콘텐츠 생성 로깅 (새로운 방식 적용)"""
         # ✅ LoggingManager 인스턴스 생성
         
@@ -762,7 +861,7 @@ class ContentCreatorV2Agent:
             response_data=final_content,  # ✅ 실제 응답 데이터만 저장
             metadata={
                 "final_content_length": len(final_content),
-                "content_expansion_ratio": len(final_content) / sum(len(text) for text in texts) if texts else 0,
+                "content_expansion_ratio": len(final_content) / sum(len(text) for text in qa_map.values()) if qa_map else 0,
                 "integration_success": len(interview_results) > 0 and len(essay_results) > 0,
                 "image_integration_count": len(image_analysis_results),
                 "semantic_connections_count": sum(len(v) if isinstance(v, list) else 0 for v in semantic_connections.values()),
@@ -849,12 +948,12 @@ class ContentCreatorV2Agent:
         
         return "\n".join(image_summaries)
 
-    def _verify_content_completeness(self, interview_results: Dict[str, str], essay_results: Dict[str, str], original_texts: List[str]):
+    def _verify_content_completeness(self, interview_results: Dict[str, str], essay_results: Dict[str, str], qa_map: Dict[str, str]):
         """콘텐츠 완전성 검증"""
         print("ContentCreatorV2 (첫 번째 에이전트): 콘텐츠 완전성 검증")
         
         # 원본 텍스트 길이
-        total_original_length = sum(len(text) for text in original_texts)
+        total_original_length = sum(len(text) for text in qa_map.values())
         
         # 인터뷰 결과 길이
         total_interview_length = sum(len(content) for content in interview_results.values())
@@ -867,9 +966,9 @@ class ContentCreatorV2Agent:
         print(f"에세이 결과: {total_essay_length}자 ({len(essay_results)}개)")
 
     # 동기 버전 메서드 (호환성 보장)
-    def create_magazine_content_sync(self, texts: List[str], image_analysis_results: List[Dict]) -> str:
+    def create_magazine_content_sync(self, raw_user_input, image_analysis_results: List[Dict]) -> str:
         """동기 버전 매거진 콘텐츠 생성 (호환성 유지)"""
-        return asyncio.run(self.create_magazine_content(texts, image_analysis_results))
+        return asyncio.run(self.create_magazine_content(raw_user_input, image_analysis_results))
 
 
 class ContentCreatorV2Crew:
@@ -885,19 +984,28 @@ class ContentCreatorV2Crew:
             verbose=True
         )
 
-    async def execute_content_creation(self, texts: List[str], image_analysis_results: List[Dict]) -> str:
+    async def execute_content_creation(self, raw_user_input, image_analysis_results: List[Dict]) -> str:
         """Crew를 통한 콘텐츠 생성 실행 (동적 섹션 생성 방식)"""
         crew = self.create_crew()
         
         print("\n=== ContentCreatorV2 Crew 실행 (동적 섹션 생성) ===")
-        print(f"- 입력 텍스트: {len(texts)}개")
+        
+        # 입력이 리스트인 경우(기존 코드 호환) 문자열로 변환
+        if isinstance(raw_user_input, list):
+            combined_text = "\n\n".join(raw_user_input)
+            print(f"- 입력 텍스트: {len(raw_user_input)}개 텍스트 결합")
+            print(f"- 결합된 텍스트 길이: {len(combined_text)}자")
+        else:
+            combined_text = raw_user_input
+            print(f"- 입력 텍스트 길이: {len(combined_text)}자")
+            
         print(f"- 이미지 분석 결과: {len(image_analysis_results)}개")
         print(f"- 동적 섹션 생성: 활성화")
         print(f"- 콘텐츠 분량 자동 조절: 활성화")
         print(f"- 이미지-텍스트 시너지: 활성화")
         
         # ContentCreatorV2Agent를 통한 콘텐츠 생성 (비동기)
-        result = await self.content_creator.create_magazine_content(texts, image_analysis_results)
+        result = await self.content_creator.create_magazine_content(combined_text, image_analysis_results)
         
         print("✅ ContentCreatorV2 Crew 실행 완료 (동적 섹션 생성)")
         print("✅ 콘텐츠 분량 자동 조절 완료")
@@ -906,6 +1014,6 @@ class ContentCreatorV2Crew:
         return result
 
     # 동기 버전 메서드 (호환성 보장)
-    def execute_content_creation_sync(self, texts: List[str], image_analysis_results: List[Dict]) -> str:
+    def execute_content_creation_sync(self, raw_user_input, image_analysis_results: List[Dict]) -> str:
         """동기 버전 콘텐츠 생성 실행 (호환성 유지)"""
-        return asyncio.run(self.execute_content_creation(texts, image_analysis_results))
+        return asyncio.run(self.execute_content_creation(raw_user_input, image_analysis_results))

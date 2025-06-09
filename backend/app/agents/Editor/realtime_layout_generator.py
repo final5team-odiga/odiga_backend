@@ -3,7 +3,6 @@ import json
 import time
 from typing import Dict, List, Any
 from custom_llm import get_azure_llm
-from utils.log.hybridlogging import get_hybrid_logger
 from utils.isolation.ai_search_isolation import AISearchIsolationManager
 from utils.data.pdf_vector_manager import PDFVectorManager
 from utils.isolation.session_isolation import SessionAwareMixin
@@ -13,15 +12,16 @@ from utils.log.logging_manager import LoggingManager
 class RealtimeLayoutGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
     """실시간 레이아웃 생성기 - AI Search 벡터 데이터 기반 레이아웃 생성"""
     
-    def __init__(self):
+
+    def __init__(self, vector_manager: PDFVectorManager, logger: Any):
         self.llm = get_azure_llm()
-        self.logger = get_hybrid_logger(self.__class__.__name__)
+        self.logger = logger 
         self._setup_logging_system()
         self.logging_manager = LoggingManager(self.logger)
-        # AI Search 격리 시스템 추가
+
         self.isolation_manager = AISearchIsolationManager()
-        # PDF 벡터 매니저 추가 (격리 활성화)
-        self.vector_manager = PDFVectorManager(isolation_enabled=True)
+  
+        self.vector_manager = vector_manager 
 
         self.__init_session_awareness__()
         self.__init_inter_agent_communication__()

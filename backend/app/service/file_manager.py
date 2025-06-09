@@ -452,8 +452,6 @@ class FileManager:
                         "save_timestamp": self._get_current_timestamp()
                     })
             
-            # 3. 컴포넌트 인덱스 파일 생성
-            await self._create_component_index_async(saved_components, components_folder)
             
             # 4. 컴포넌트 매니페스트 저장
             manifest_data = {

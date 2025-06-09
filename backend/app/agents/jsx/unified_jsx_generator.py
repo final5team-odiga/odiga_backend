@@ -1,285 +1,436 @@
 import asyncio
 import json
 import time
-import traceback
 import re
 from typing import Dict, List, Any
 from custom_llm import get_azure_llm
-from utils.log.hybridlogging import get_hybrid_logger
 from utils.isolation.ai_search_isolation import AISearchIsolationManager
-from utils.data.pdf_vector_manager import PDFVectorManager
 from utils.isolation.session_isolation import SessionAwareMixin
 from utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
+from utils.log.logging_manager import LoggingManager
 
 class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
-    """통합 JSX 생성기"""
+    """통합 JSX 생성기 - 템플릿 코드와 콘텐츠를 결합하여 최종 JSX 컴포넌트 생성"""
     
-    def __init__(self):
-        super().__init__()
-        self.logger = get_hybrid_logger("UnifiedJSXGenerator")
+    def __init__(self, logger: Any = None):
         self.llm = get_azure_llm()
-        self.pdf_vector_manager = PDFVectorManager()
-        self.isolation_manager = AISearchIsolationManager()
+        self.logger = logger
+        self._setup_logging_system()
         
-    async def generate_jsx_component(self, component_data: Dict) -> str:
-        """JSX 컴포넌트 생성"""
+        self.isolation_manager = AISearchIsolationManager()
+        self.__init_session_awareness__()
+        self.__init_inter_agent_communication__()
+
+    def _setup_logging_system(self):
+        """로그 저장 시스템 설정"""
+        self.log_enabled = True
+        self.response_counter = 0
+
+    def set_logger(self, logger):
+        """로거 설정 (외부 주입)"""
+        self.logger = logger
+        self.logging_manager = LoggingManager(self.logger)
+        
+    async def process_data(self, input_data):
+        """에이전트 인터페이스 구현"""
+        result = await self._do_work(input_data)
+        
+        if self.logger and hasattr(self, 'logging_manager'):
+            await self.logging_manager.log_agent_response(
+                agent_name=self.__class__.__name__,
+                agent_role="JSX 컴포넌트 생성기",
+                task_description="템플릿과 콘텐츠를 결합한 JSX 컴포넌트 생성",
+                response_data=result,
+                metadata={"integrated_processing": True}
+            )
+        
+        return result
+
+    async def generate_jsx_from_template(self, content_data: Dict, template_code: str) -> Dict:
+        """템플릿 코드를 기반으로 JSX 생성"""
         try:
-            # 컴포넌트 데이터 검증
-            if not self._validate_component_data(component_data):
-                raise ValueError("유효하지 않은 컴포넌트 데이터")
+            self.logger.info(f"JSX 생성 시작: {content_data.get('title', '제목 없음')}")
             
-            # JSX 생성
-            jsx_content = await self._generate_jsx_content(component_data)
+            # 하위 섹션 여부 확인
+            is_subsection = content_data.get("metadata", {}).get("is_subsection", False)
             
-            # 결과 검증
-            if not self._validate_jsx_content(jsx_content):
-                raise ValueError("유효하지 않은 JSX 생성 결과")
+            # 프롬프트에 하위 섹션 정보 추가
+            subsection_info = ""
+            if is_subsection:
+                parent_section_id = content_data.get("metadata", {}).get("parent_section_id", "")
+                parent_section_title = content_data.get("metadata", {}).get("parent_section_title", "")
+                subsection_info = f"""
+이 JSX 컴포넌트는 하위 섹션입니다:
+- 상위 섹션 ID: {parent_section_id}
+- 상위 섹션 제목: {parent_section_title}
+- 제목에는 이미 상위 섹션 정보가 포함되어 있습니다
+"""
             
-            return jsx_content
+            # 선택된 템플릿 적용 (지능형 변환)
+            try:
+                if template_code and len(template_code) > 0:
+                    # 이 메서드는 이미 딕셔너리를 반환하므로 수정 불필요
+                    jsx_result = await self._generate_intelligent_jsx(content_data, template_code, subsection_info)
+                else:
+                    # ⚠️ 폴백 함수의 반환값을 딕셔너리로 감싸서 일관성 유지
+                    substituted_code = self._simple_template_substitution(content_data, self._get_default_template())
+                    jsx_result = {
+                        "title": content_data.get("title", "제목 없음"),
+                        "jsx_code": substituted_code
+                    }
+            except Exception as jsx_error:
+                self.logger.error(f"지능형 JSX 생성 실패 (폴백 사용): {jsx_error}")
+                jsx_result = self._simple_template_substitution(content_data, self._get_default_template())
+            
+            # 메타데이터 추가
+            jsx_result["metadata"] = {
+                "template_applied": True,
+                "generation_method": "intelligent_jsx_generation",
+                "template_name": template_code.split("/")[-1] if "/" in template_code else template_code,
+                "generation_timestamp": time.time(),
+                "is_subsection": is_subsection
+            }
+            
+            # 하위 섹션인 경우 추가 메타데이터
+            if is_subsection:
+                jsx_result["metadata"]["parent_section_id"] = content_data.get("metadata", {}).get("parent_section_id", "")
+                jsx_result["metadata"]["parent_section_title"] = content_data.get("metadata", {}).get("parent_section_title", "")
+            
+            self.logger.info(f"JSX 생성 완료: {content_data.get('title', '제목 없음')}")
+            return jsx_result
             
         except Exception as e:
-            self.logger.error(f"JSX 컴포넌트 생성 실패: {e}")
-            raise
-    
-    async def generate_jsx_from_template(self, content_data: Dict, template_code: str) -> Dict:
+            self.logger.error(f"JSX 생성 과정 실패: {e}")
+            return self._create_fallback_jsx(content_data, str(e))
+
+    async def _generate_intelligent_jsx(self, content_data: Dict, template_code: str, subsection_info: str = "") -> Dict:
         """
-        콘텐츠 데이터와 템플릿 코드를 결합하여 최종 JSX 컴포넌트 생성
+        AI를 활용한 지능형 JSX 생성 (ainvoke 사용 및 안정성 강화 버전)
+        """
+        title = content_data.get("title", "제목 없음")
         
-        Args:
-            content_data (Dict): 섹션 콘텐츠 데이터 (title, final_content, metadata 등)
-            template_code (str): 템플릿 JSX 코드
-            
-        Returns:
-            Dict: 최종 JSX 컴포넌트 정보
-        """
         try:
-            self.logger.info(f"템플릿 기반 JSX 생성 시작: {content_data.get('title', '제목 없음')}")
+            # ✅ 1. 프롬프트 생성을 별도 메서드로 분리하여 가독성 향상
+            prompt = self._create_jsx_generation_prompt(content_data, template_code, subsection_info)
+
+            # ✅ 2. 올바른 AI 모델 메서드(ainvoke) 호출
+            # custom_llm.py (paste.txt)에 정의된 ainvoke를 사용합니다.
+            if not hasattr(self.llm, 'ainvoke'):
+                raise AttributeError("LLM 객체에 ainvoke 메서드가 없습니다. custom_llm.py를 확인하세요.")
             
-            # 콘텐츠 데이터 추출
-            title = content_data.get('title', '')
-            subtitle = content_data.get('subtitle', '')
-            content = content_data.get('final_content', '')
-            metadata = content_data.get('metadata', {})
+            self.logger.info(f"'{title}' 섹션에 대한 지능형 JSX 생성을 시작합니다...")
+            generated_code = await self.llm.ainvoke(prompt)
             
-            # HTML 콘텐츠 생성 (마크다운 -> HTML)
-            html_content = await self._convert_content_to_html(content)
-            
-            # 템플릿에 콘텐츠 삽입을 위한 프롬프트 생성
-            prompt = self._create_template_injection_prompt(
-                template_code=template_code,
-                title=title,
-                subtitle=subtitle,
-                content=html_content,
-                metadata=metadata
-            )
-            
-            # LLM을 통해 템플릿에 콘텐츠 삽입
-            response = await self.llm.agenerate_text(prompt)
-            jsx_result = self._extract_jsx_from_response(response)
-            
-            # 결과 검증
-            if not self._validate_jsx_content(jsx_result):
-                self.logger.warning("생성된 JSX가 유효하지 않습니다. 기본 템플릿으로 대체합니다.")
-                jsx_result = self._create_fallback_jsx(title, subtitle, html_content)
-            
-            # 결과 반환
+            if not generated_code or not isinstance(generated_code, str):
+                raise ValueError("LLM으로부터 유효한 JSX 코드를 받지 못했습니다.")
+
+            # ✅ 3. LLM 응답에서 순수 JSX 코드만 추출하는 후처리 단계 추가
+            extracted_code = self._extract_jsx_code(generated_code)
+
+            self.logger.info(f"'{title}' 섹션 JSX 생성 완료.")
             return {
                 "title": title,
-                "jsx_code": jsx_result,
-                "metadata": {
-                    "template_applied": True,
-                    "style_attributes": metadata
-                }
+                "jsx_code": extracted_code
             }
-            
         except Exception as e:
-            self.logger.error(f"템플릿 기반 JSX 생성 실패: {str(e)}")
-            # 오류 발생 시 기본 템플릿 반환
-            return {
-                "title": content_data.get('title', '오류 발생'),
-                "jsx_code": self._create_fallback_jsx(
-                    content_data.get('title', ''),
-                    content_data.get('subtitle', ''),
-                    content_data.get('final_content', '')
-                ),
-                "metadata": {
-                    "template_applied": False,
-                    "error": str(e)
-                }
-            }
-    
-    async def _convert_content_to_html(self, content: str) -> str:
-        """마크다운 또는 일반 텍스트를 HTML로 변환"""
-        try:
-            # 간단한 마크다운 변환 (실제로는 마크다운 라이브러리 사용 권장)
-            prompt = f"""
-            다음 텍스트를 HTML로 변환해주세요. 마크다운 문법이 있다면 적절히 처리하세요:
-            
-            {content}
-            
-            HTML만 반환하세요. 설명이나 다른 텍스트는 포함하지 마세요.
-            """
-            
-            response = await self.llm.agenerate_text(prompt)
-            html = self._extract_html_from_response(response)
-            return html
-        except Exception as e:
-            self.logger.error(f"HTML 변환 실패: {e}")
-            # 기본 HTML 래핑
-            return f"<div>{content}</div>"
-    
-    def _extract_html_from_response(self, response: str) -> str:
-        """LLM 응답에서 HTML 코드 추출"""
-        html_pattern = r'```html\s*([\s\S]*?)\s*```|<html[\s\S]*?</html>|<div[\s\S]*?</div>|<p[\s\S]*?</p>'
-        matches = re.findall(html_pattern, response)
+            # ✅ 4. 강화된 예외 처리 및 명확한 폴백
+            self.logger.error(f"'{title}' 섹션의 지능형 JSX 생성 실패 (폴백 사용): {e}")
+            # 오류 발생 시, 간단한 치환 기반의 폴백 로직으로 전환
+            fallback_result = self._simple_template_substitution(content_data, self._get_default_template())
+            return fallback_result
+
+
+    def _create_jsx_generation_prompt(self, content_data: Dict, template_code: str, subsection_info: str = "") -> str:
+        """JSX 생성용 LLM 프롬프트를 구성합니다."""
         
-        if matches:
-            return matches[0].strip()
+        title = content_data.get("title", "제목 없음")
+        pascal_case_title = ''.join(word.capitalize() for word in title.replace('-', ' ').replace('_', ' ').split())
         
-        # HTML 태그가 없는 경우 전체 응답을 반환
+        # 이미지 데이터 요약
+        image_data_json = self._format_image_data_for_prompt(content_data.get("images", []))
+        
+        return f"""# JSX 컴포넌트 생성 작업
+
+    ## 기본 정보
+    - 컴포넌트 제목: {title}
+    - 컴포넌트 이름 (PascalCase): {pascal_case_title}
+    - 이미지 수: {len(content_data.get("images", []))}
+    {subsection_info}
+
+    ## 콘텐츠 데이터 요약
+    {{
+    "title": "{title}",
+    "subtitle": "{content_data.get("subtitle", "")}",
+    "content": "{content_data.get("content", "")[:300]}...(생략)",
+    "images": {image_data_json[:300]}...(생략)
+    }}
+
+    text
+
+    ## 기준 템플릿 코드
+    {template_code}
+
+    text
+
+    ## 작업 지시사항
+    1. 위 '기준 템플릿 코드'를 기반으로, '콘텐츠 데이터'를 표시하는 완성도 높은 React 컴포넌트를 생성하세요.
+    2. 템플릿의 기본 구조와 스타일은 최대한 유지하되, 데이터에 맞게 내용을 채워 넣으세요.
+    3. 생성할 컴포넌트의 이름은 제시된 '컴포넌트 이름 (PascalCase)'을 사용하세요.
+    4. 이미지가 있다면, 템플릿 내의 적절한 위치에 `<img>` 태그를 사용하여 배치하세요. 이미지의 `src`는 `props.images[n].url`, `alt`는 `props.images[n].alt`를 사용하세요.
+    5. 모든 스타일은 인라인 스타일 또는 Tailwind CSS 클래스를 사용하여 적용하세요.
+    6. 최종 결과물은 `import React from "react";`를 포함한 완전한 JSX 파일 형식이어야 합니다.
+
+    ## 출력 형식
+    오직 유효한 JSX 코드만 제공하세요. 다른 설명, 주석, 마크다운 코드 블록(` `````` `)을 포함하지 마세요.
+    """
+
+    def _extract_jsx_code(self, response: str) -> str:
+        """LLM의 응답에서 순수 JSX 코드만 추출합니다."""
+        if '```' in response:
+            match = re.search(r'```(?:jsx)?\s*([\s\S]+?)\s*```', response)
+            if match:
+                return match.group(1).strip()
+        
+        # 코드 블록이 없는 경우, 불필요한 서론/결론 제거 시도
+        lines = response.strip().split('\n')
+        if lines and 'export default' in response:
+            # 'export default'가 포함된 첫 줄부터 시작
+            for i, line in enumerate(lines):
+                if 'export default' in line:
+                    return '\n'.join(lines[i:])
+        
         return response.strip()
     
-    def _extract_jsx_from_response(self, response: str) -> str:
-        """LLM 응답에서 JSX 코드 추출"""
-        jsx_pattern = r'```jsx\s*([\s\S]*?)\s*```|```js\s*([\s\S]*?)\s*```|```\s*([\s\S]*?)\s*```'
-        matches = re.findall(jsx_pattern, response)
+    def _process_content_data(self, content_data: Dict) -> Dict:
+        """콘텐츠 데이터 정제 및 구조화"""
+        processed = {
+            "title": content_data.get("title", "제목 없음"),
+            "subtitle": content_data.get("subtitle", ""),
+            "content": content_data.get("content", ""),
+            "images": content_data.get("images", []),
+            "metadata": content_data.get("metadata", {}),
+            "layout_type": content_data.get("layout_type", "default")
+        }
         
-        if matches:
-            # 첫 번째 매치에서 비어있지 않은 그룹 찾기
-            for match in matches:
-                for group in match:
-                    if group.strip():
-                        return group.strip()
+        # 이미지 URL 정제
+        if processed["images"]:
+            processed_images = []
+            for img in processed["images"]:
+                if isinstance(img, dict):
+                    processed_images.append({
+                        "url": img.get("image_url", img.get("url", "")),
+                        "alt": img.get("description", img.get("alt", processed["title"])),
+                        "caption": img.get("caption", "")
+                    })
+                elif isinstance(img, str):
+                    processed_images.append({
+                        "url": img,
+                        "alt": processed["title"],
+                        "caption": ""
+                    })
+            processed["images"] = processed_images
         
-        # 코드 블록이 없는 경우 전체 응답을 반환
-        return response.strip()
-    
-    def _create_template_injection_prompt(self, template_code: str, title: str, subtitle: str, 
-                                         content: str, metadata: Dict) -> str:
-        """템플릿에 콘텐츠를 삽입하기 위한 프롬프트 생성"""
-        # 메타데이터에서 스타일 정보 추출
-        style = metadata.get('style', '')
-        emotion = metadata.get('emotion', '')
-        keywords = metadata.get('keywords', [])
+        return processed
+
+    def _validate_template_code(self, template_code: str) -> str:
+        """템플릿 코드 검증 및 정제"""
+        if not template_code or not isinstance(template_code, str):
+            return self._get_default_template()
         
-        # 키워드를 문자열로 변환
-        keywords_str = ', '.join(keywords) if isinstance(keywords, list) else str(keywords)
+        # 기본적인 React 컴포넌트 구조 확인
+        if "export default" not in template_code and "function" not in template_code:
+            return self._get_default_template()
         
-        return f"""
-        다음 JSX 템플릿 코드에 제공된 콘텐츠를 삽입해주세요:
+        # 위험한 코드 패턴 제거
+        dangerous_patterns = ["eval(", "Function(", "setTimeout(", "setInterval("]
+        for pattern in dangerous_patterns:
+            if pattern in template_code:
+                if self.logger:
+                    self.logger.warning(f"위험한 패턴 감지: {pattern}")
+                return self._get_default_template()
         
-        # 템플릿 코드:
-        ```jsx
-        {template_code}
-        ```
+        return template_code
+
+    def _simple_template_substitution(self, content_data: Dict, template_code: str) -> Dict:
+        jsx_code = template_code
         
-        # 삽입할 콘텐츠:
-        제목: {title}
-        부제목: {subtitle}
+        # 기본 치환
+        substitutions = {
+            "{props.title}": content_data.get('title', ''),
+            "{props.subtitle}": content_data.get('subtitle', ''),
+            "{props.content}": content_data.get('content', ''),
+            "{props.body}": content_data.get('content', '')
+        }
         
-        콘텐츠(HTML):
-        ```html
-        {content}
-        ```
+        for placeholder, value in substitutions.items():
+            jsx_code = jsx_code.replace(placeholder, str(value)) # str()로 안정성 확보
         
-        # 스타일 정보:
-        - 스타일: {style}
-        - 감정 톤: {emotion}
-        - 키워드: {keywords_str}
+        # 이미지 처리
+        if content_data.get('images') and "{props.images}" in jsx_code:
+            images_jsx = self._generate_images_jsx(content_data['images'])
+            jsx_code = jsx_code.replace("{props.images}", images_jsx)
         
-        # 지침:
-        1. 템플릿의 구조와 스타일을 유지하세요.
-        2. 제목, 부제목, 콘텐츠를 적절한 위치에 삽입하세요.
-        3. props 구조에 맞게 데이터를 전달하세요.
-        4. HTML 콘텐츠는 dangerouslySetInnerHTML 또는 적절한 방식으로 렌더링하세요.
-        5. 템플릿에 없는 요소는 추가하지 마세요.
+        # ✅ 딕셔너리 형태로 반환
+        return {
+            "title": content_data.get("title", "제목 없음"),
+            "jsx_code": jsx_code
+        }
+
+    def _generate_images_jsx(self, images: List[Dict]) -> str:
+        """이미지 JSX 생성"""
+        if not images:
+            return ""
         
-        JSX 코드만 반환하세요. 설명이나 다른 텍스트는 포함하지 마세요.
+        images_jsx = []
+        for img in images:
+            img_jsx = f'<img src="{img["url"]}" alt="{img["alt"]}" className="w-full h-auto rounded-lg mb-4" />'
+            if img.get("caption"):
+                img_jsx += f'<p className="text-sm text-gray-600 mb-4">{img["caption"]}</p>'
+            images_jsx.append(img_jsx)
+        
+        return "\n".join(images_jsx)
+
+    def _validate_generated_jsx(self, jsx_code: str) -> str:
+        """생성된 JSX 검증"""
+        if not jsx_code:
+            return self._get_default_jsx_with_content({})
+        
+        # 기본적인 JSX 구조 확인
+        if "export default" not in jsx_code:
+            jsx_code = f"export default function GeneratedComponent() {{\n  return (\n    {jsx_code}\n  );\n}}"
+        
+        return jsx_code
+
+    def _add_component_metadata(self, jsx_code: str, content_data: Dict, template_code: str) -> Dict:
+        """컴포넌트 메타데이터 추가"""
+        return {
+            "title": content_data.get("title", "제목 없음"),
+            "jsx_code": jsx_code,
+            "metadata": {
+                "template_applied": True,
+                "generation_method": "ai_enhanced",
+                "content_type": content_data.get("layout_type", "default"),
+                "image_count": len(content_data.get("images", [])),
+                "has_subtitle": bool(content_data.get("subtitle")),
+                "content_length": len(content_data.get("content", "")),
+                "generation_timestamp": time.time()
+            }
+        }
+
+    def _create_fallback_jsx(self, content_data: Dict, error_message: str) -> Dict:
+        """폴백 JSX 생성"""
+        fallback_jsx = self._get_default_jsx_with_content(content_data)
+        
+        return {
+            "title": content_data.get("title", "제목 없음"),
+            "jsx_code": fallback_jsx,
+            "metadata": {
+                "template_applied": False,
+                "generation_method": "fallback",
+                "error": error_message,
+                "generation_timestamp": time.time()
+            }
+        }
+
+    def _get_default_template(self) -> str:
+        """기본 템플릿 반환"""
+        return """
+        export default function DefaultTemplate(props) {
+          return (
+            <div className="section-container p-4 my-8">
+              <h2 className="text-2xl font-bold mb-2">{props.title}</h2>
+              {props.subtitle && <h3 className="text-xl mb-4">{props.subtitle}</h3>}
+              <div className="content" dangerouslySetInnerHTML={{ __html: props.content }} />
+            </div>
+          );
+        }
         """
-    
-    def _create_fallback_jsx(self, title: str, subtitle: str, content: str) -> str:
-        """오류 발생 시 사용할 기본 JSX 템플릿"""
-        subtitle_element = '<h3 className="text-xl mb-4">' + subtitle + '</h3>' if subtitle else ''
-        return f"""
+
+    def _get_default_jsx_with_content(self, content_data: Dict) -> str:
+        """콘텐츠가 포함된 기본 JSX"""
+        title = content_data.get("title", "제목 없음")
+        subtitle = content_data.get("subtitle", "")
+        content = content_data.get("content", "")
+        
+        jsx = f"""
         export default function DefaultSection(props) {{
           return (
             <div className="section-container p-4 my-8">
               <h2 className="text-2xl font-bold mb-2">{title}</h2>
-              {subtitle_element}
-              <div className="content" dangerouslySetInnerHTML={{{{ __html: "{content}" }}}} />
+              {f'<h3 className="text-xl mb-4">{subtitle}</h3>' if subtitle else ''}
+              <div className="content" dangerouslySetInnerHTML={{ __html: "{content}" }} />
             </div>
           );
         }}
         """
-    
-    def _validate_component_data(self, data: Dict) -> bool:
-        """컴포넌트 데이터 유효성 검사"""
-        required_fields = ['type', 'content', 'style']
-        return all(field in data for field in required_fields)
-    
-    async def _generate_jsx_content(self, data: Dict) -> str:
-        """JSX 내용 생성"""
-        component_type = data['type']
-        content = data['content']
-        style = data['style']
         
-        # 컴포넌트 타입별 템플릿 적용
-        if component_type == 'text':
-            return self._generate_text_component(content, style)
-        elif component_type == 'image':
-            return self._generate_image_component(content, style)
-        elif component_type == 'container':
-            return await self._generate_container_component(content, style)
-        else:
-            raise ValueError(f"지원하지 않는 컴포넌트 타입: {component_type}")
-    
-    def _validate_jsx_content(self, content: str) -> bool:
-        """JSX 내용 유효성 검사"""
-        # 기본 구문 검사
-        if not content or not isinstance(content, str):
-            return False
+        return jsx
+
+    def _extract_jsx_code(self, response: str) -> str:
+        """AI 응답에서 JSX 코드 추출"""
+        # 코드 블록 마커 제거
+        if "```jsx" in response:
+            start = response.find("```jsx") + 6
+            end = response.find("```", start)
+            if end != -1:
+                return response[start:end].strip()
+        elif "```" in response:
+            start = response.find("```") + 3
+            end = response.find("```", start)
+            if end != -1:
+                return response[start:end].strip()
         
-        # JSX 태그 균형 검사
-        tag_pattern = r'<(\w+)[^>]*>'
-        closing_pattern = r'</(\w+)>'
+        # 마커가 없으면 전체 응답 사용
+        return response.strip()
+    
+    async def _get_ai_generated_jsx(self, prompt: str) -> str:
+        """AI 모델을 사용하여 JSX 코드 생성"""
+        try:
+            if hasattr(self.llm, 'agenerate_text'):
+                response = await self.llm.agenerate_text(prompt)
+            else:
+                # 동기 메서드 사용
+                response = await asyncio.get_event_loop().run_in_executor(
+                    None, self.llm.generate_text, prompt
+                )
+            return response
+        except Exception as e:
+            self.logger.error(f"AI 생성 실패: {e}")
+            raise e
+            
+    def _format_image_data_for_prompt(self, images: List[Dict]) -> str:
+        """이미지 데이터를 프롬프트용으로 포맷팅"""
+        if not images:
+            return "[]"
         
-        opening_tags = re.findall(tag_pattern, content)
-        closing_tags = re.findall(closing_pattern, content)
+        # 중요 필드만 포함하여 간략화
+        simplified_images = []
+        for img in images[:3]:  # 최대 3개만 포함
+            simplified_img = {
+                "url": img.get("url", ""),
+                "alt_text": img.get("alt_text", img.get("caption", "")),
+                "width": img.get("width", 800),
+                "height": img.get("height", 600),
+                "caption": img.get("caption", "")
+            }
+            simplified_images.append(simplified_img)
         
-        return len(opening_tags) == len(closing_tags)
+        # JSON 문자열로 변환
+        try:
+            return json.dumps(simplified_images, ensure_ascii=False)
+        except:
+            return "[]"
     
-    def _generate_text_component(self, content: str, style: Dict) -> str:
-        """텍스트 컴포넌트 생성"""
-        style_str = self._convert_style_to_string(style)
-        return f'<div style={{{style_str}}}>{content}</div>'
-    
-    def _generate_image_component(self, content: Dict, style: Dict) -> str:
-        """이미지 컴포넌트 생성"""
-        style_str = self._convert_style_to_string(style)
-        return f'<img src="{content["src"]}" alt="{content.get("alt", "")}" style={{{style_str}}} />'
-    
-    async def _generate_container_component(self, content: List[Dict], style: Dict) -> str:
-        """컨테이너 컴포넌트 생성"""
-        style_str = self._convert_style_to_string(style)
-        
-        # 내부 컴포넌트 생성
-        inner_components = []
-        for item in content:
-            component = await self.generate_jsx_component(item)
-            inner_components.append(component)
-        
-        return f'<div style={{{style_str}}}>{" ".join(inner_components)}</div>'
-    
-    def _convert_style_to_string(self, style: Dict) -> str:
-        """스타일 객체를 문자열로 변환"""
-        style_items = []
-        for key, value in style.items():
-            # camelCase로 변환
-            key = self._to_camel_case(key)
-            style_items.append(f'"{key}": "{value}"')
-        return "{" + ", ".join(style_items) + "}"
-    
-    def _to_camel_case(self, snake_str: str) -> str:
-        """snake_case를 camelCase로 변환"""
-        components = snake_str.split('_')
-        return components[0] + ''.join(x.title() for x in components[1:]) 
+    async def _load_template_file(self, template_path: str) -> str:
+        """템플릿 파일 로드"""
+        try:
+            # 경로 정규화
+            if not template_path.startswith("/"):
+                template_path = f"jsx_templates/{template_path}"
+            
+            # 파일 읽기
+            with open(template_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            self.logger.error(f"템플릿 파일 로드 실패: {e}")
+            return self._get_default_template()

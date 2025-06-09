@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List, Dict
+from typing import List, Dict, Optional
 from openai import AzureOpenAI
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
@@ -84,6 +84,7 @@ class PDFVectorManager:
     def _get_search_client(self, index_name: str) -> SearchClient:
         """인덱스별 SearchClient 반환 (캐시 사용)"""
         if index_name not in self.search_clients:
+            print(f"🔗 PDFVectorManager: '{index_name}' 인덱스에 대한 SearchClient 연결을 설정합니다.")
             self.search_clients[index_name] = SearchClient(
                 endpoint=self.search_endpoint,
                 index_name=index_name,
@@ -165,31 +166,32 @@ class PDFVectorManager:
         return results
 
     def _create_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Azure OpenAI Embeddings API로 벡터 생성"""
-        embeddings = []
+        """Azure OpenAI Embeddings API로 벡터 생성 (배치 처리 지원)"""
+        if not texts:
+            return []
+            
         print(f"📊 {len(texts)}개 텍스트에 대한 임베딩 생성 중...")
         
-        for i, text in enumerate(texts):
-            try:
-                response = self.openai_client.embeddings.create(
-                    input=text,
-                    model=self.embedding_model
-                )
-                embeddings.append(response.data[0].embedding)
-                
-                if (i + 1) % 10 == 0:
-                    print(f" 진행률: {i + 1}/{len(texts)} 완료")
-                    
-            except Exception as e:
-                print(f"❌ 임베딩 생성 실패 (텍스트 {i+1}): {e}")
-                # 기본 벡터 (1536 차원)
-                embeddings.append([0.0] * 1536)
-        
-        print(f"✅ 임베딩 생성 완료: {len(embeddings)}개")
-        return embeddings
+        try:
+            # Azure OpenAI API는 입력으로 리스트를 받아 배치 처리를 지원합니다.
+            response = self.openai_client.embeddings.create(
+                input=texts,
+                model=self.embedding_model
+            )
+            
+            # 응답에서 임베딩 리스트를 추출합니다.
+            embeddings = [item.embedding for item in response.data]
+            
+            print(f"✅ 임베딩 생성 완료: {len(embeddings)}개")
+            return embeddings
+            
+        except Exception as e:
+            print(f"❌ 배치 임베딩 생성 실패: {e}")
+            # 실패 시, 모든 텍스트에 대해 0 벡터를 반환합니다.
+            return [[0.0] * 1536 for _ in texts]
 
-    def search_similar_layouts(self, query_text: str, index_name: str = None, top_k: int = 5) -> List[Dict]:
-        """다중 인덱스 지원 유사 레이아웃 검색 (AI Search 격리 적용)"""
+    def search_similar_layouts(self, query_text: str, index_name: str = None, top_k: int = 5, query_vector: Optional[List[float]] = None) -> List[Dict]:
+        """다중 인덱스 지원 유사 레이아웃 검색 (AI Search 격리 적용 및 사전 계산된 벡터 지원)"""
         target_index = index_name or self.default_index
         
         # 지원하는 인덱스인지 확인
@@ -198,16 +200,20 @@ class PDFVectorManager:
             return []
         
         try:
-            # 1. 쿼리 격리 (AI Search 키워드 제거)
-            if self.isolation_enabled:
-                clean_query = self.isolation_manager.clean_query_from_azure_keywords(query_text)
-                print(f"🛡️ 쿼리 격리: '{query_text[:50]}...' → '{clean_query[:50]}...'")
-            else:
-                clean_query = query_text
+            # query_vector가 제공되지 않은 경우에만 임베딩을 생성합니다.
+            if query_vector is None:
+                # 1. 쿼리 격리 (AI Search 키워드 제거)
+                if self.isolation_enabled:
+                    clean_query = self.isolation_manager.clean_query_from_azure_keywords(query_text)
+                    print(f"🛡️ 쿼리 격리: '{query_text[:50]}...' → '{clean_query[:50]}...'")
+                else:
+                    clean_query = query_text
 
-            # 2. 쿼리 텍스트를 벡터로 변환
-            query_embeddings = self._create_embeddings([clean_query])
-            query_vector = query_embeddings[0]
+                # 2. 쿼리 텍스트를 벡터로 변환 (배치 크기 1)
+                query_embeddings = self._create_embeddings([clean_query])
+                if not query_embeddings:
+                    raise ValueError("임베딩 생성에 실패했습니다.")
+                query_vector = query_embeddings[0]
 
             # 3. 인덱스별 설정 가져오기
             index_config = self.supported_indexes[target_index]
