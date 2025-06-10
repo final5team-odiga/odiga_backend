@@ -8,7 +8,6 @@ azure-search-documents==11.5.2
 azure-core==1.34.0
 azure-cosmos
 azure-cognitiveservices-speech==1.34.1
-azure-storage-blob==12.25.1
 azure-ai-contentsafety
 
 nest_asyncio==1.6.0
@@ -41,6 +40,6 @@ python-multipart
 email-validator
 itsdangerous
 
-requests>=2.31.0s
+requests>=2.31.0
 pydub>=0.25.1
 ffmpeg-python>=0.2.0
