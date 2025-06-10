@@ -70,3 +70,19 @@ class Like(Base):
     __table_args__ = (
         UniqueConstraint('articleID', 'userID', name='unique_user_article_like'),
     )
+
+class Daily(Base):
+    __tablename__ = 'daily'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    userID = Column(String, ForeignKey('users.userID'), nullable=False)
+    date = Column(DateTime, nullable=False)
+    season = Column(String, nullable=False)
+    weather = Column(String, nullable=False)
+    temperature = Column(Float, nullable=False)
+    mood = Column(String, nullable=True)
+    country = Column(String, nullable=False)
+    createdAt = Column(DateTime, default=datetime.utcnow)
+    updatedAt = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship("User", back_populates="dailies")

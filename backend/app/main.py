@@ -27,6 +27,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # API 라우터 등록
 api_router = create_api_router()
 app.include_router(api_router)
+#app.include_router(daily.router)
 
 
 # ✅ 시스템 초기화 (선택적)
