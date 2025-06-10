@@ -170,8 +170,6 @@ async def check_user_liked(db: AsyncSession, article_id: str, user_id: str) -> b
     )
     return result.scalars().first() is not None
 
-<<<<<<< HEAD
-=======
 # async def check_user_liked(db: AsyncSession, article_id: str, user_id: str) -> bool:
 #     """Check if a user has liked an article"""
 #     if not user_id:
@@ -206,4 +204,3 @@ async def get_dailies_for_user(db: AsyncSession, user_id: str):
         select(Daily).where(Daily.userID == user_id).order_by(Daily.date.asc())
     )
     return result.scalars().all()
->>>>>>> fc7c065c92890bf307bee63c71a95077b80183ce
