@@ -96,6 +96,7 @@ class ContentCreatorV2Agent:
 - 과도한 magazine_content를 생성하지 않습니다
 - [이미지 배치 및 연결점 안내]이러한 내용은 포함시키지 않습니다. 이와 비슷한 내용 또한 그렇습니다!.
 - **이미지와 텍스트의 의미적 연결을 반드시 고려하여 콘텐츠를 구성합니다.**
+- 무조건 전체 본문이 15000자 이하의 콘텐츠를 생성합니다!. 이 이상으로 넘어가지 않습니다!
 """,
             verbose=True,
             llm=self.llm
@@ -601,12 +602,16 @@ class ContentCreatorV2Agent:
         )
 
     async def _generate_section_content(self, structure_plan: Dict, interview_results: Dict[str, str], 
-                                      essay_results: Dict[str, str], image_info: str, 
-                                      semantic_connections: Dict) -> List[Dict]:
-        """구조 계획에 따라 각 섹션의 콘텐츠 생성"""
+                                  essay_results: Dict[str, str], image_info: str, 
+                                  semantic_connections: Dict) -> List[Dict]:
+        """구조 계획에 따라 각 섹션의 콘텐츠 생성 (길이 제한 추가)"""
         
         sections = structure_plan.get('sections', [])
         self.logger.info(f"{len(sections)}개 섹션에 대한 콘텐츠 생성 시작")
+        
+        # ✅ 전체 콘텐츠 길이 제한 설정
+        MAX_TOTAL_CONTENT_LENGTH = 15000
+        target_length_per_section = MAX_TOTAL_CONTENT_LENGTH // len(sections) if sections else 1000
         
         # 모든 인터뷰 콘텐츠 정리
         interview_content = "\n\n".join([f"=== {key} ===\n{value}" for key, value in interview_results.items()])
@@ -627,60 +632,61 @@ class ContentCreatorV2Agent:
             subtitle = section.get('subtitle', '')
             summary = section.get('summary', '')
             
-            self.logger.info(f"섹션 {section_id}: '{title}' 콘텐츠 생성 중")
+            self.logger.info(f"섹션 {section_id}: '{title}' 콘텐츠 생성 중 (목표 길이: {target_length_per_section}자)")
             
-            # 섹션별 콘텐츠 생성 태스크
+            # ✅ 길이 제한이 포함된 섹션별 콘텐츠 생성 태스크
             section_task = Task(
                 description=f"""
-**섹션 {section_id} 콘텐츠 생성**
+    **섹션 {section_id} 콘텐츠 생성 (길이 제한 적용)**
 
-당신은 여행 매거진의 한 섹션을 작성해야 합니다. 아래 정보를 바탕으로 해당 섹션에 적합한 내용을 작성하세요.
+    당신은 여행 매거진의 한 섹션을 작성해야 합니다. **중요: 이 섹션의 본문은 반드시 {target_length_per_section}자 이내로 작성해야 합니다.**
 
-**섹션 정보:**
-- 제목: {title}
-- 부제목: {subtitle}
-- 요약: {summary}
+    **섹션 정보:**
+    - 제목: {title}
+    - 부제목: {subtitle}
+    - 요약: {summary}
+    - **목표 길이: {target_length_per_section}자 이내 (엄격한 제한)**
 
-**활용할 콘텐츠:**
-1. 인터뷰 형식 콘텐츠:
-{interview_content[:2000]}... (생략)
+    **활용할 콘텐츠:**
+    1. 인터뷰 형식 콘텐츠:
+    {interview_content[:1500]}... (생략)
 
-2. 에세이 형식 콘텐츠:
-{essay_content[:2000]}... (생략)
+    2. 에세이 형식 콘텐츠:
+    {essay_content[:1500]}... (생략)
 
-3. 이미지 정보:
-{image_info[:500]}... (생략)
+    3. 이미지 정보:
+    {image_info[:300]}... (생략)
 
-4. 이미지-텍스트 의미적 연결:
-{semantic_info[:500]}... (생략)
+    4. 이미지-텍스트 의미적 연결:
+    {semantic_info[:300]}... (생략)
 
-**작업 지시:**
-1. 이 섹션의 주제와 요약에 맞는 내용을 인터뷰와 에세이에서 찾아 자연스럽게 통합하세요.
-2. 이미지 정보와 연결되는 시각적 묘사를 포함하세요.
-3. 매거진 특유의 세련되고 감성적인 문체를 사용하세요.
-4. 글자 수 제한은 없습니다. 주제를 충분히 다루는 데 필요한 만큼 작성하세요.
-5. 다른 섹션과 중복되지 않도록 이 섹션의 주제에 집중하세요.
+    **작업 지시:**
+    1. **길이 제한 준수**: 본문은 반드시 {target_length_per_section}자 이내로 작성하세요.
+    2. **간결하고 핵심적인 내용**: 제한된 길이 내에서 가장 중요한 내용만 선별하여 포함하세요.
+    3. **완결성 유지**: 짧더라도 완전한 이야기 구조를 갖추어야 합니다.
+    4. **품질 우선**: 길이를 맞추기 위해 내용의 질을 떨어뜨리지 마세요.
+    5. **자연스러운 마무리**: 지정된 길이 내에서 자연스럽게 마무리되어야 합니다.
 
-**출력 형식:**
-아래 JSON 형식으로 출력하세요. 다른 설명이나 주석은 포함하지 마세요.
+    **출력 형식:**
+    아래 JSON 형식으로 출력하세요. 다른 설명이나 주석은 포함하지 마세요.
 
-```json
-{{
-  "section_id": "{section_id}",
-  "title": "{title}",
-  "subtitle": "{subtitle}",
-  "body": "이 섹션의 본문 내용..."
-}}
-```
+    {{
+    "section_id": "{section_id}",
+    "title": "{title}",
+    "subtitle": "{subtitle}",
+    "body": "이 섹션의 본문 내용... (반드시 {target_length_per_section}자 이내)"
+    }}
 
-**중요 지침:**
-- 섹션의 주제와 요약에 맞는 내용만 포함하세요.
-- 모든 문장은 완전한 형태여야 합니다.
-- 이미지와 연결되는 시각적 묘사를 자연스럽게 포함하세요.
-- 인터뷰와 에세이의 내용을 자연스럽게 통합하세요.
-""",
+    text
+
+    **중요 지침:**
+    - **절대적 길이 제한**: {target_length_per_section}자를 초과하지 마세요.
+    - **핵심 내용 우선**: 가장 중요하고 흥미로운 부분만 선별하세요.
+    - **완전한 문장**: 모든 문장은 완전한 형태여야 합니다.
+    - **자연스러운 흐름**: 짧아도 읽기 자연스러워야 합니다.
+    """,
                 agent=agent,
-                expected_output=f"섹션 {section_id} '{title}'에 대한 JSON 형식의 콘텐츠"
+                expected_output=f"섹션 {section_id} '{title}'에 대한 {target_length_per_section}자 이내의 JSON 형식 콘텐츠"
             )
             
             # 비동기 태스크 실행
@@ -693,28 +699,42 @@ class ContentCreatorV2Agent:
             import re
             
             # JSON 부분만 추출
-            json_match = re.search(r'```json\s*(.*?)\s*```', str(response), re.DOTALL)
+            json_match = re.search(r'``````', str(response), re.DOTALL)
             if json_match:
                 json_str = json_match.group(1)
             else:
                 json_str = str(response)
             
             # 불필요한 마크다운이나 설명 제거
-            json_str = re.sub(r'```(json)?|```', '', json_str).strip()
+            json_str = re.sub(r'``````', '', json_str).strip()
             
             try:
                 # JSON 파싱
                 section_content = json.loads(json_str)
+                
+                # ✅ 길이 검증 및 조정
+                body_content = section_content.get('body', '')
+                if len(body_content) > target_length_per_section:
+                    # 길이 초과 시 자동 조정
+                    truncated_body = body_content[:target_length_per_section-10] + "..."
+                    section_content['body'] = truncated_body
+                    self.logger.warning(f"섹션 {section_id} 길이 초과로 자동 조정: {len(body_content)}자 → {len(truncated_body)}자")
+                
                 sections_with_content.append(section_content)
                 self.logger.info(f"섹션 {section_id}: '{title}' 콘텐츠 생성 완료 ({len(section_content.get('body', ''))}자)")
+                
             except Exception as e:
                 self.logger.error(f"섹션 {section_id} 콘텐츠 파싱 실패: {e}")
-                # 실패 시 기본 콘텐츠 생성
+                # 실패 시 기본 콘텐츠 생성 (길이 제한 적용)
+                fallback_body = f"이 섹션에서는 {summary} 내용을 다룹니다."
+                if len(fallback_body) > target_length_per_section:
+                    fallback_body = fallback_body[:target_length_per_section-3] + "..."
+                
                 sections_with_content.append({
                     "section_id": section_id,
                     "title": title,
                     "subtitle": subtitle,
-                    "body": f"이 섹션에서는 {summary} 내용을 다룹니다."
+                    "body": fallback_body
                 })
         
         return sections_with_content

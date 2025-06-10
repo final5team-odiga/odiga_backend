@@ -1,7 +1,6 @@
 import asyncio
 import json
 import traceback
-import time
 from typing import Dict, List, Any
 from utils.log.hybridlogging import get_hybrid_logger
 from utils.data.blob_storage import BlobStorageManager
@@ -43,10 +42,11 @@ class SystemCoordinator:
         # ✅ 통합된 멀티모달 에이전트 (템플릿 선택 + JSX 생성 포함)
         self.multimodal_agent = UnifiedMultimodalAgent(self.vector_manager, self.logger)
 
+
     async def coordinate_complete_magazine_generation(self, user_input: str = None,
                                                       image_folder: str = None,
                                                       user_id: str = "unknown_user") -> Dict:
-        """✅ 완전 통합 매거진 생성 프로세스 (2단계로 간소화)"""
+        """✅ 완전 통합 매거진 생성 프로세스 (이미지 배치 강화)"""
 
         self.logger.info("=== 📝 완전 통합 아키텍처 기반 매거진 생성 시작 ===")
         magazine_id = str(uuid4())
@@ -56,12 +56,16 @@ class SystemCoordinator:
             self.logger.info("--- 🚀 Phase 1: 콘텐츠 초안 생성 ---")
             image_analysis_results = await self._execute_image_analysis_stage()
             
+            # ✅ 이미지 분석 결과 저장 및 로깅
             if image_analysis_results:
+                self.logger.info(f"✅ 이미지 분석 완료: {len(image_analysis_results)}개 이미지")
                 await MagazineDBUtils.save_combined_image_analysis({
                     "id": str(uuid4()), "magazine_id": magazine_id,
                     "created_at": str(datetime.now()), "analysis_count": len(image_analysis_results),
                     "image_analyses": image_analysis_results
                 })
+            else:
+                self.logger.warning("❌ 이미지 분석 결과가 없습니다. 기본 이미지를 사용합니다.")
             
             raw_content_json = await self._execute_content_generation_stage(user_input, image_analysis_results)
             raw_content = json.loads(raw_content_json)
@@ -73,22 +77,24 @@ class SystemCoordinator:
             })
             self.logger.info(f"✅ Phase 1 완료. Magazine ID: {magazine_id}")
 
-            # === ✅ Phase 2: 완전 통합된 멀티모달 처리 (템플릿 선택 + JSX 생성 포함) ===
-            self.logger.info("--- 🎨 Phase 2: 완전 통합 멀티모달 처리 ---")
+            # === ✅ Phase 2: 이미지 배치가 포함된 멀티모달 처리 ===
+            self.logger.info("--- 🎨 Phase 2: 이미지 배치 포함 멀티모달 처리 ---")
             
+            # ✅ 이미지 분석 결과를 명시적으로 전달
             final_result = await self.multimodal_agent.process_magazine_unified(
-                raw_content, image_analysis_results, user_id=user_id
+                raw_content, 
+                image_analysis_results,  # ✅ 실제 이미지 데이터 전달
+                user_id=user_id
             )
+            
+            # ✅ 이미지 배치 결과 검증
+            jsx_components = final_result.get("content_sections", [])
+            image_placement_success = self._verify_image_placement(jsx_components)
+            
+            self.logger.info(f"✅ 이미지 배치 검증: {'성공' if image_placement_success else '실패'}")
             
             if not final_result or "content_sections" not in final_result:
                 raise ValueError("통합 멀티모달 처리 실패 또는 결과가 비어있습니다.")
-            
-            # ✅ JSX 컴포넌트 추출 (이미 통합 처리에서 생성됨)
-            jsx_components = []
-            for section in final_result.get("content_sections", []):
-                jsx_component = section.get("jsx_component", {})
-                if jsx_component:
-                    jsx_components.append(jsx_component)
             
             # ✅ 최종 결과 구성
             complete_result = {
@@ -98,9 +104,10 @@ class SystemCoordinator:
                 "components": jsx_components,
                 "user_id": user_id,
                 "processing_summary": final_result.get("processing_metadata", {}),
-                "content_sections": final_result.get("content_sections", [])
+                "content_sections": jsx_components,
+                "image_placement_success": image_placement_success,
+                "total_images_used": self._count_images_in_jsx(jsx_components)
             }
-            
             
             # ✅ 결과 저장
             await self._save_results_with_file_manager({
@@ -108,7 +115,7 @@ class SystemCoordinator:
                 "jsx_components": jsx_components,
                 "template_data": {
                     "user_id": user_id,
-                    "content_sections": final_result.get("content_sections", [])
+                    "content_sections": jsx_components
                 }
             })
             
@@ -122,6 +129,24 @@ class SystemCoordinator:
             })
             return {"error": str(e), "magazine_id": magazine_id}
 
+
+    def _verify_image_placement(self, jsx_components: List[Dict]) -> bool:
+        """JSX 컴포넌트에 이미지가 포함되었는지 검증"""
+        for component in jsx_components:
+            jsx_code = component.get("jsx_code", "")
+            if "<img" in jsx_code and "src=" in jsx_code:
+                return True
+        return False
+
+    def _count_images_in_jsx(self, jsx_components: List[Dict]) -> int:
+        """JSX 컴포넌트에 포함된 이미지 개수 계산"""
+        total_images = 0
+        for component in jsx_components:
+            jsx_code = component.get("jsx_code", "")
+            total_images += jsx_code.count("<img")
+        return total_images
+    
+
     async def _execute_image_analysis_stage(self) -> List[Dict]:
         """1단계: 이미지 분석 실행"""
         self.logger.info("1단계: 이미지 분석 시작")
@@ -133,8 +158,6 @@ class SystemCoordinator:
             if not images:
                 self.logger.warning("분석할 이미지가 없습니다.")
                 return []
-
-            crew = Crew(agents=[self.image_analyzer.create_agent()], verbose=False)
             
             if hasattr(self.image_analyzer, 'analyze_images_batch_async'):
                 results = await self.image_analyzer.analyze_images_batch_async(images, max_concurrent=5)
@@ -201,26 +224,25 @@ class SystemCoordinator:
         """기본 매거진 콘텐츠 생성"""
         default_content = {
             "mag_id": "default_magazine",
-            "magazine_title": "베니스 여행 이야기",
-            "magazine_subtitle": "아름다운 수상 도시에서의 특별한 순간들",
+            "magazine_title": "fallback",
+            "magazine_subtitle": "fallback",
             "sections": [
                 {
-                    "title": "베니스의 겨울",
-                    "subtitle": "안개 속 신비로운 도시",
-                    "content": "겨울의 베니스는 또 다른 매력을 선사합니다. 안개에 쌓인 운하와 고딕 건축물들은 마치 동화 속 한 장면 같습니다."
+                    "title": "fallback",
+                    "subtitle": "fallback",
+                    "content": "fallback."
                 },
                 {
-                    "title": "카니발의 열기",
-                    "subtitle": "화려한 가면과 축제",
-                    "content": "세계적으로 유명한 베니스 카니발은 도시 전체를 축제의 장으로 만듭니다. 전통 의상과 아름다운 가면은 시간 여행을 하는 듯한 느낌을 줍니다."
+                    "title": "fallback",
+                    "subtitle": "fallback",
+                    "content": "fallback"
                 }
             ]
         }
         return json.dumps(default_content, ensure_ascii=False)
 
     async def _save_results_with_file_manager(self, final_result: Dict) -> None:
-        """결과 저장 (완전히 개선된 File Manager 활용)"""
-
+        """결과 저장 (JSX 저장 로직 개선)"""
         try:
             # 1. 기본 JSON 저장
             outputs_data = {
@@ -240,10 +262,11 @@ class SystemCoordinator:
                 save_to_cosmos(template_container, template_data, partition_key_field='user_id')
                 self.logger.info(f"✅ template_data Cosmos DB 저장 완료: {len(template_data.get('content_sections', []))}개 섹션")
 
+            # ✅ 3. JSX 컴포넌트 저장 로직 개선
             jsx_components = final_result.get("jsx_components", [])
-            if not jsx_components:
-                jsx_components = final_result.get("result", {}).get("content_sections", [])
+            
             if jsx_components:
+                # JSX 메타데이터를 Template 컨테이너에 저장
                 jsx_data = {
                     "id": str(uuid4()),
                     "user_id": template_data.get("user_id", "unknown_user"),
@@ -255,11 +278,28 @@ class SystemCoordinator:
                 save_to_cosmos(template_container, jsx_data, partition_key_field='user_id')
                 self.logger.info(f"✅ JSX 컴포넌트 메타데이터를 Template 컨테이너에 저장 완료")
                 
+                # ✅ JSX 전용 컨테이너에는 순수 JSX 코드만 저장
                 magazine_id = final_result.get("magazine_id", str(uuid4()))
-                saved_ids = save_jsx_components(jsx_container, magazine_id, jsx_components, order_matters=True)
+                
+                # 순수 JSX 컴포넌트만 추출하여 저장
+                pure_jsx_components = []
+                for i, component in enumerate(jsx_components):
+                    pure_jsx_data = {
+                        "title": component.get("title", f"섹션 {i+1}"),
+                        "jsx_code": component.get("jsx_code", ""),
+                        "metadata": component.get("metadata", {})
+                    }
+                    pure_jsx_components.append(pure_jsx_data)
+                
+                saved_ids = save_jsx_components(jsx_container, magazine_id, pure_jsx_components, order_matters=True)
                 self.logger.info(f"✅ JSX 컴포넌트 {len(saved_ids)}개를 JSX 전용 컨테이너에 저장 완료")
+                
+                # ✅ magazine_id를 final_result에 추가하여 PDF 생성에서 사용할 수 있도록 함
+                final_result["magazine_id"] = magazine_id
+                
+            else:
+                self.logger.warning("저장할 JSX 컴포넌트가 없습니다.")
 
         except Exception as e:
             self.logger.error(f"결과 저장 실패: {e}")
             raise
-    

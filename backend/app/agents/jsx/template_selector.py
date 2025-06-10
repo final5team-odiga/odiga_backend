@@ -49,7 +49,7 @@ class SectionStyleAnalyzer:
         else:
             self.logger.info("기본 검색 쿼리 생성")
             query_text = self._create_query_text(final_content, metadata)
-        
+                
         # 2. 이미지 수 추출
         image_count = metadata.get('image_count')
         if image_count is None:
@@ -65,7 +65,8 @@ class SectionStyleAnalyzer:
         
         self.logger.info(f"생성된 검색 쿼리: '{query_text}', 이미지 수: {image_count}")
 
-        # 3. PDFVectorManager를 통해 템플릿 검색
+        # ✅ 3. PDFVectorManager를 통해 템플릿 검색 (results 변수 정의)
+        results = []  # ✅ 초기화 추가
         try:
             results = self.vector_manager.search_similar_layouts(
                 query_text=query_text,
@@ -88,7 +89,14 @@ class SectionStyleAnalyzer:
             self.logger.warning("검색된 템플릿이 없습니다. 기본 템플릿을 사용합니다.")
             return self._get_default_template()
 
-        # 4. ✅ 통합 패턴 기반 필터링 우선 적용
+        # ✅ 4. 콘텐츠 길이 기반 필터링 (results 정의 후 실행)
+        content_length = len(section_data.get("content", ""))
+        if content_length > 100:  # 콘텐츠가 긴 경우
+            filtered_results = self._filter_by_content_requirements(results, content_length)
+            if filtered_results:  # 필터링 결과가 있으면 사용
+                results = filtered_results
+
+        # ✅ 5. 통합 패턴 기반 필터링 우선 적용
         if len(results) > 1:
             filtered_results = self._filter_by_unified_patterns(results, ai_search_patterns, jsx_patterns)
             
@@ -101,7 +109,7 @@ class SectionStyleAnalyzer:
             if filtered_results:
                 results = filtered_results
 
-        # 5. 최적 템플릿 코드 반환
+        # 6. 최적 템플릿 코드 반환
         best_template = results[0]
         template_name = best_template.get('component_name', best_template.get('id', 'unknown'))
         
@@ -194,6 +202,22 @@ class SectionStyleAnalyzer:
         # 점수 순으로 정렬
         filtered_results.sort(key=lambda x: x.get('unified_pattern_score', 0), reverse=True)
         return filtered_results
+    
+    def _filter_by_content_requirements(self, results: List[Dict], content_length: int) -> List[Dict]:
+        """콘텐츠 길이에 따른 템플릿 필터링"""
+        
+        if content_length > 500:  # 긴 콘텐츠인 경우
+            # 텍스트 중심 또는 혼합 템플릿 우선
+            preferred_templates = []
+            for result in results:
+                template_name = result.get("component_name", "").lower()
+                if any(keyword in template_name for keyword in ["text", "mixed", "magazine"]):
+                    preferred_templates.append(result)
+            
+            if preferred_templates:
+                return preferred_templates
+        
+        return results
 
     def _filter_by_layout_strategy(self, results: List[Dict], layout_strategy: Dict) -> List[Dict]:
         """레이아웃 전략 기반 필터링"""
@@ -263,12 +287,12 @@ class SectionStyleAnalyzer:
         return query
 
     def _create_query_text(self, content: str, metadata: Dict) -> str:
-        """벡터 검색을 위한 쿼리 텍스트 생성 (레이아웃 전략이 없을 때 사용)"""
+        """✅ 전체 콘텐츠를 활용한 쿼리 텍스트 생성"""
         style = metadata.get('style', '')
         emotion = metadata.get('emotion', '')
         keywords = metadata.get('keywords', [])
         
-        summary = (content[:100] + '..') if len(content) > 100 else content
+        summary = content
         
         query_parts = [style, emotion]
         
