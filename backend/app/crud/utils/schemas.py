@@ -75,4 +75,5 @@ class DailyCreate(BaseModel):
 class DailyRead(DailyCreate):
     id: int
     createdAt: datetime
-    updatedAt: datetime
+    
+    
