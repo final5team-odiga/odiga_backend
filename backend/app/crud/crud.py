@@ -204,3 +204,4 @@ async def get_dailies_for_user(db: AsyncSession, user_id: str):
         select(Daily).where(Daily.userID == user_id).order_by(Daily.date.asc())
     )
     return result.scalars().all()
+
