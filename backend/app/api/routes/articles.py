@@ -1,31 +1,22 @@
-### app/routes/articles.py
 from fastapi import APIRouter, Request, Form, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.crud.database import get_db
-from app.crud.schemas import ArticleCreate, ArticleUpdate
+from app.crud.data.database import get_db
+from app.models import Article
+from app.crud.utils.schemas import ArticleCreate, ArticleUpdate
 from app.crud.crud import create_article, update_article, delete_article
-from app.crud.models import Article
-from app.crud.main import get_current_user
+from api.dependencies import get_current_user, require_auth
 
-router = APIRouter(tags=["articles"])
+router = APIRouter(prefix="/articles", tags=["articles"])
 
-
-# ---------------------------------------------------
-# 게시판 CRUD (Articles / Comments / Likes)
-# ---------------------------------------------------
-
-@app.get("/articles/")
+@router.get("/")
 async def list_articles(db: AsyncSession = Depends(get_db)):
-    """
-    모든 글 목록을 최신 순서로 반환
-    """
+    """모든 글 목록을 최신 순서로 반환"""
     result = await db.execute(select(Article).order_by(Article.createdAt.desc()))
     articles = result.scalars().all()
 
-    # JSON 직렬화용: Pydantic Schema를 따로 쓰지 않고, 간단히 dict 변환
     article_list = []
     for art in articles:
         article_list.append({
@@ -44,26 +35,24 @@ async def list_articles(db: AsyncSession = Depends(get_db)):
 
     return JSONResponse(status_code=200, content={"success": True, "articles": article_list})
 
-
-@app.get("/articles/{article_id}")
+@router.get("/{article_id}")
 async def article_detail(
     article_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    특정 글의 상세 정보 + 댓글 목록 반환
-    """
+    """특정 글의 상세 정보 + 댓글 목록 반환"""
     result = await db.execute(select(Article).where(Article.articleID == article_id))
     article = result.scalars().first()
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
     
-    # 조회수 1 증가 (view_count를 1 올리고 DB에 반영)
+    # 조회수 1 증가
     article.view_count += 1
     await db.commit()
 
     # 댓글 로드
+    from app.models import Comment
     comments_result = await db.execute(
         select(Comment).where(Comment.articleID == article_id).order_by(Comment.createdAt.asc())
     )
@@ -84,6 +73,7 @@ async def article_detail(
     user_id = await get_current_user(request)
     user_liked = False
     if user_id:
+        from app.crud.crud import check_user_liked
         user_liked = await check_user_liked(db, article_id, user_id)
 
     article_data = {
@@ -106,10 +96,8 @@ async def article_detail(
 
     return JSONResponse(status_code=200, content={"success": True, "article": article_data})
 
-
-@app.post("/articles/")
+@router.post("/")
 async def create_article_endpoint(
-    request: Request,
     articleTitle: str = Form(...),
     imageURL: str = Form(None),
     content: str = Form(...),
@@ -117,22 +105,14 @@ async def create_article_endpoint(
     travelCity: str = Form(...),
     shareLink: str = Form(None),
     price: float = Form(None),
+    user_id: str = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    새 글 생성 (로그인 필요)
-    """
-    user_id = await get_current_user(request)
-    if not user_id:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"success": False, "message": "로그인이 필요합니다."}
-        )
-
+    """새 글 생성 (로그인 필요)"""
     article_in = ArticleCreate(
         articleTitle=articleTitle,
         articleAuthor=user_id,
-        content = content,
+        content=content,
         imageURL=imageURL,
         travelCountry=travelCountry,
         travelCity=travelCity,
@@ -150,10 +130,8 @@ async def create_article_endpoint(
         }
     )
 
-
-@app.put("/articles/{article_id}")
+@router.put("/{article_id}")
 async def edit_article(
-    request: Request,
     article_id: str,
     articleTitle: str = Form(None),
     content: str = Form(None),
@@ -162,18 +140,10 @@ async def edit_article(
     travelCity: str = Form(None),
     shareLink: str = Form(None),
     price: float = Form(None),
+    user_id: str = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    글 수정 (로그인 & 작성자 확인)
-    """
-    user_id = await get_current_user(request)
-    if not user_id:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"success": False, "message": "로그인이 필요합니다."}
-        )
-
+    """글 수정 (로그인 & 작성자 확인)"""
     result = await db.execute(select(Article).where(Article.articleID == article_id))
     article = result.scalars().first()
     if not article:
@@ -201,23 +171,13 @@ async def edit_article(
         content={"success": True, "message": "게시글 수정 성공"}
     )
 
-
-@app.delete("/articles/{article_id}")
+@router.delete("/{article_id}")
 async def delete_article_endpoint(
-    request: Request,
     article_id: str,
+    user_id: str = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    글 삭제 (로그인 & 작성자 확인)
-    """
-    user_id = await get_current_user(request)
-    if not user_id:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"success": False, "message": "로그인이 필요합니다."}
-        )
-
+    """글 삭제 (로그인 & 작성자 확인)"""
     result = await db.execute(select(Article).where(Article.articleID == article_id))
     article = result.scalars().first()
     if not article:

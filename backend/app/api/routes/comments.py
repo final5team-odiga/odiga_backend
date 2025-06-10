@@ -1,35 +1,24 @@
-### app/routes/comments.py
-from fastapi import APIRouter, Request, Form, Depends, HTTPException
+from fastapi import APIRouter, Request, Form, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.crud.database import get_db
-from app.crud.schemas import CommentCreate, CommentUpdate
-from app.crud.crud import create_comment, update_comment, delete_comment
-from app.crud.models import Article, Comment
-from app.crud.main import get_current_user
+from app.crud.data.database import get_db
+from app.models import Article, Comment
+from app.crud.utils.schemas import CommentCreate, CommentUpdate, LikeCreate
+from app.crud.crud import create_comment, update_comment, delete_comment, toggle_like
+from api.dependencies import require_auth
 
-router = APIRouter(tags=["comments"])
+router = APIRouter(prefix="/articles", tags=["comments"])
 
-
-@app.post("/articles/{article_id}/comments/")
+@router.post("/{article_id}/comments/")
 async def post_comment(
-    request: Request,
     article_id: str,
     content: str = Form(...),
+    user_id: str = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    댓글 생성 (로그인 필요)
-    """
-    user_id = await get_current_user(request)
-    if not user_id:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"success": False, "message": "로그인이 필요합니다."}
-        )
-
+    """댓글 생성 (로그인 필요)"""
     # 게시글 존재 여부 확인
     result = await db.execute(select(Article).where(Article.articleID == article_id))
     if not result.scalars().first():
@@ -45,25 +34,15 @@ async def post_comment(
         content={"success": True, "message": "댓글 작성 성공"}
     )
 
-
-@app.put("/articles/{article_id}/comments/{comment_id}")
+@router.put("/{article_id}/comments/{comment_id}")
 async def edit_comment(
-    request: Request,
     article_id: str,
     comment_id: int,
     content: str = Form(...),
+    user_id: str = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    댓글 수정 (로그인 & 댓글 작성자 확인)
-    """
-    user_id = await get_current_user(request)
-    if not user_id:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"success": False, "message": "로그인이 필요합니다."}
-        )
-
+    """댓글 수정 (로그인 & 댓글 작성자 확인)"""
     # 게시글 & 댓글 존재 여부 확인
     art_res = await db.execute(select(Article).where(Article.articleID == article_id))
     if not art_res.scalars().first():
@@ -86,24 +65,14 @@ async def edit_comment(
         content={"success": True, "message": "댓글 수정 성공"}
     )
 
-
-@app.delete("/articles/{article_id}/comments/{comment_id}")
+@router.delete("/{article_id}/comments/{comment_id}")
 async def delete_comment_endpoint(
-    request: Request,
     article_id: str,
     comment_id: int,
+    user_id: str = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    댓글 삭제 (로그인 필요)
-    """
-    user_id = await get_current_user(request)
-    if not user_id:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"success": False, "message": "로그인이 필요합니다."}
-        )
-
+    """댓글 삭제 (로그인 필요)"""
     # 게시글 & 댓글 존재 여부 확인
     art_res = await db.execute(select(Article).where(Article.articleID == article_id))
     if not art_res.scalars().first():
@@ -125,3 +94,13 @@ async def delete_comment_endpoint(
         status_code=status.HTTP_200_OK,
         content={"success": True, "message": "댓글 삭제 성공"}
     )
+
+@router.post("/{article_id}/like/")
+async def like_article(
+    article_id: str,
+    user_id: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_db),
+):
+    """좋아요 토글 (로그인 필요)"""
+    result = await toggle_like(db, article_id, user_id)
+    return JSONResponse(status_code=200, content=result)

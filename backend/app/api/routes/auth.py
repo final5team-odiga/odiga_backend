@@ -1,17 +1,17 @@
-from fastapi import APIRouter, Request, Form, status, Depends, HTTPException
+from fastapi import APIRouter, Request, Form, Depends, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
-from passlib.context import CryptContext
 from pydantic import EmailStr
+from passlib.context import CryptContext
 
-from app.crud.database import get_db
-from app.crud.models import User
-from app.crud.schemas import UserCreate
+from app.crud.data.database import get_db
+from app.models import User
+from app.crud.utils.schemas import UserCreate
 from app.crud.crud import create_user
 
-router = APIRouter(tags=["auth"])
+router = APIRouter(prefix="/auth", tags=["authentication"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 @router.get("/check_userid/", summary="userID 중복 확인")
@@ -30,7 +30,7 @@ async def signup(
     userLanguage: str = Form(...),
     db: AsyncSession = Depends(get_db),
 ):
-    # 이메일 중복 확인
+    # 이메일 중복 확인만 수행
     result_email = await db.execute(select(User).where(User.userEmail == userEmail))
     if result_email.scalar_one_or_none():
         return JSONResponse(

@@ -1,38 +1,29 @@
-### app/routes/stt_tts.py
-from fastapi import APIRouter, Request, File, UploadFile, Form, HTTPException
+import os
+import tempfile
+import logging
+from fastapi import APIRouter, Request, UploadFile, File, Form, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
-import tempfile, os, base64
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.crud.stt import transcribe_audio
-from app.crud.tts import lan_det, request_tts
-from app.crud.main import get_current_user
+from app.crud.data.database import get_db
+from app.service.stt import transcribe_audio
+from app.service.tts import lan_det, request_tts
+from api.dependencies import require_auth
 
-router = APIRouter(tags=["stt_tts"])
+router = APIRouter(prefix="/speech", tags=["speech"])
+logger = logging.getLogger(__name__)
 
+SPEECH_SERVICE_KEY = os.getenv("SPEECH_SERVICE_KEY")
+SPEECH_REGION = os.getenv("SPEECH_REGION")
 
-# ---------------------------------------------------
-# STT 엔드포인트 (JSON)
-# ---------------------------------------------------
-
-@app.post("/transcribe/")
+@router.post("/transcribe/")
 async def transcribe(
-    request: Request,
     audio_file: UploadFile = File(...),
+    user_id: str = Depends(require_auth),
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Multipart-form-data로 받은 음성 파일을 STT 처리하고,
-    JSON(정상 응답: { success, detected_language, transcription }) 형태로 반환.
-    """
+    """Multipart-form-data로 받은 음성 파일을 STT 처리하고, JSON 형태로 반환"""
     try:
-        # 로그인 체크
-        user_id = await get_current_user(request)
-        if not user_id:
-            return JSONResponse(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                content={"success": False, "message": "Login required"}
-            )
-
         # 업로드 파일 검사
         if not audio_file.filename:
             logger.error("No filename provided")
@@ -90,40 +81,7 @@ async def transcribe(
                     logger.warning(f"Failed to cleanup temp file: {cleanup_error}")
 
     except HTTPException:
-        # HTTPException은 그대로 상위로 전달되어 JSON으로 응답됨
         raise
-
-    except FileNotFoundError as e:
-        logger.error(f"File not found: {e}")
-        return JSONResponse(
-            status_code=status.HTTP_404_NOT_FOUND,
-            content={"success": False, "message": f"Audio file not found: {str(e)}"}
-        )
-
-    except ValueError as e:
-        logger.error(f"Audio processing error: {e}")
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"success": False, "message": str(e), "error_details": "Audio format conversion failed"}
-        )
-
-    except RuntimeError as e:
-        logger.error(f"Runtime error: {e}")
-        msg = str(e)
-        if "FFmpeg" in msg:
-            return JSONResponse(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                content={
-                    "success": False,
-                    "message": "Audio conversion service unavailable",
-                    "error_details": "FFmpeg이 필요합니다. 관리자에게 문의하세요."
-                }
-            )
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"success": False, "message": f"Runtime error: {msg}"}
-        )
-
     except Exception as e:
         logger.error(f"Unexpected transcription error: {e}")
         return JSONResponse(
@@ -135,18 +93,9 @@ async def transcribe(
             }
         )
 
-
-# ---------------------------------------------------
-# TTS 엔드포인트 (JSON)
-# ---------------------------------------------------
-
-@app.post("/tts/")
-async def tts_api(
-    text_input: str = Form(...)
-):
-    """
-    text_input(폼 필드) → 언어 감지 → TTS 음성(bytes) → Base64 인코딩된 Data URI 반환
-    """
+@router.post("/tts/")
+async def tts_api(text_input: str = Form(...)):
+    """text_input(폼 필드) → 언어 감지 → TTS 음성(bytes) → Base64 인코딩된 Data URI 반환"""
     # 언어 감지
     lang_code = lan_det(text_input)
     if not lang_code:
@@ -177,18 +126,15 @@ async def tts_api(
         }
     )
 
-
-@app.get("/tts-info/")
+@router.get("/tts-info/")
 async def tts_info():
-    """
-    클라이언트에게 TTS API 사용법을 JSON으로 안내
-    """
+    """클라이언트에게 TTS API 사용법을 JSON으로 안내"""
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content={
-            "description": "POST /tts/ 에 폼 필드 'text_input'을 보내면, Base64 인코딩된 오디오 Data URI를 반환합니다.",
+            "description": "POST /speech/tts/ 에 폼 필드 'text_input'을 보내면, Base64 인코딩된 오디오 Data URI를 반환합니다.",
             "method": "POST",
-            "endpoint": "/tts/",
+            "endpoint": "/speech/tts/",
             "form_fields": {
                 "text_input": "TTS로 변환할 문자열"
             },

@@ -1,42 +1,28 @@
-### app/routes/profile.py
-from fastapi import APIRouter, Request, Form, File, UploadFile, Depends, HTTPException
+from fastapi import APIRouter, Request, Form, Depends, UploadFile, File, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import update, delete
 from sqlalchemy.future import select
+from sqlalchemy import delete, update
 from passlib.context import CryptContext
 
-from app.crud.database import get_db
-from app.crud.models import User, Article, Comment, Like
-from app.crud.main import get_current_user
-from app.crud.azure_utils import is_image_safe_for_upload, upload_profile_image, delete_interview_result
+from app.crud.data.database import get_db
+from app.crud.models.models import User, Article, Comment, Like
+from app.crud.utils.azure_utils import upload_profile_image, is_image_safe_for_upload
+from api.dependencies import require_auth
 
-router = APIRouter(tags=["profile"])
+router = APIRouter(prefix="/profile", tags=["profiles"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-
-
-# ---------------------------------------------------
-# 마이페이지 / 프로필 / 회원 탈퇴
-# ---------------------------------------------------
-
-@app.get("/mypage/")
-async def mypage(request: Request, db: AsyncSession = Depends(get_db)):
-    """
-    마이페이지: 현재 로그인된 사용자의 정보 + 작성한 게시글 목록 반환
-    """
-    user_id = await get_current_user(request)
-    if not user_id:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"success": False, "message": "로그인이 필요합니다."}
-        )
-
+@router.get("/mypage/")
+async def mypage(
+    user_id: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_db)
+):
+    """마이페이지: 현재 로그인된 사용자의 정보 + 작성한 게시글 목록 반환"""
     # 사용자 정보 로드
     result_user = await db.execute(select(User).where(User.userID == user_id))
     user = result_user.scalars().first()
     if not user:
-        request.session.clear()
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"success": False, "message": "유효하지 않은 세션입니다. 다시 로그인해주세요."}
@@ -65,9 +51,7 @@ async def mypage(request: Request, db: AsyncSession = Depends(get_db)):
         "userEmail": user.userEmail,
         "userCountry": user.userCountry,
         "userLanguage": user.userLanguage,
-        "content": art.content,  
         "profileImage": user.profileImage,
-        "view_count": art.view_count,
         "createdAt": user.createdAt.isoformat(),
         "updatedAt": user.modifiedAt.isoformat() if user.modifiedAt else None,
         "myArticles": article_list
@@ -75,33 +59,22 @@ async def mypage(request: Request, db: AsyncSession = Depends(get_db)):
 
     return JSONResponse(status_code=200, content={"success": True, "user": user_data})
 
-
-@app.put("/profile/")
+@router.put("/")
 async def edit_profile(
-    request: Request,
     userName: str = Form(...),
     userEmail: str = Form(...),
     userCountry: str = Form(None),
     userLanguage: str = Form(None),
     password: str = Form(None),
     profile_image: UploadFile = File(None),
+    user_id: str = Depends(require_auth),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    프로필 수정 (로그인 필요)
-    """
-    user_id = await get_current_user(request)
-    if not user_id:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"success": False, "message": "로그인이 필요합니다."}
-        )
-
+    """프로필 수정 (로그인 필요)"""
     # DB에서 사용자 로드
     result = await db.execute(select(User).where(User.userID == user_id))
     user = result.scalars().first()
     if not user:
-        request.session.clear()
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"success": False, "message": "유효하지 않은 세션입니다. 다시 로그인해주세요."}
@@ -118,7 +91,6 @@ async def edit_profile(
 
     # 프로필 이미지가 업로드되었다면 저장하고 URL 업데이트
     if profile_image:
-        
         content = await profile_image.read()
 
         # Optional: Safety check
@@ -134,27 +106,11 @@ async def edit_profile(
         update_data["profileImage"] = image_url
 
     await db.execute(
-    update(User)
-    .where(User.userID == user_id)
-    .values(**update_data)
-    .execution_options(synchronize_session="fetch"))
-    # 프로필 이미지가 업로드되었다면 저장하고 URL 업데이트
-    # if profile_image:
-    #     ext = os.path.splitext(profile_image.filename)[1]
-    #     save_dir = "static/profiles"
-    #     os.makedirs(save_dir, exist_ok=True)
-    #     save_path = f"{save_dir}/{user_id}{ext}"
-    #     content = await profile_image.read()
-    #     with open(save_path, "wb") as f:
-    #         f.write(content)
-    #     update_data["profileImage"] = f"/static/profiles/{user_id}{ext}"
-
-    # await db.execute(
-    #     (select(User))
-    #     .where(User.userID == user_id)
-    #     .execution_options(synchronize_session="fetch")
-    #     .update(update_data)
-    # )
+        update(User)
+        .where(User.userID == user_id)
+        .values(**update_data)
+        .execution_options(synchronize_session="fetch")
+    )
     await db.commit()
 
     return JSONResponse(
@@ -162,19 +118,13 @@ async def edit_profile(
         content={"success": True, "message": "프로필 수정 성공"}
     )
 
-
-@app.delete("/delete_account/")
-async def delete_account(request: Request, db: AsyncSession = Depends(get_db)):
-    """
-    회원 탈퇴 (로그인 필요)
-    """
-    user_id = await get_current_user(request)
-    if not user_id:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"success": False, "message": "로그인이 필요합니다."}
-        )
-
+@router.delete("/delete_account/")
+async def delete_account(
+    request: Request,
+    user_id: str = Depends(require_auth),
+    db: AsyncSession = Depends(get_db)
+):
+    """회원 탈퇴 (로그인 필요)"""
     # 댓글, 좋아요, 게시글, 사용자 순서로 삭제
     await db.execute(delete(Comment).where(Comment.commentAuthor == user_id))
     await db.execute(delete(Like).where(Like.userID == user_id))

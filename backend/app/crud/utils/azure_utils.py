@@ -73,14 +73,6 @@ def upload_image_if_not_exists(user_id: str, magazine_id: str, filename: str, co
     )
     
     return True, new_filename
-# def upload_image_if_not_exists(user_id: str, magazine_id: str, filename: str, content: bytes) -> bool:
-#     container_client = get_or_create_container()
-#     blob_path = build_blob_path(user_id, magazine_id, "images", filename)
-#     blob_client = container_client.get_blob_client(blob_path)
-#     if blob_client.exists():
-#         return False
-#     blob_client.upload_blob(content, overwrite=False)
-#     return True
 
 def delete_image(user_id: str, magazine_id: str, filename: str):
     container_client = get_or_create_container()
@@ -178,50 +170,7 @@ def analyze_image_from_blob(image_content: bytes, filename: str = "") -> dict:
             results["should_filter"] = True
 
     return results
-# def analyze_image_from_blob(image_content: bytes, filename: str = "") -> dict:
-#     """
-#     Analyze image content using Azure Content Safety API.
-#     Returns result dict including 'should_filter' flag and per-category analysis.
-#     """
-#     client = ContentSafetyClient(
-#         endpoint=CONTENT_SAFETY_ENDPOINT,
-#         credential=AzureKeyCredential(CONTENT_SAFETY_KEY)
-#     )
 
-#     request = AnalyzeImageOptions(image=ImageData(content=image_content))
-
-#     try:
-#         response = client.analyze_image(request)
-#     except HttpResponseError as e:
-#         print(f"Content Safety API error for {filename}: {e}")
-#         raise
-
-#     results = {
-#         "filename": filename,
-#         "image_size": len(image_content),
-#         "analysis": {},
-#         "should_filter": False
-#     }
-
-#     categories = [
-#         ("hate", ImageCategory.HATE),
-#         ("self_harm", ImageCategory.SELF_HARM),
-#         ("sexual", ImageCategory.SEXUAL),
-#         ("violence", ImageCategory.VIOLENCE)
-#     ]
-
-#     for name, cat_enum in categories:
-#         cat_result = next((c for c in response.categories_analysis if c.category == cat_enum), None)
-#         severity = cat_result.severity if cat_result else 0
-#         filtered = severity > 2
-#         results["analysis"][name] = {
-#             "severity": severity,
-#             "filtered": filtered
-#         }
-#         if filtered:
-#             results["should_filter"] = True
-
-#     return results
 
 def is_image_safe_for_upload(image_bytes: bytes, filename: str = "") -> tuple[bool, dict]:
     try:
@@ -275,66 +224,6 @@ def upload_interview_result(user_id: str, magazine_id: str, content: bytes):
     
     blob_client.upload_blob(content, overwrite=True, content_settings=ContentSettings(content_type="text/plain"))
     return blob_path
-
-# def upload_interview_result(user_id: str, folder_name: str, content: str) -> str:
-#     """
-#     인터뷰 결과를 Azure Blob Storage에 업로드합니다.
-    
-#     Args:
-#         user_id: 사용자 ID
-#         folder_name: 폴더명
-#         content: 업로드할 텍스트 내용
-        
-#     Returns:
-#         str: 업로드된 blob의 경로
-        
-#     Raises:
-#         ValueError: 입력 파라미터가 유효하지 않은 경우
-#         Exception: Azure Storage 관련 오류
-#     """
-#     # 입력 유효성 검사
-#     if not user_id or not user_id.strip():
-#         raise ValueError("사용자 ID가 필요합니다.")
-#     if not folder_name or not folder_name.strip():
-#         raise ValueError("폴더명이 필요합니다.")
-#     if not content or not content.strip():
-#         raise ValueError("내용이 필요합니다.")
-    
-#     try:
-#         # 컨테이너 가져오기 또는 생성
-#         container_client = get_or_create_container()
-        
-#         # 현재 날짜로 파일명 생성
-#         current_date = datetime.datetime.now()
-#         filename = f"interview_{current_date.month:02d}-{current_date.day:02d}.txt"
-        
-#         # user/{userid}/magazine/{foldername}/texts/ 경로 생성
-#         base_path = f"{user_id.strip()}/magazine/{folder_name.strip()}/texts"
-        
-#         # 중복된 파일명 방지
-#         blob_path = get_unique_blob_name(container_client, base_path, filename)
-#         blob_client = container_client.get_blob_client(blob_path)
-        
-#         # 문자열을 UTF-8로 인코딩하여 업로드
-#         content_bytes = content.encode('utf-8')
-#         blob_client.upload_blob(
-#             content_bytes, 
-#             overwrite=True,
-#             content_settings=ContentSettings(
-#                 content_type='text/plain; charset=utf-8',
-#                 content_encoding='utf-8'
-#             )
-#         )
-        
-#         logger.info(f"인터뷰 결과 업로드 완료: {blob_path}")
-#         return blob_path
-        
-#     except ValueError:
-#         # 입력 유효성 오류는 그대로 전파
-#         raise
-#     except Exception as e:
-#         logger.error(f"인터뷰 결과 업로드 실패: {str(e)}")
-#         raise Exception(f"Azure Storage 업로드 실패: {str(e)}")
 
 def list_user_folders(user_id: str) -> list:
     """
