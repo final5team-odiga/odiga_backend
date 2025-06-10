@@ -35,7 +35,7 @@ const createFullHTML = (htmlSections) => `
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Magazine PDF</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&family=Playfair+Display:wght@400;700&family=Montserrat:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
     /* ✅ 페이지 미디어 설정 */
     @page {
@@ -43,7 +43,7 @@ const createFullHTML = (htmlSections) => `
       margin: 8mm;
     }
     
-    /* ✅ 프린트 미디어 전용 스타일 - 레이아웃 보존 */
+    /* ✅ 프린트 미디어 - 타이포그래피 중심 다양성 */
     @media print {
       body {
         margin: 0;
@@ -65,145 +65,284 @@ const createFullHTML = (htmlSections) => `
         overflow: hidden;
         padding: 8mm;
         box-sizing: border-box;
+        background: white !important;
       }
       
       .page-section:last-child {
         page-break-after: auto;
       }
       
-      /* ✅ Flexbox 레이아웃 보존 (조건부 비활성화) */
-      .flex {
+      /* ✅ 템플릿별 폰트 패밀리 다양성 */
+      .template-elegant { 
+        font-family: 'Playfair Display', serif !important; 
+      }
+      
+      .template-modern { 
+        font-family: 'Montserrat', sans-serif !important; 
+      }
+      
+      .template-classic { 
+        font-family: 'Noto Sans KR', sans-serif !important; 
+      }
+      
+      /* ✅ 제목 스타일 다양성 (크기, 간격, 정렬) */
+      .title-elegant { 
+        font-size: 24pt !important; 
+        font-family: 'Playfair Display', serif !important;
+        font-weight: 700 !important;
+        letter-spacing: -0.8pt !important;
+        line-height: 1.1 !important;
+        margin-bottom: 12pt !important;
+        text-align: left !important;
+      }
+      
+      .title-modern { 
+        font-size: 20pt !important; 
+        font-family: 'Montserrat', sans-serif !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 2pt !important;
+        line-height: 1.2 !important;
+        margin-bottom: 8pt !important;
+        text-align: center !important;
+      }
+      
+      .title-classic { 
+        font-size: 18pt !important; 
+        font-family: 'Noto Sans KR', sans-serif !important;
+        font-weight: 700 !important;
+        letter-spacing: 0pt !important;
+        line-height: 1.3 !important;
+        margin-bottom: 10pt !important;
+        text-align: left !important;
+      }
+      
+      .title-minimal { 
+        font-size: 16pt !important; 
+        font-family: 'Montserrat', sans-serif !important;
+        font-weight: 300 !important;
+        letter-spacing: 1pt !important;
+        line-height: 1.4 !important;
+        margin-bottom: 6pt !important;
+        text-align: right !important;
+      }
+      
+      /* ✅ 부제목 스타일 다양성 */
+      .subtitle-elegant { 
+        font-size: 14pt !important; 
+        font-family: 'Playfair Display', serif !important;
+        font-style: italic !important;
+        font-weight: 400 !important;
+        margin-bottom: 8pt !important;
+        text-align: left !important;
+      }
+      
+      .subtitle-modern { 
+        font-size: 12pt !important; 
+        font-family: 'Montserrat', sans-serif !important;
+        font-weight: 500 !important;
+        text-transform: lowercase !important;
+        letter-spacing: 0.5pt !important;
+        margin-bottom: 6pt !important;
+        text-align: center !important;
+      }
+      
+      .subtitle-classic { 
+        font-size: 13pt !important; 
+        font-family: 'Noto Sans KR', sans-serif !important;
+        font-weight: 500 !important;
+        margin-bottom: 8pt !important;
+        text-align: left !important;
+      }
+      
+      /* ✅ 본문 텍스트 스타일 다양성 */
+      .text-elegant { 
+        font-size: 11pt !important; 
+        font-family: 'Playfair Display', serif !important;
+        line-height: 1.8 !important;
+        text-align: justify !important;
+        margin-bottom: 10pt !important;
+        text-indent: 12pt !important;
+      }
+      
+      .text-modern { 
+        font-size: 10pt !important; 
+        font-family: 'Montserrat', sans-serif !important;
+        line-height: 1.6 !important;
+        text-align: left !important;
+        margin-bottom: 8pt !important;
+        letter-spacing: 0.2pt !important;
+      }
+      
+      .text-classic { 
+        font-size: 10pt !important; 
+        font-family: 'Noto Sans KR', sans-serif !important;
+        line-height: 1.7 !important;
+        text-align: justify !important;
+        margin-bottom: 8pt !important;
+      }
+      
+      /* ✅ 레이아웃 다양성 (Flexbox/Grid 보존) */
+      .layout-elegant {
         display: flex !important;
+        flex-direction: row !important;
+        align-items: flex-start !important;
+        gap: 16pt !important;
+        padding: 16pt !important;
       }
       
-      /* ✅ 특정 Flexbox만 비활성화 (페이지 분할 문제가 있는 경우) */
-      .flex.print-block {
-        display: block !important;
-      }
-      
-      .flex.print-block > * {
-        display: block !important;
-        margin-bottom: 8pt;
-        width: 100% !important;
-      }
-      
-      /* ✅ Grid 레이아웃 보존 */
-      .grid {
+      .layout-modern {
         display: grid !important;
+        grid-template-columns: 1fr 1fr !important;
+        gap: 12pt !important;
+        padding: 12pt !important;
       }
       
-      .grid.print-block {
+      .layout-classic {
         display: block !important;
+        padding: 14pt !important;
       }
       
-      .grid.print-block > * {
-        display: block !important;
-        margin-bottom: 8pt;
-        width: 100% !important;
+      .layout-magazine {
+        display: grid !important;
+        grid-template-columns: 2fr 1fr !important;
+        gap: 14pt !important;
+        padding: 10pt !important;
       }
       
-      /* ✅ 이미지 크기 제어 (레이아웃 보존) */
-      img {
+      .layout-gallery {
+        display: grid !important;
+        grid-template-columns: repeat(3, 1fr) !important;
+        gap: 8pt !important;
+        padding: 8pt !important;
+      }
+      
+      /* ✅ 이미지 스타일 다양성 (크기와 배치) */
+      .image-elegant {
+        border-radius: 8pt !important;
+        max-width: 100% !important;
+        height: auto !important;
+        max-height: 45vh !important;
+        object-fit: cover !important;
+        margin: 6pt !important;
+      }
+      
+      .image-modern {
+        border-radius: 2pt !important;
         max-width: 100% !important;
         height: auto !important;
         max-height: 35vh !important;
         object-fit: contain !important;
-        page-break-inside: avoid;
-      }
-      
-      /* ✅ Flexbox 내 이미지는 inline-block 유지 */
-      .flex img {
-        display: inline-block !important;
         margin: 4pt !important;
       }
       
-      /* ✅ Grid 내 이미지는 block 유지하되 크기 제한 */
-      .grid img {
-        display: block !important;
-        margin: 4pt auto !important;
-        max-width: 200pt !important;
-        max-height: 150pt !important;
-      }
-      
-      /* ✅ 단독 이미지는 중앙 정렬 */
-      img:only-child, .image-container img {
-        display: block !important;
+      .image-classic {
+        border-radius: 4pt !important;
+        max-width: 100% !important;
+        height: auto !important;
+        max-height: 40vh !important;
+        object-fit: cover !important;
         margin: 8pt auto !important;
-        max-width: 300pt !important;
-        max-height: 200pt !important;
+        display: block !important;
       }
       
-      /* ✅ 텍스트 요소 최적화 */
+      .image-small {
+        max-width: 150pt !important;
+        max-height: 120pt !important;
+        object-fit: cover !important;
+        margin: 4pt !important;
+      }
+      
+      .image-large {
+        max-width: 100% !important;
+        max-height: 50vh !important;
+        object-fit: cover !important;
+        margin: 8pt auto !important;
+        display: block !important;
+      }
+      
+      /* ✅ 특별한 레이아웃 요소들 (흰색 배경 내에서 구분) */
+      .content-box-elegant {
+        border-left: 3pt solid #ddd !important;
+        padding-left: 12pt !important;
+        margin: 10pt 0 !important;
+      }
+      
+      .content-box-modern {
+        border: 1pt solid #eee !important;
+        padding: 10pt !important;
+        margin: 8pt 0 !important;
+      }
+      
+      .content-box-minimal {
+        border-top: 1pt solid #f0f0f0 !important;
+        padding-top: 8pt !important;
+        margin-top: 12pt !important;
+      }
+      
+      /* ✅ 템플릿별 고유 특성 */
+      .template-mixed-07 {
+        border-top: 2pt solid #e8e8e8 !important;
+        padding-top: 10pt !important;
+      }
+      
+      .template-mixed-08 {
+        text-align: center !important;
+        padding: 12pt 8pt !important;
+      }
+      
+      .template-mixed-10 {
+        border: 1pt solid #f5f5f5 !important;
+        padding: 12pt !important;
+        margin: 4pt !important;
+      }
+      
+      .template-mixed-13 {
+        display: grid !important;
+        grid-template-rows: auto 1fr auto !important;
+        min-height: 70vh !important;
+      }
+      
+      /* ✅ 간격과 여백 다양성 */
+      .spacing-tight {
+        padding: 6pt !important;
+        margin-bottom: 4pt !important;
+      }
+      
+      .spacing-normal {
+        padding: 10pt !important;
+        margin-bottom: 8pt !important;
+      }
+      
+      .spacing-loose {
+        padding: 16pt !important;
+        margin-bottom: 12pt !important;
+      }
+      
+      /* ✅ 기본 요소 최적화 */
       h1, h2, h3, h4, h5, h6 {
         page-break-after: avoid;
         page-break-inside: avoid;
-        margin-bottom: 6pt !important;
-        margin-top: 8pt !important;
         color: black !important;
         font-weight: bold !important;
       }
       
-      h1 { font-size: 16pt !important; line-height: 1.2 !important; }
-      h2 { font-size: 13pt !important; line-height: 1.3 !important; }
-      h3 { font-size: 11pt !important; line-height: 1.4 !important; }
-      
       p {
         page-break-inside: avoid;
-        margin-bottom: 6pt !important;
-        margin-top: 0 !important;
-        text-align: justify !important;
+        color: black !important;
         hyphens: auto;
         word-wrap: break-word;
-        font-size: 10pt !important;
-        line-height: 1.5 !important;
+      }
+      
+      img {
+        page-break-inside: avoid;
+        color: black !important;
       }
       
       /* ✅ 컨테이너 최적화 */
       .container, .max-w-4xl, .max-w-3xl, [class*="max-w"] {
         max-width: 100% !important;
-        padding: 0 !important;
-        margin: 0 !important;
         width: 100% !important;
-      }
-      
-      /* ✅ 여백 최적화 */
-      .p-8, .p-6, .p-4 { padding: 6pt !important; }
-      .mb-8, .mb-6, .mb-4 { margin-bottom: 6pt !important; }
-      .mt-8, .mt-6, .mt-4 { margin-top: 6pt !important; }
-      .gap-8, .gap-6, .gap-4 { gap: 4pt !important; }
-      
-      /* ✅ 원형 이미지 처리 */
-      .rounded-full {
-        border-radius: 6pt !important;
-        max-width: 80pt !important;
-        max-height: 80pt !important;
-      }
-      
-      /* ✅ 그림자 제거 */
-      .shadow-lg, .shadow-md, .shadow, [class*="shadow"] {
-        box-shadow: none !important;
-      }
-      
-      /* ✅ 색상 최적화 */
-      .text-white { color: black !important; }
-      .bg-black { background-color: white !important; }
-      
-      /* ✅ 특정 템플릿 레이아웃 보존 */
-      .template-flex-preserve {
-        display: flex !important;
-        flex-direction: row !important;
-        align-items: flex-start !important;
-        gap: 12pt !important;
-      }
-      
-      .template-flex-preserve > * {
-        flex: 1 !important;
-      }
-      
-      .template-grid-preserve {
-        display: grid !important;
-        grid-template-columns: repeat(auto-fit, minmax(120pt, 1fr)) !important;
-        gap: 8pt !important;
       }
     }
     
@@ -212,6 +351,8 @@ const createFullHTML = (htmlSections) => `
       body {
         font-family: 'Noto Sans KR', sans-serif;
         line-height: 1.6;
+        background: white;
+        color: black;
       }
       
       .page-section {
@@ -219,6 +360,7 @@ const createFullHTML = (htmlSections) => `
         margin-bottom: 2rem;
         padding: 1rem;
         min-height: 400px;
+        background: white;
       }
     }
   </style>

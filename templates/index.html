@@ -1,0 +1,1282 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Odiga Backend Dashboard</title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', path='css/styles.css') }}"
+    />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body>
+    <div class="app-container">
+      <!-- 사이드바 네비게이션 -->
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <h1>Odiga API</h1>
+        </div>
+        <nav class="sidebar-nav">
+          <ul>
+            <li>
+              <a
+                href="#dashboard"
+                class="nav-link active"
+                data-section="dashboard"
+                >대시보드</a
+              >
+            </li>
+            <li>
+              <a href="#auth" class="nav-link" data-section="auth">인증 API</a>
+            </li>
+            <li>
+              <a href="#articles" class="nav-link" data-section="articles"
+                >게시글 API</a
+              >
+            </li>
+            <li>
+              <a href="#comments" class="nav-link" data-section="comments"
+                >댓글 API</a
+              >
+            </li>
+            <li>
+              <a href="#profiles" class="nav-link" data-section="profiles"
+                >프로필 API</a
+              >
+            </li>
+            <li>
+              <a href="#speech" class="nav-link" data-section="speech"
+                >음성 API</a
+              >
+            </li>
+            <li>
+              <a href="#storage" class="nav-link" data-section="storage"
+                >스토리지 API</a
+              >
+            </li>
+            <li>
+              <a href="#analytics" class="nav-link" data-section="analytics"
+                >분석 API</a
+              >
+            </li>
+            <li>
+              <a href="#magazine" class="nav-link" data-section="magazine"
+                >매거진 API</a
+              >
+            </li>
+            <li>
+              <a href="#daily" class="nav-link" data-section="daily"
+                >데일리 API</a
+              >
+            </li>
+          </ul>
+        </nav>
+        <div class="sidebar-footer">
+          <a href="/docs" target="_blank" class="docs-link">API 문서</a>
+          <a href="/redoc" target="_blank" class="docs-link">ReDoc</a>
+        </div>
+      </aside>
+
+      <!-- 메인 콘텐츠 영역 -->
+      <main class="main-content">
+        <!-- 헤더 영역 -->
+        <header class="main-header">
+          <div class="header-search">
+            <input
+              type="text"
+              id="api-search"
+              placeholder="API 엔드포인트 검색..."
+            />
+          </div>
+          <div class="theme-toggle">
+            <button id="theme-toggle-btn">🌙</button>
+          </div>
+        </header>
+
+        <!-- 대시보드 섹션 -->
+        <section id="dashboard" class="content-section active">
+          <h2>API 대시보드</h2>
+          <div class="dashboard-summary">
+            <div class="card">
+              <h3>API 엔드포인트</h3>
+              <p class="count">45</p>
+            </div>
+            <div class="card">
+              <h3>응답 시간</h3>
+              <p class="time">245ms</p>
+            </div>
+            <div class="card">
+              <h3>성공률</h3>
+              <p class="percentage">99.8%</p>
+            </div>
+          </div>
+          <div class="dashboard-charts">
+            <div class="chart-container">
+              <h3>API 호출 통계</h3>
+              <canvas id="apiCallsChart"></canvas>
+            </div>
+            <div class="chart-container">
+              <h3>응답 시간 추이</h3>
+              <canvas id="responseTimeChart"></canvas>
+            </div>
+          </div>
+          <div class="recent-logs">
+            <h3>최근 API 호출 로그</h3>
+            <div class="logs-container">
+              <table id="logs-table">
+                <thead>
+                  <tr>
+                    <th>시간</th>
+                    <th>엔드포인트</th>
+                    <th>메서드</th>
+                    <th>상태</th>
+                    <th>응답 시간</th>
+                  </tr>
+                </thead>
+                <tbody id="logs-body">
+                  <!-- 로그 데이터가 자바스크립트로 채워집니다 -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 인증 API 섹션 -->
+        <section id="auth" class="content-section">
+          <h2>인증 API</h2>
+          <div class="endpoint-container">
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="path">/auth/signup/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">새 사용자 등록</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="auth-signup-userID">userID</label>
+                    <input type="text" id="auth-signup-userID" name="userID" />
+                  </div>
+                  <div class="form-group">
+                    <label for="auth-signup-userName">userName</label>
+                    <input
+                      type="text"
+                      id="auth-signup-userName"
+                      name="userName"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="auth-signup-password">password</label>
+                    <input
+                      type="password"
+                      id="auth-signup-password"
+                      name="password"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="auth-signup-userEmail">userEmail</label>
+                    <input
+                      type="email"
+                      id="auth-signup-userEmail"
+                      name="userEmail"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="auth-signup-userCountry">userCountry</label>
+                    <input
+                      type="text"
+                      id="auth-signup-userCountry"
+                      name="userCountry"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="auth-signup-userLanguage">userLanguage</label>
+                    <input
+                      type="text"
+                      id="auth-signup-userLanguage"
+                      name="userLanguage"
+                    />
+                  </div>
+                  <button class="send-btn" data-endpoint="auth-signup">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="auth-signup-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="path">/auth/login/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">사용자 로그인</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="auth-login-userID">userID</label>
+                    <input type="text" id="auth-login-userID" name="userID" />
+                  </div>
+                  <div class="form-group">
+                    <label for="auth-login-password">password</label>
+                    <input
+                      type="password"
+                      id="auth-login-password"
+                      name="password"
+                    />
+                  </div>
+                  <button class="send-btn" data-endpoint="auth-login">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="auth-login-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="path">/auth/logout/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">사용자 로그아웃</p>
+                <div class="test-form">
+                  <button class="send-btn" data-endpoint="auth-logout">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="auth-logout-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="path">/auth/check_userid/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">userID 중복 확인</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="auth-check-userID">userID</label>
+                    <input type="text" id="auth-check-userID" name="userID" />
+                  </div>
+                  <button class="send-btn" data-endpoint="auth-check">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="auth-check-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 게시글 API 섹션 -->
+        <section id="articles" class="content-section">
+          <h2>게시글 API</h2>
+          <div class="endpoint-container">
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="path">/articles/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">게시글 목록 조회</p>
+                <div class="test-form">
+                  <button class="send-btn" data-endpoint="articles-list">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="articles-list-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="path">/articles/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">새 게시글 작성</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="articles-create-title">제목</label>
+                    <input
+                      type="text"
+                      id="articles-create-title"
+                      name="articleTitle"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="articles-create-content">내용</label>
+                    <textarea
+                      id="articles-create-content"
+                      name="content"
+                      rows="4"
+                    ></textarea>
+                  </div>
+                  <div class="form-group">
+                    <label for="articles-create-country">국가</label>
+                    <input
+                      type="text"
+                      id="articles-create-country"
+                      name="travelCountry"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="articles-create-city">도시</label>
+                    <input
+                      type="text"
+                      id="articles-create-city"
+                      name="travelCity"
+                    />
+                  </div>
+                  <button class="send-btn" data-endpoint="articles-create">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="articles-create-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="path">/articles/{articleID}</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">특정 게시글 조회</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="articles-get-id">articleID</label>
+                    <input type="text" id="articles-get-id" name="articleID" />
+                  </div>
+                  <button class="send-btn" data-endpoint="articles-get">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="articles-get-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method put">PUT</span>
+                <span class="path">/articles/{articleID}</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">게시글 수정</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="articles-update-id">articleID</label>
+                    <input
+                      type="text"
+                      id="articles-update-id"
+                      name="articleID"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="articles-update-title">제목</label>
+                    <input
+                      type="text"
+                      id="articles-update-title"
+                      name="articleTitle"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="articles-update-content">내용</label>
+                    <textarea
+                      id="articles-update-content"
+                      name="content"
+                      rows="4"
+                    ></textarea>
+                  </div>
+                  <div class="form-group">
+                    <label for="articles-update-country">국가</label>
+                    <input
+                      type="text"
+                      id="articles-update-country"
+                      name="travelCountry"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="articles-update-city">도시</label>
+                    <input
+                      type="text"
+                      id="articles-update-city"
+                      name="travelCity"
+                    />
+                  </div>
+                  <button class="send-btn" data-endpoint="articles-update">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="articles-update-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method delete">DELETE</span>
+                <span class="path">/articles/{articleID}</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">게시글 삭제</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="articles-delete-id">articleID</label>
+                    <input
+                      type="text"
+                      id="articles-delete-id"
+                      name="articleID"
+                    />
+                  </div>
+                  <button class="send-btn" data-endpoint="articles-delete">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="articles-delete-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 댓글 API 섹션 -->
+        <section id="comments" class="content-section">
+          <h2>댓글 API</h2>
+          <div class="endpoint-container">
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="path">/articles/{articleID}/comments/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">댓글 작성하기</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="comment-create-articleID">게시글 ID</label>
+                    <input
+                      type="text"
+                      id="comment-create-articleID"
+                      name="articleID"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="comment-create-content">내용</label>
+                    <textarea
+                      id="comment-create-content"
+                      name="content"
+                      rows="3"
+                    ></textarea>
+                  </div>
+                  <button class="send-btn" data-endpoint="comment-create">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="comment-create-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method put">PUT</span>
+                <span class="path"
+                  >/articles/{articleID}/comments/{commentID}</span
+                >
+              </div>
+              <div class="endpoint-body">
+                <p class="description">댓글 수정하기</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="comment-update-articleID">게시글 ID</label>
+                    <input
+                      type="text"
+                      id="comment-update-articleID"
+                      name="articleID"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="comment-update-commentID">댓글 ID</label>
+                    <input
+                      type="text"
+                      id="comment-update-commentID"
+                      name="commentID"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="comment-update-content">내용</label>
+                    <textarea
+                      id="comment-update-content"
+                      name="content"
+                      rows="3"
+                    ></textarea>
+                  </div>
+                  <button class="send-btn" data-endpoint="comment-update">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="comment-update-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method delete">DELETE</span>
+                <span class="path"
+                  >/articles/{articleID}/comments/{commentID}</span
+                >
+              </div>
+              <div class="endpoint-body">
+                <p class="description">댓글 삭제하기</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="comment-delete-articleID">게시글 ID</label>
+                    <input
+                      type="text"
+                      id="comment-delete-articleID"
+                      name="articleID"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="comment-delete-commentID">댓글 ID</label>
+                    <input
+                      type="text"
+                      id="comment-delete-commentID"
+                      name="commentID"
+                    />
+                  </div>
+                  <button class="send-btn" data-endpoint="comment-delete">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="comment-delete-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 프로필 API 섹션 -->
+        <section id="profiles" class="content-section">
+          <h2>프로필 API</h2>
+          <div class="endpoint-container">
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="path">/profile/mypage/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">내 프로필 정보 조회하기</p>
+                <div class="test-form">
+                  <button class="send-btn" data-endpoint="profile-mypage">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="profile-mypage-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method put">PUT</span>
+                <span class="path">/profile/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">프로필 정보 수정하기</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="profile-update-userName">사용자 이름</label>
+                    <input
+                      type="text"
+                      id="profile-update-userName"
+                      name="userName"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="profile-update-userEmail">이메일</label>
+                    <input
+                      type="email"
+                      id="profile-update-userEmail"
+                      name="userEmail"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="profile-update-userCountry">국가</label>
+                    <input
+                      type="text"
+                      id="profile-update-userCountry"
+                      name="userCountry"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="profile-update-userLanguage">언어</label>
+                    <input
+                      type="text"
+                      id="profile-update-userLanguage"
+                      name="userLanguage"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="profile-update-password"
+                      >비밀번호 (변경 시에만 입력)</label
+                    >
+                    <input
+                      type="password"
+                      id="profile-update-password"
+                      name="password"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="profile-update-image">프로필 이미지</label>
+                    <input
+                      type="file"
+                      id="profile-update-image"
+                      name="profile_image"
+                    />
+                  </div>
+                  <button class="send-btn" data-endpoint="profile-update">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="profile-update-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method delete">DELETE</span>
+                <span class="path">/profile/delete_account/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">회원 탈퇴하기</p>
+                <div class="test-form">
+                  <div class="warning-message">
+                    <p style="color: #e53935; font-weight: bold">
+                      ⚠️ 주의: 이 작업은 되돌릴 수 없습니다!
+                    </p>
+                    <p>회원 탈퇴 시 모든 게시글, 댓글, 좋아요가 삭제됩니다.</p>
+                  </div>
+                  <button
+                    class="send-btn danger-btn"
+                    data-endpoint="profile-delete"
+                  >
+                    회원 탈퇴
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="profile-delete-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 음성 API 섹션 -->
+        <section id="speech" class="content-section">
+          <h2>음성 API</h2>
+          <div class="endpoint-container">
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="path">/speech/transcribe/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">음성을 텍스트로 변환 (STT)</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="speech-transcribe-file">오디오 파일</label>
+                    <input
+                      type="file"
+                      id="speech-transcribe-file"
+                      name="audio_file"
+                      accept="audio/*"
+                    />
+                    <small
+                      >지원 형식: WAV, MP3, OGG, FLAC, M4A, AAC, WEBM, MP4 (최대
+                      100MB)</small
+                    >
+                  </div>
+                  <button class="send-btn" data-endpoint="speech-transcribe">
+                    변환하기
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="speech-transcribe-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="path">/speech/tts/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">텍스트를 음성으로 변환 (TTS)</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="speech-tts-text">텍스트</label>
+                    <textarea
+                      id="speech-tts-text"
+                      name="text_input"
+                      rows="4"
+                      placeholder="변환할 텍스트를 입력하세요"
+                    ></textarea>
+                  </div>
+                  <button class="send-btn" data-endpoint="speech-tts">
+                    변환하기
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <div
+                    id="speech-tts-audio-container"
+                    style="margin: 10px 0"
+                  ></div>
+                  <pre id="speech-tts-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 스토리지 API 섹션 -->
+        <section id="storage" class="content-section">
+          <h2>스토리지 API</h2>
+          <div class="endpoint-container">
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="path">/storage/images/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">이미지 목록 조회하기</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="storage-images-magazineID">매거진 ID</label>
+                    <input
+                      type="text"
+                      id="storage-images-magazineID"
+                      name="magazine_id"
+                    />
+                  </div>
+                  <button class="send-btn" data-endpoint="storage-images-list">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="storage-images-list-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="path">/storage/images/upload/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">이미지 업로드하기</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="storage-images-upload-magazineID"
+                      >매거진 ID</label
+                    >
+                    <input
+                      type="text"
+                      id="storage-images-upload-magazineID"
+                      name="magazine_id"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="storage-images-upload-files"
+                      >이미지 파일 (다중 선택 가능)</label
+                    >
+                    <input
+                      type="file"
+                      id="storage-images-upload-files"
+                      name="files"
+                      multiple
+                      accept="image/*"
+                    />
+                  </div>
+                  <button
+                    class="send-btn"
+                    data-endpoint="storage-images-upload"
+                  >
+                    업로드
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="storage-images-upload-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method delete">DELETE</span>
+                <span class="path">/storage/images/delete/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">이미지 삭제하기</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="storage-images-delete-magazineID"
+                      >매거진 ID</label
+                    >
+                    <input
+                      type="text"
+                      id="storage-images-delete-magazineID"
+                      name="magazine_id"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="storage-images-delete-filename">파일명</label>
+                    <input
+                      type="text"
+                      id="storage-images-delete-filename"
+                      name="filename"
+                    />
+                  </div>
+                  <button
+                    class="send-btn"
+                    data-endpoint="storage-images-delete"
+                  >
+                    삭제
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="storage-images-delete-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 분석 API 섹션 -->
+        <section id="analytics" class="content-section">
+          <h2>분석 API</h2>
+          <div class="endpoint-container">
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="path">/analytics/country-counts/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">국가별 게시글 수 조회하기</p>
+                <div class="test-form">
+                  <button
+                    class="send-btn"
+                    data-endpoint="analytics-country-counts"
+                  >
+                    데이터 조회
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre
+                    id="analytics-country-counts-response"
+                    class="response-box"
+                  >
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+                <div
+                  id="country-chart-container"
+                  style="margin-top: 20px; height: 300px"
+                >
+                  <canvas id="countryChart"></canvas>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 매거진 API 섹션 -->
+        <section id="magazine" class="content-section">
+          <h2>매거진 API</h2>
+          <div class="endpoint-container">
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="path">/magazine/generate/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">매거진 생성하기</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="magazine-generate-id">매거진 ID</label>
+                    <input
+                      type="text"
+                      id="magazine-generate-id"
+                      name="magazine_id"
+                      placeholder="예: magazine-20240610-001"
+                    />
+                    <small
+                      >고유한 ID를 입력해주세요. 기존 ID를 사용하면 덮어쓰기될
+                      수 있습니다.</small
+                    >
+                  </div>
+                  <div class="form-group">
+                    <label for="magazine-generate-input"
+                      >사용자 입력 (선택사항)</label
+                    >
+                    <textarea
+                      id="magazine-generate-input"
+                      name="user_input"
+                      rows="4"
+                      placeholder="매거진에 추가할 내용이나 지시사항을 입력하세요"
+                    ></textarea>
+                  </div>
+                  <div class="form-group">
+                    <label for="magazine-generate-folder"
+                      >이미지 폴더 (선택사항)</label
+                    >
+                    <input
+                      type="text"
+                      id="magazine-generate-folder"
+                      name="image_folder"
+                      placeholder="이미지가 저장된 폴더 경로"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="magazine-generate-pdf">PDF 생성</label>
+                    <select id="magazine-generate-pdf" name="generate_pdf">
+                      <option value="true" selected>예</option>
+                      <option value="false">아니오</option>
+                    </select>
+                  </div>
+                  <button class="send-btn" data-endpoint="magazine-generate">
+                    매거진 생성
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="magazine-generate-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="path">/magazine/generate-async/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">
+                  백그라운드에서 매거진 생성하기 (비동기)
+                </p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="magazine-generate-async-id">매거진 ID</label>
+                    <input
+                      type="text"
+                      id="magazine-generate-async-id"
+                      name="magazine_id"
+                      placeholder="예: magazine-20240610-001"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="magazine-generate-async-input"
+                      >사용자 입력 (선택사항)</label
+                    >
+                    <textarea
+                      id="magazine-generate-async-input"
+                      name="user_input"
+                      rows="4"
+                      placeholder="매거진에 추가할 내용이나 지시사항을 입력하세요"
+                    ></textarea>
+                  </div>
+                  <div class="form-group">
+                    <label for="magazine-generate-async-folder"
+                      >이미지 폴더 (선택사항)</label
+                    >
+                    <input
+                      type="text"
+                      id="magazine-generate-async-folder"
+                      name="image_folder"
+                      placeholder="이미지가 저장된 폴더 경로"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="magazine-generate-async-pdf">PDF 생성</label>
+                    <select
+                      id="magazine-generate-async-pdf"
+                      name="generate_pdf"
+                    >
+                      <option value="true" selected>예</option>
+                      <option value="false">아니오</option>
+                    </select>
+                  </div>
+                  <button
+                    class="send-btn"
+                    data-endpoint="magazine-generate-async"
+                  >
+                    비동기 생성
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre
+                    id="magazine-generate-async-response"
+                    class="response-box"
+                  >
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="path">/magazine/status/{magazine_id}</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">매거진 생성 상태 확인하기</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="magazine-status-id">매거진 ID</label>
+                    <input
+                      type="text"
+                      id="magazine-status-id"
+                      name="magazine_id"
+                    />
+                  </div>
+                  <button class="send-btn" data-endpoint="magazine-status">
+                    상태 확인
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="magazine-status-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 데일리 API 섹션 -->
+        <section id="daily" class="content-section">
+          <h2>데일리 API</h2>
+          <div class="endpoint-container">
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="path">/mypage/daily/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">데일리 기록 추가하기</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="daily-create-date">날짜</label>
+                    <input type="date" id="daily-create-date" name="date" />
+                  </div>
+                  <div class="form-group">
+                    <label for="daily-create-season">계절</label>
+                    <select id="daily-create-season" name="season">
+                      <option value="spring">봄</option>
+                      <option value="summer">여름</option>
+                      <option value="autumn">가을</option>
+                      <option value="winter">겨울</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="daily-create-weather">날씨</label>
+                    <select id="daily-create-weather" name="weather">
+                      <option value="sunny">맑음</option>
+                      <option value="cloudy">흐림</option>
+                      <option value="rainy">비</option>
+                      <option value="snowy">눈</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="daily-create-temperature">온도 (°C)</label>
+                    <input
+                      type="number"
+                      id="daily-create-temperature"
+                      name="temperature"
+                      step="0.1"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="daily-create-mood">기분 (선택사항)</label>
+                    <input type="text" id="daily-create-mood" name="mood" />
+                  </div>
+                  <div class="form-group">
+                    <label for="daily-create-country">국가</label>
+                    <input
+                      type="text"
+                      id="daily-create-country"
+                      name="country"
+                    />
+                  </div>
+                  <button class="send-btn" data-endpoint="daily-create">
+                    추가
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="daily-create-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="path">/mypage/daily/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">데일리 기록 목록 조회하기</p>
+                <div class="test-form">
+                  <button class="send-btn" data-endpoint="daily-list">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="daily-list-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- 알림 토스트 -->
+    <div id="toast" class="toast">
+      <div class="toast-content">
+        <span id="toast-message"></span>
+      </div>
+    </div>
+
+    <!-- API 응답 시간 통계 모달 -->
+    <div id="stats-modal" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>API 응답 시간 통계</h2>
+          <span class="close-modal">&times;</span>
+        </div>
+        <div class="modal-body">
+          <div class="stats-container">
+            <canvas id="statsChart"></canvas>
+          </div>
+          <table id="stats-table">
+            <thead>
+              <tr>
+                <th>엔드포인트</th>
+                <th>평균 응답 시간</th>
+                <th>최소</th>
+                <th>최대</th>
+                <th>성공률</th>
+              </tr>
+            </thead>
+            <tbody id="stats-body">
+              <!-- 통계 데이터가 자바스크립트로 채워집니다 -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <script src="{{ url_for('static', path='js/scripts.js') }}"></script>
+  </body>
+</html>

@@ -5,8 +5,8 @@ from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 
 from app.crud.data.database import create_tables
-from api import create_api_router
-from api.middleware import setup_middleware
+from app.api import create_api_router
+from app.api.middleware import setup_middleware
 
 # 환경 변수 로드 및 기본 설정
 load_dotenv()
