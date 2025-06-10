@@ -5,6 +5,7 @@ from app.crud.utils.schemas import UserCreate, ArticleCreate, ArticleUpdate, Com
 from sqlalchemy.orm import selectinload, Session
 from passlib.context import CryptContext
 from sqlalchemy.exc import IntegrityError
+from app.crud.models import Daily
 import uuid
 
 
@@ -169,3 +170,40 @@ async def check_user_liked(db: AsyncSession, article_id: str, user_id: str) -> b
     )
     return result.scalars().first() is not None
 
+<<<<<<< HEAD
+=======
+# async def check_user_liked(db: AsyncSession, article_id: str, user_id: str) -> bool:
+#     """Check if a user has liked an article"""
+#     if not user_id:
+#         return False
+    
+#     try:
+#         result = await db.execute(
+#             select(Like).where(Like.articleID == article_id, Like.userID == user_id)
+#         )
+#         return result.scalars().first() is not None
+#     except Exception as e:
+#         print(f"Error checking like status: {e}")
+#         return False
+
+async def create_daily(db: AsyncSession, user_id: str, daily_data: DailyCreate):
+    db_daily = Daily(
+        userID=user_id,
+        date=daily_data.date,
+        season=daily_data.season,
+        weather=daily_data.weather,
+        temperature=daily_data.temperature,
+        mood=daily_data.mood,
+        country=daily_data.country,
+    )
+    db.add(db_daily)
+    await db.commit()
+    await db.refresh(db_daily)
+    return db_daily
+
+async def get_dailies_for_user(db: AsyncSession, user_id: str):
+    result = await db.execute(
+        select(Daily).where(Daily.userID == user_id).order_by(Daily.date.asc())
+    )
+    return result.scalars().all()
+>>>>>>> fc7c065c92890bf307bee63c71a95077b80183ce

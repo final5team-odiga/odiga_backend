@@ -59,3 +59,20 @@ class LikeCreate(BaseModel):
     
     class Config:
         orm_mode = True
+
+class DailyCreate(BaseModel):
+    date: datetime
+    season: str
+    weather: str
+    temperature: float
+    mood: Optional[str]
+    country: str
+
+    class Config:
+        orm_mode = True
+
+class DailyRead(DailyCreate):
+    id: int
+    createdAt: datetime
+    
+    
