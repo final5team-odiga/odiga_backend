@@ -28,9 +28,9 @@ from typing import List
 
 from passlib.context import CryptContext
 
-from app.database import get_db, create_tables
+from app.crud.data.database import get_db, create_tables
 from app.models import User, Article, Comment, Like
-from app.schemas import (
+from app.crud.utils.schemas import (
     UserCreate,
     ArticleCreate,
     ArticleUpdate,
@@ -38,7 +38,7 @@ from app.schemas import (
     CommentUpdate,
     LikeCreate
 )
-from app.crud import (
+from app.crud.crud import (
     create_user,
     create_article,
     update_article,
@@ -49,9 +49,9 @@ from app.crud import (
     toggle_like,
     check_user_liked
 )
-from app.stt import transcribe_audio
-from app.tts import lan_det, request_tts
-from app.azure_utils import (
+from app.service.stt import transcribe_audio
+from app.service.tts import lan_det, request_tts
+from app.crud.utils.azure_utils import (
     upload_image_if_not_exists,
     delete_image,
     list_images,
@@ -60,7 +60,9 @@ from app.azure_utils import (
     upload_output_file,
     is_image_safe_for_upload,
     upload_profile_image,
-    delete_interview_result
+    delete_interview_result,
+    upload_interview_result,
+    list_text_files
 )
 from azure.core.exceptions import ResourceNotFoundError
 
@@ -1099,7 +1101,6 @@ async def upload_interview_text(request: Request, magazine_id: str = Form(...), 
     if not user_id:
         return JSONResponse(status_code=401, content={"success": False, "message": "Login required"})
     
-    from app.azure_utils import upload_interview_result
     blob_path = upload_interview_result(user_id, magazine_id, text.encode("utf-8"))
     
     # Extract the actual filename from the blob path
@@ -1139,6 +1140,5 @@ async def list_interview_texts(request: Request, magazine_id: str):
     if not user_id:
         return JSONResponse(status_code=401, content={"success": False, "message": "Login required"})
 
-    from app.azure_utils import list_text_files
     files = list_text_files(user_id, magazine_id)
     return JSONResponse(status_code=200, content={"success": True, "files": files})

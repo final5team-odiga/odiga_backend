@@ -9,7 +9,7 @@ if PROJECT_ROOT not in sys.path:
 import asyncio
 from agents.system_coordinator import SystemCoordinator
 from utils.log.hybridlogging import get_hybrid_logger
-from service.pdf_generater import PDFGenerationService
+from backend.app.service.pdf.pdf_generater import PDFGenerationService
 
 if sys.platform.startswith('win'):
     os.environ['PYTHONIOENCODING'] = 'utf-8'
