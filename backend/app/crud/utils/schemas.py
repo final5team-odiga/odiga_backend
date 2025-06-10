@@ -1,5 +1,6 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional
+import datetime
 
 # Existing schemas
 class UserCreate(BaseModel):
@@ -74,5 +75,4 @@ class DailyCreate(BaseModel):
 class DailyRead(DailyCreate):
     id: int
     createdAt: datetime
-    
     
