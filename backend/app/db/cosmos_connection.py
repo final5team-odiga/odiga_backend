@@ -1,14 +1,9 @@
 import os
-import json
-from datetime import datetime
-from azure.cosmos import CosmosClient, PartitionKey
+from azure.cosmos import CosmosClient
 from dotenv import load_dotenv
-from pathlib import Path
 
-dotenv_path = Path(r'C:\Users\EL0021\Desktop\odiga_multimodal_agent\.env')
 
-# 환경 변수 로드
-load_dotenv(dotenv_path=dotenv_path, override=True)
+load_dotenv()
 
 # 환경변수에서 값 불러오기
 COSMOS_ENDPOINT = os.getenv("AZURE_COSMOS_ENDPOINT")

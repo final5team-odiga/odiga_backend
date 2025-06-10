@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from .routes import auth, articles, comments, profiles, speech, storage, analytics
+from .routes import auth, articles, comments, profiles, speech, storage, analytics, magazine
 
 def create_api_router() -> APIRouter:
     """모든 라우터를 통합하는 API 라우터 생성"""

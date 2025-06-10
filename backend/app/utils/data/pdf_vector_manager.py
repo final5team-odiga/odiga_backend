@@ -7,7 +7,6 @@ from azure.search.documents import SearchClient
 from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.models import VectorizedQuery
 from dotenv import load_dotenv
-from pathlib import Path
 
 # AI Search 격리 시스템 import
 try:
@@ -17,9 +16,8 @@ except ImportError:
     print("⚠️ AI Search 격리 모듈을 찾을 수 없습니다. 기본 모드로 실행됩니다.")
     ISOLATION_AVAILABLE = False
 
-# 환경 변수 로드
-dotenv_path = Path(r'C:\Users\EL0021\Desktop\odiga_multiomodal_agent\.env')
-load_dotenv(dotenv_path=dotenv_path, override=True)
+
+load_dotenv()
 
 class PDFVectorManager:
     """다중 인덱스 지원 벡터 데이터 관리자 - 인덱스 연결 및 검색 전용"""

@@ -5,20 +5,20 @@ import json
 
 from typing import Dict, List, Any, Optional
 from crewai import Agent, Task, Crew
-from custom_llm import get_azure_llm
+from app.custom_llm import get_azure_llm
 
-from agents.Editor.semantic_analysis_engine import SemanticAnalysisEngine
-from agents.Editor.image_diversity_manager import ImageDiversityManager
-from agents.jsx.template_selector import SectionStyleAnalyzer
-from agents.jsx.unified_jsx_generator import UnifiedJSXGenerator
+from app.agents.Editor.semantic_analysis_engine import SemanticAnalysisEngine
+from app.agents.Editor.image_diversity_manager import ImageDiversityManager
+from app.agents.jsx.template_selector import SectionStyleAnalyzer
+from app.agents.jsx.unified_jsx_generator import UnifiedJSXGenerator
 
-from utils.isolation.ai_search_isolation import AISearchIsolationManager
-from utils.data.pdf_vector_manager import PDFVectorManager
-from utils.isolation.session_isolation import SessionAwareMixin
-from utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
-from utils.log.logging_manager import LoggingManager
+from app.utils.isolation.ai_search_isolation import AISearchIsolationManager
+from app.utils.data.pdf_vector_manager import PDFVectorManager
+from app.utils.isolation.session_isolation import SessionAwareMixin
+from app.utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
+from app.utils.log.logging_manager import LoggingManager
 
-from db.magazine_db_utils import MagazineDBUtils
+from app.db.magazine_db_utils import MagazineDBUtils
 
 class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
     """통합 멀티모달 에이전트 - 하이브리드 방식: 요약 없는 CrewAI 분석 + 이미지 배치 강화"""
@@ -454,7 +454,7 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
         }
 
     def _get_images_for_section_index(self, section_index: int, optimization_result: Dict) -> List[Dict]:
-        """✅ 섹션 인덱스별 이미지 가져오기 (여러 경로 확인)"""
+        """✅ 섹션 인덱스별 이미지 가져오기 (보장된 할당)"""
         
         section_key = f"section_{section_index}"
         assigned_images = []
@@ -471,13 +471,27 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
             if section_key in allocation_plan:
                 assigned_images = allocation_plan[section_key].get("images", [])
         
-        # 3차: 전체 이미지에서 직접 할당
+        # ✅ 3차: 전체 이미지에서 순환 할당 (보장)
         if not assigned_images and self.current_image_analysis:
-            total_sections = max(6, len(self.current_magazine_content.get("sections", [])) * 2)  # 추정
-            images_per_section = max(1, len(self.current_image_analysis) // total_sections)
-            start_idx = section_index * images_per_section
-            end_idx = start_idx + images_per_section
-            assigned_images = self.current_image_analysis[start_idx:end_idx]
+            image_count = len(self.current_image_analysis)
+            if image_count > 0:
+                # 순환 방식으로 이미지 할당
+                image_index = section_index % image_count
+                assigned_images = [self.current_image_analysis[image_index]]
+                
+                self.logger.info(f"섹션 {section_index}에 순환 이미지 할당: 인덱스 {image_index}")
+        
+        # ✅ 4차: 최후의 수단 - 기본 이미지 생성
+        if not assigned_images:
+            assigned_images = [{
+                "image_url": f"https://via.placeholder.com/600x400?text=Section+{section_index+1}",
+                "image_name": f"placeholder_section_{section_index+1}",
+                "description": f"섹션 {section_index+1} 기본 이미지",
+                "width": 600,
+                "height": 400
+            }]
+            
+            self.logger.warning(f"섹션 {section_index}에 기본 이미지 할당")
         
         return assigned_images
 
@@ -635,72 +649,78 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
         return formatted_images
 
     def _direct_image_allocation(self, image_analysis: List[Dict], sections: List[Dict]) -> Dict:
-        """✅ 중복 방지가 강화된 직접 이미지 할당"""
+        """✅ 모든 섹션 이미지 배치 보장 직접 할당"""
         
-        # ✅ 1. 전역 중복 제거 먼저 수행
-        unique_images = self._remove_duplicates_from_image_list(image_analysis)
-        
-        # 섹션 수 계산 (하위 섹션 포함)
-        total_sections = 0
-        section_mapping = []
-        
+        # ✅ 1. 실제 섹션 수 정확히 계산
+        actual_sections = []
         for i, section in enumerate(sections):
             sub_sections = section.get("sub_sections", [])
             if sub_sections:
                 for j, sub_section in enumerate(sub_sections):
-                    section_mapping.append({
-                        "section_index": total_sections,
+                    actual_sections.append({
+                        "section_index": len(actual_sections),
                         "original_index": i,
                         "sub_index": j,
                         "title": f"{section.get('title', '')}: {sub_section.get('title', '')}",
                         "is_subsection": True
                     })
-                    total_sections += 1
             else:
-                section_mapping.append({
-                    "section_index": total_sections,
+                actual_sections.append({
+                    "section_index": len(actual_sections),
                     "original_index": i,
                     "sub_index": None,
                     "title": section.get('title', f'섹션 {i+1}'),
                     "is_subsection": False
                 })
-                total_sections += 1
         
-        # ✅ 2. 중복 제거된 이미지를 섹션별로 균등 분배
-        images_per_section = max(1, len(unique_images) // total_sections) if total_sections > 0 else 1
+        total_sections = len(actual_sections)
         
+        # ✅ 2. 중복 제거된 이미지 준비
+        unique_images = self._remove_duplicates_from_image_list(image_analysis)
+        
+        # ✅ 3. 이미지 부족 시 확장
+        if len(unique_images) < total_sections:
+            expanded_images = []
+            for i in range(total_sections):
+                if i < len(unique_images):
+                    expanded_images.append(unique_images[i])
+                else:
+                    # 순환하여 이미지 재사용
+                    cycle_index = i % len(unique_images)
+                    expanded_images.append(unique_images[cycle_index])
+            unique_images = expanded_images
+        
+        # ✅ 4. 모든 섹션에 균등 분배
+        images_per_section = max(1, len(unique_images) // total_sections)
         allocation_details = {}
-        used_image_indices = set()  # ✅ 섹션 간 중복 방지
         
-        for mapping in section_mapping:
-            section_key = f"section_{mapping['section_index']}"
+        for i, section_info in enumerate(actual_sections):
+            section_key = f"section_{section_info['section_index']}"
             
-            # ✅ 3. 아직 사용되지 않은 이미지만 선택
-            available_images = [
-                (idx, img) for idx, img in enumerate(unique_images) 
-                if idx not in used_image_indices
-            ]
+            # 이미지 할당
+            start_idx = i * images_per_section
+            end_idx = start_idx + images_per_section
             
-            # 필요한 만큼 이미지 할당
-            allocated_count = min(images_per_section, len(available_images))
-            allocated_images = []
+            # 마지막 섹션은 남은 모든 이미지 할당
+            if i == total_sections - 1:
+                end_idx = len(unique_images)
             
-            for i in range(allocated_count):
-                if i < len(available_images):
-                    idx, img = available_images[i]
-                    allocated_images.append(img)
-                    used_image_indices.add(idx)
+            allocated_images = unique_images[start_idx:end_idx]
+            
+            # 최소 1개 이미지 보장
+            if not allocated_images and unique_images:
+                allocated_images = [unique_images[i % len(unique_images)]]
             
             allocation_details[section_key] = {
                 "images": allocated_images,
-                "section_title": mapping["title"],
+                "section_title": section_info["title"],
                 "image_count": len(allocated_images),
-                "is_subsection": mapping["is_subsection"],
-                "original_section_index": mapping["original_index"],
-                "duplicate_free": True  # ✅ 중복 제거 완료 표시
+                "is_subsection": section_info["is_subsection"],
+                "original_section_index": section_info["original_index"],
+                "guaranteed_allocation": True
             }
         
-        self.logger.info(f"✅ 중복 방지 이미지 할당 완료: {total_sections}개 섹션에 {len(unique_images)}개 고유 이미지 분배")
+        self.logger.info(f"✅ 모든 섹션 이미지 할당 완료: {total_sections}개 섹션에 {len(unique_images)}개 이미지 분배")
         
         return {
             "allocation_plan": allocation_details,
@@ -708,8 +728,8 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
             "total_sections": total_sections,
             "total_images": len(unique_images),
             "original_image_count": len(image_analysis),
-            "duplicates_removed": len(image_analysis) - len(unique_images),
-            "method": "direct_allocation_with_deduplication"
+            "all_sections_covered": True,
+            "method": "guaranteed_allocation"
         }
 
     def _remove_duplicates_from_image_list(self, images: List[Dict]) -> List[Dict]:

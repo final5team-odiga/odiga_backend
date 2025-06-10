@@ -7,10 +7,8 @@ from dotenv import load_dotenv
 from crewai.llm import BaseLLM
 from openai import AzureOpenAI
 from typing import Any, Dict, List, Optional, Union
-from pathlib import Path
 
-dotenv_path = Path(r'C:\Users\EL0021\Desktop\odiga_multimodal_agent\.env')
-load_dotenv(dotenv_path=dotenv_path, override=True)
+load_dotenv()
 
 class AzureOpenAILLM(BaseLLM):
     """Azure OpenAI API를 직접 사용하는 사용자 정의 LLM 클래스 (개선된 버전)"""

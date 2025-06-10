@@ -4,14 +4,11 @@
 """
 
 import os
-import json
 import time
-import uuid
 import threading
 from typing import List, Optional, Any, Dict
 from dataclasses import dataclass
-from pathlib import Path
-from utils.isolation.ai_search_isolation import AISearchIsolationManager
+from app.utils.isolation.ai_search_isolation import AISearchIsolationManager
 
 @dataclass
 class SessionConfig:

@@ -1,5 +1,5 @@
 from crewai import Agent
-from custom_llm import get_azure_llm
+from app.custom_llm import get_azure_llm
 import asyncio
 import aiohttp
 import os

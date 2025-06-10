@@ -1,7 +1,4 @@
-# app/tts.py
-
 import os
-import uuid
 import requests
 from dotenv import load_dotenv
 

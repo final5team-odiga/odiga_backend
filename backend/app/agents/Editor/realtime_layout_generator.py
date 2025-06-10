@@ -2,12 +2,12 @@ import asyncio
 import json
 import time
 from typing import Dict, List, Any
-from custom_llm import get_azure_llm
-from utils.isolation.ai_search_isolation import AISearchIsolationManager
-from utils.data.pdf_vector_manager import PDFVectorManager
-from utils.isolation.session_isolation import SessionAwareMixin
-from utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
-from utils.log.logging_manager import LoggingManager
+from app.custom_llm import get_azure_llm
+from app.utils.isolation.ai_search_isolation import AISearchIsolationManager
+from app.utils.data.pdf_vector_manager import PDFVectorManager
+from app.utils.isolation.session_isolation import SessionAwareMixin
+from app.utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
+from app.utils.log.logging_manager import LoggingManager
 
 class RealtimeLayoutGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
     """실시간 레이아웃 생성기 - AI Search 벡터 데이터 기반 레이아웃 생성"""

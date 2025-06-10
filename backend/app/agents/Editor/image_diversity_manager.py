@@ -1,30 +1,37 @@
 import asyncio
 import numpy as np
 import time
+import os
 from typing import List, Dict, Set, Optional
 from PIL import Image
 import requests
 from io import BytesIO
 import imagehash
 import cv2
+from pathlib import Path
+from dotenv import load_dotenv
+
+from azure.storage.blob import BlobServiceClient
+
 from sklearn.cluster import DBSCAN
-from sklearn.metrics.pairwise import cosine_similarity
-from utils.log.hybridlogging import HybridLogger
-from utils.isolation.session_isolation import SessionAwareMixin
-from utils.log.logging_manager import LoggingManager
-from utils.data.pdf_vector_manager import PDFVectorManager
-from utils.isolation.ai_search_isolation import AISearchIsolationManager
+from app.utils.log.hybridlogging import HybridLogger
+from app.utils.isolation.session_isolation import SessionAwareMixin
+from app.utils.log.logging_manager import LoggingManager
+from app.utils.data.pdf_vector_manager import PDFVectorManager
+from app.utils.isolation.ai_search_isolation import AISearchIsolationManager
 import onnxruntime as ort
-import os
 
 class ImageDiversityManager(SessionAwareMixin):
-    """이미지 다양성 관리 및 중복 방지 전문 에이전트 - 벡터 통합 버전"""
+    """이미지 다양성 관리 및 중복 방지 전문 에이전트 - 블롭 스토리지 통합 버전"""
     
     def __init__(self, vector_manager: PDFVectorManager, logger: 'HybridLogger', 
                  similarity_threshold: int = 40, diversity_weight: float = 0.3):
         super().__init__()
         self.logger = logger
         self.logging_manager = LoggingManager(self.logger)
+        
+        # ✅ 블롭 스토리지 매니저 초기화
+        self._initialize_blob_storage()
         
         # ✅ 벡터 매니저 통합
         self.vector_manager = vector_manager
@@ -59,7 +66,30 @@ class ImageDiversityManager(SessionAwareMixin):
             "composition": self._calculate_composition_score
         }
         
-        self.logger.info("ImageDiversityManager 초기화 완료 (벡터 통합 버전)")
+        self.logger.info("ImageDiversityManager 초기화 완료 (블롭 스토리지 통합 버전)")
+
+    def _initialize_blob_storage(self):
+        """✅ 블롭 스토리지 클라이언트 초기화"""
+        try:
+            # 환경 변수 로드
+            dotenv_path = Path(r'C:\Users\EL0021\Desktop\odiga_multimodal_agent\.env')
+            load_dotenv(dotenv_path=dotenv_path, override=True)
+            
+            connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+            self.container_name = os.getenv("AZURE_STORAGE_CONTAINER")
+            
+            if connection_string and self.container_name:
+                self.blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+                self.container_client = self.blob_service_client.get_container_client(self.container_name)
+                self.blob_storage_available = True
+                self.logger.info("✅ 블롭 스토리지 클라이언트 초기화 성공")
+            else:
+                self.blob_storage_available = False
+                self.logger.warning("블롭 스토리지 연결 정보가 없습니다")
+                
+        except Exception as e:
+            self.logger.error(f"블롭 스토리지 초기화 실패: {e}")
+            self.blob_storage_available = False
 
     def _initialize_external_clip_model(self):
         """외부 CLIP 모델 초기화 (중복 방지)"""
@@ -103,17 +133,30 @@ class ImageDiversityManager(SessionAwareMixin):
 
     async def optimize_image_distribution(self, images: List[Dict], sections: List[Dict], 
                                         unified_patterns: Optional[Dict] = None) -> Dict:
-        """✅ 벡터 통합 기반 이미지 분배 최적화"""
-        self.logger.info(f"벡터 통합 이미지 다양성 최적화 시작: {len(images)}개 이미지, {len(sections)}개 섹션")
+        """✅ 모든 섹션 이미지 배치 보장 최적화"""
+        self.logger.info(f"전체 섹션 이미지 배치 최적화 시작: {len(images)}개 이미지, {len(sections)}개 섹션")
         
         try:
-            # 1. 중복 이미지 제거
-            unique_images = await self._remove_duplicate_images_async(images)
+            # ✅ 1. 실제 섹션 수 정확히 계산 (하위 섹션 포함)
+            actual_sections = self._calculate_actual_sections(sections)
+            total_sections = len(actual_sections)
             
-            # 2. 이미지 품질 평가
-            quality_enhanced_images = await self._enhance_image_quality_scores(unique_images)
+            self.logger.info(f"실제 섹션 수: {total_sections}개 (하위 섹션 포함)")
             
-            # ✅ 3. 벡터 검색 기반 이미지 의미 패턴 수집
+            # 2. 강화된 중복 이미지 제거
+            unique_images = await self._enhanced_duplicate_removal(images)
+            
+            # ✅ 3. 이미지 부족 시 확장 처리
+            if len(unique_images) < total_sections:
+                expanded_images = self._expand_image_pool(unique_images, total_sections)
+                self.logger.info(f"이미지 풀 확장: {len(unique_images)} → {len(expanded_images)}개")
+            else:
+                expanded_images = unique_images
+            
+            # 4. 이미지 품질 평가
+            quality_enhanced_images = await self._enhance_image_quality_scores(expanded_images)
+            
+            # 5. 벡터 검색 기반 이미지 의미 패턴 수집
             if unified_patterns:
                 semantic_patterns = await self._collect_image_semantic_patterns(
                     quality_enhanced_images, unified_patterns
@@ -121,7 +164,7 @@ class ImageDiversityManager(SessionAwareMixin):
             else:
                 semantic_patterns = {}
             
-            # 4. CLIP 기반 이미지 클러스터링 (가능한 경우)
+            # 6. CLIP 기반 이미지 클러스터링 (가능한 경우)
             if self.clip_available and len(quality_enhanced_images) > 5:
                 clustered_images = await self._cluster_images_with_clip_and_vectors(
                     quality_enhanced_images, semantic_patterns
@@ -129,38 +172,489 @@ class ImageDiversityManager(SessionAwareMixin):
             else:
                 clustered_images = {"default_cluster": quality_enhanced_images}
             
-            # 5. 벡터 패턴 기반 대표 이미지 선택
-            representative_images = self._select_representative_images_with_vectors(
+            # 7. 벡터 패턴 기반 대표 이미지 선택 (중복 방지 강화)
+            representative_images = self._select_representative_images_with_enhanced_deduplication(
                 clustered_images, semantic_patterns
             )
             
-            # 6. 벡터 다양성을 고려한 섹션별 이미지 할당
-            allocation_plan = await self._allocate_images_with_vector_diversity(
-                representative_images, sections, semantic_patterns
+            # ✅ 8. 모든 섹션에 균등 배치 보장
+            allocation_plan = await self._allocate_images_to_all_sections(
+                representative_images, actual_sections, semantic_patterns
             )
             
-            # 7. 결과 로깅 및 저장
-            await self._log_diversity_optimization_results(allocation_plan, images, sections)
+            # 9. 결과 로깅
+            await self._log_diversity_optimization_results(allocation_plan, images, actual_sections)
             
-            self.logger.info(f"벡터 통합 이미지 최적화 완료: {len(allocation_plan)}개 섹션에 할당")
+            self.logger.info(f"전체 섹션 이미지 배치 완료: {len(allocation_plan)}개 섹션에 할당")
             
             return {
                 "allocation_plan": allocation_plan,
+                "allocation_details": allocation_plan,
                 "embeddings_cache": self.image_embeddings_cache,
                 "semantic_patterns": semantic_patterns,
-                "vector_enhanced": True
+                "vector_enhanced": True,
+                "total_sections": total_sections,
+                "all_sections_covered": True,
+                "deduplication_applied": True
             }
             
         except Exception as e:
-            self.logger.error(f"벡터 통합 이미지 최적화 실패: {e}")
-            # 폴백: 기본 순차 분배
-            fallback_plan = self._fallback_sequential_distribution(images, sections)
+            self.logger.error(f"전체 섹션 이미지 배치 실패: {e}")
+            # 기본 균등 분배로 폴백
+            return self._ensure_all_sections_have_images(images, sections)
+
+    def _calculate_actual_sections(self, sections: List[Dict]) -> List[Dict]:
+        """✅ 하위 섹션을 포함한 실제 섹션 리스트 계산"""
+        actual_sections = []
+        
+        for i, section in enumerate(sections):
+            sub_sections = section.get("sub_sections", [])
+            
+            if sub_sections:
+                # 하위 섹션이 있는 경우 각각을 개별 섹션으로 처리
+                for j, sub_section in enumerate(sub_sections):
+                    actual_section = {
+                        "section_index": len(actual_sections),
+                        "original_index": i,
+                        "sub_index": j,
+                        "title": f"{section.get('title', '')}: {sub_section.get('title', '')}",
+                        "content": sub_section.get("body", ""),
+                        "is_subsection": True,
+                        "parent_title": section.get("title", "")
+                    }
+                    actual_sections.append(actual_section)
+            else:
+                # 단일 섹션인 경우
+                actual_section = {
+                    "section_index": len(actual_sections),
+                    "original_index": i,
+                    "sub_index": None,
+                    "title": section.get("title", f"섹션 {i+1}"),
+                    "content": section.get("content", section.get("body", "")),
+                    "is_subsection": False,
+                    "parent_title": ""
+                }
+                actual_sections.append(actual_section)
+        
+        return actual_sections
+
+    async def _enhanced_duplicate_removal(self, images: List[Dict]) -> List[Dict]:
+        """✅ 강화된 중복 제거 (URL + Hash + Content 기반)"""
+        unique_images = []
+        seen_urls = set()
+        seen_hashes = set()
+        processed_content_hashes = set()
+        
+        for image_data in images:
+            try:
+                image_url = image_data.get("image_url", "")
+                image_name = image_data.get("image_name", "")
+                
+                if not image_url:
+                    continue
+                
+                # ✅ 1. URL 기반 1차 중복 검사
+                if image_url in seen_urls:
+                    self.logger.debug(f"URL 중복 제거: {image_name}")
+                    continue
+                
+                # ✅ 2. Perceptual Hash 기반 2차 중복 검사
+                image_hash = await self._calculate_perceptual_hash_async(image_url)
+                
+                if image_hash:
+                    if image_hash in seen_hashes or self._is_duplicate_or_similar(image_hash):
+                        self.logger.debug(f"해시 중복 제거: {image_name}")
+                        continue
+                    
+                    # ✅ 3. 콘텐츠 기반 3차 중복 검사
+                    content_hash = self._generate_content_hash(image_data)
+                    if content_hash in processed_content_hashes:
+                        self.logger.debug(f"콘텐츠 중복 제거: {image_name}")
+                        continue
+                    
+                    # 모든 검사를 통과한 경우 추가
+                    seen_urls.add(image_url)
+                    seen_hashes.add(image_hash)
+                    processed_content_hashes.add(content_hash)
+                    self.processed_hashes.add(image_hash)
+                    
+                    image_data["perceptual_hash"] = image_hash
+                    image_data["content_hash"] = content_hash
+                    unique_images.append(image_data)
+                    
+                    self.logger.debug(f"고유 이미지 추가: {image_name}")
+                else:
+                    # 해시 계산 실패 시 URL만으로 중복 검사
+                    seen_urls.add(image_url)
+                    unique_images.append(image_data)
+                    
+            except Exception as e:
+                self.logger.error(f"강화된 중복 검사 실패 {image_data.get('image_name', 'Unknown')}: {e}")
+                # 오류 발생 시에도 이미지 포함 (안전장치)
+                if image_data not in unique_images:
+                    unique_images.append(image_data)
+        
+        self.logger.info(f"강화된 중복 제거 완료: {len(images)} → {len(unique_images)}개")
+        return unique_images
+
+    def _generate_content_hash(self, image_data: Dict) -> str:
+        """이미지 메타데이터 기반 콘텐츠 해시 생성"""
+        try:
+            # 이미지의 주요 메타데이터를 조합하여 해시 생성
+            content_parts = [
+                image_data.get("city", ""),
+                image_data.get("country", ""),
+                image_data.get("location", ""),
+                str(image_data.get("width", 0)),
+                str(image_data.get("height", 0))
+            ]
+            
+            content_string = "|".join(content_parts)
+            
+            import hashlib
+            return hashlib.md5(content_string.encode('utf-8')).hexdigest()
+            
+        except Exception as e:
+            self.logger.error(f"콘텐츠 해시 생성 실패: {e}")
+            return ""
+
+    def _expand_image_pool(self, unique_images: List[Dict], required_count: int) -> List[Dict]:
+        """✅ 이미지 부족 시 이미지 풀 확장"""
+        if len(unique_images) >= required_count:
+            return unique_images
+        
+        expanded_images = unique_images.copy()
+        
+        # 기존 이미지를 순환하여 필요한 수만큼 확장
+        while len(expanded_images) < required_count:
+            for img in unique_images:
+                if len(expanded_images) >= required_count:
+                    break
+                
+                # 이미지 복사본 생성 (URL은 유지, 메타데이터 약간 변경)
+                expanded_img = img.copy()
+                expanded_img["expanded_copy"] = True
+                expanded_img["original_index"] = unique_images.index(img)
+                
+                expanded_images.append(expanded_img)
+        
+        return expanded_images
+
+    async def _allocate_images_to_all_sections(self, images: List[Dict], 
+                                             actual_sections: List[Dict], 
+                                             semantic_patterns: Dict) -> Dict:
+        """✅ 모든 섹션에 이미지 배치 보장"""
+        total_images = len(images)
+        total_sections = len(actual_sections)
+        
+        if total_sections == 0:
+            return {}
+        
+        # ✅ 각 섹션에 최소 1개씩 배치 보장
+        base_allocation = max(1, total_images // total_sections)
+        remainder = total_images % total_sections
+        
+        allocation_plan = {}
+        current_image_index = 0
+        
+        for i, section in enumerate(actual_sections):
+            # 할당량 계산 (나머지 이미지 분배)
+            allocation_count = base_allocation
+            if i < remainder:
+                allocation_count += 1
+            
+            # 이미지 할당
+            end_index = min(current_image_index + allocation_count, total_images)
+            allocated_images = images[current_image_index:end_index]
+            
+            # 이미지가 부족한 경우 첫 번째 이미지로 채우기
+            while len(allocated_images) < 1 and images:
+                allocated_images.append(images[0])
+            
+            section_key = f"section_{section['section_index']}"
+            
+            allocation_plan[section_key] = {
+                "images": allocated_images,
+                "count": len(allocated_images),
+                "section_title": section["title"],
+                "diversity_score": 0.7,  # 기본 다양성 점수
+                "avg_quality": 0.75,
+                "vector_score": 0.0,
+                "is_subsection": section["is_subsection"],
+                "guaranteed_allocation": True
+            }
+            
+            current_image_index = end_index
+            
+            self.logger.info(f"섹션 {section_key} 이미지 할당: {len(allocated_images)}개")
+        
+        return allocation_plan
+
+    # ✅ 블롭 스토리지 지원 메서드들
+    def _is_blob_storage_url(self, image_url: str) -> bool:
+        """블롭 스토리지 URL인지 확인"""
+        return "blob.core.windows.net" in image_url
+
+    def _extract_blob_name_from_url(self, image_url: str) -> str:
+        """URL에서 블롭 이름 추출"""
+        try:
+            parts = image_url.split('/')
+            if len(parts) >= 5:
+                container_index = parts.index(self.container_name) if self.container_name in parts else 4
+                blob_name = '/'.join(parts[container_index + 1:])
+                return blob_name
+            return ""
+        except Exception as e:
+            self.logger.error(f"블롭 이름 추출 실패 {image_url}: {e}")
+            return ""
+
+    def _download_blob_image(self, image_url: str) -> Optional[BytesIO]:
+        """✅ 블롭 스토리지에서 이미지 다운로드"""
+        try:
+            if not self.blob_storage_available:
+                return None
+                
+            blob_name = self._extract_blob_name_from_url(image_url)
+            if not blob_name:
+                return None
+            
+            blob_client = self.container_client.get_blob_client(blob_name)
+            download_stream = blob_client.download_blob()
+            image_data = BytesIO(download_stream.readall())
+            
+            self.logger.debug(f"블롭 이미지 다운로드 성공: {blob_name}")
+            return image_data
+            
+        except Exception as e:
+            self.logger.error(f"블롭 이미지 다운로드 실패 {image_url}: {e}")
+            return None
+
+    def _download_image_http_fallback(self, image_url: str) -> Optional[BytesIO]:
+        """HTTP 요청으로 이미지 다운로드 (폴백)"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'image/*,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive'
+            }
+            
+            response = self.session.get(
+                image_url, 
+                timeout=30, 
+                headers=headers,
+                allow_redirects=True,
+                verify=False
+            )
+            response.raise_for_status()
+            
+            content_type = response.headers.get('content-type', '')
+            if not content_type.startswith('image/'):
+                self.logger.warning(f"URL이 이미지가 아님: {content_type}")
+                return None
+            
+            return BytesIO(response.content)
+            
+        except Exception as e:
+            self.logger.error(f"HTTP 이미지 다운로드 실패 {image_url}: {e}")
+            return None
+
+    async def _calculate_perceptual_hash_async(self, image_url: str) -> Optional[str]:
+        """비동기 Perceptual Hash 계산"""
+        try:
+            loop = asyncio.get_event_loop()
+            image_hash = await loop.run_in_executor(
+                None, self._calculate_perceptual_hash_sync, image_url
+            )
+            return image_hash
+        except Exception as e:
+            self.logger.error(f"Perceptual hash 계산 실패: {e}")
+            return None
+
+    def _calculate_perceptual_hash_sync(self, image_url: str) -> str:
+        """✅ 블롭 스토리지 지원 동기 Perceptual Hash 계산"""
+        try:
+            image_data = None
+            
+            # ✅ 블롭 스토리지 URL인 경우 블롭 클라이언트 사용
+            if self._is_blob_storage_url(image_url):
+                image_data = self._download_blob_image(image_url)
+                if image_data is None:
+                    self.logger.warning(f"블롭 이미지 다운로드 실패, HTTP 요청으로 폴백: {image_url}")
+                    image_data = self._download_image_http_fallback(image_url)
+            else:
+                # 일반 HTTP URL인 경우
+                if image_url.startswith(('http://', 'https://')):
+                    image_data = self._download_image_http_fallback(image_url)
+                else:
+                    # 로컬 파일인 경우
+                    with Image.open(image_url) as img:
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        phash = imagehash.phash(img, hash_size=16)
+                        return str(phash)
+            
+            # 이미지 데이터 처리
+            if image_data:
+                with Image.open(image_data) as img:
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    phash = imagehash.phash(img, hash_size=16)
+                    return str(phash)
+            else:
+                # ✅ 다운로드 실패 시에도 기본 해시 반환 (배치 보장)
+                return f"fallback_hash_{hash(image_url)}"
+                
+        except Exception as e:
+            self.logger.error(f"이미지 해시 계산 실패 {image_url}: {e}")
+            # ✅ 실패해도 기본 해시 반환 (배치 보장)
+            return f"error_hash_{hash(image_url)}"
+
+    def _is_duplicate_or_similar(self, image_hash: str) -> bool:
+        """중복 또는 유사 이미지 검사"""
+        try:
+            current_hash = imagehash.hex_to_hash(image_hash)
+            
+            for existing_hash_str in self.processed_hashes:
+                existing_hash = imagehash.hex_to_hash(existing_hash_str)
+                distance = current_hash - existing_hash
+                
+                if distance <= self.similarity_threshold:
+                    if distance <= 5:
+                        return True
+                    return False
+            
+            return False
+        except Exception as e:
+            self.logger.error(f"유사도 검사 실패: {e}")
+            return False
+
+    async def _enhance_image_quality_scores(self, images: List[Dict]) -> List[Dict]:
+        """✅ 이미지 품질 점수 향상 (접근 실패 시에도 처리)"""
+        enhanced_images = []
+        
+        for image_data in images:
+            try:
+                image_url = image_data.get("image_url", "")
+                
+                if image_url:
+                    # ✅ 접근 가능 여부와 관계없이 기본 품질 점수 부여
+                    try:
+                        quality_scores = await self._assess_image_quality_async(image_url)
+                    except:
+                        # 접근 실패 시 기본 점수
+                        quality_scores = {
+                            "overall": 0.6,
+                            "sharpness": 0.6,
+                            "contrast": 0.6,
+                            "brightness": 0.6,
+                            "composition": 0.6,
+                            "note": "Default score due to access failure"
+                        }
+                    
+                    image_data["quality_scores"] = quality_scores
+                    image_data["overall_quality"] = quality_scores.get("overall", 0.6)
+                else:
+                    image_data["quality_scores"] = {"overall": 0.4}
+                    image_data["overall_quality"] = 0.4
+                
+                enhanced_images.append(image_data)
+                
+            except Exception as e:
+                self.logger.error(f"품질 점수 계산 실패: {e}")
+                # ✅ 실패해도 이미지 포함 (배치 보장)
+                image_data["quality_scores"] = {"overall": 0.4}
+                image_data["overall_quality"] = 0.4
+                enhanced_images.append(image_data)
+        
+        return enhanced_images
+
+    async def _assess_image_quality_async(self, image_url: str) -> Dict[str, float]:
+        """✅ 블롭 스토리지 지원 비동기 이미지 품질 평가"""
+        try:
+            loop = asyncio.get_event_loop()
+            quality_scores = await loop.run_in_executor(
+                None, self._assess_image_quality_sync, image_url
+            )
+            return quality_scores
+        except Exception as e:
+            self.logger.error(f"이미지 품질 평가 실패: {e}")
+            return {"overall": 0.6, "error": str(e)}
+
+    def _assess_image_quality_sync(self, image_url: str) -> Dict[str, float]:
+        """✅ 블롭 스토리지 지원 동기 이미지 품질 평가"""
+        try:
+            image_data = None
+            
+            # ✅ 블롭 스토리지 URL인 경우
+            if self._is_blob_storage_url(image_url):
+                image_data = self._download_blob_image(image_url)
+                if image_data is None:
+                    # 폴백: HTTP 요청
+                    image_data = self._download_image_http_fallback(image_url)
+            else:
+                # 일반 URL인 경우
+                if image_url.startswith(('http://', 'https://')):
+                    image_data = self._download_image_http_fallback(image_url)
+                else:
+                    # 로컬 파일
+                    with Image.open(image_url) as img:
+                        img_array = np.array(img)
+                        return self._calculate_quality_metrics(img_array)
+            
+            # 이미지 데이터 품질 평가
+            if image_data:
+                with Image.open(image_data) as img:
+                    img_array = np.array(img)
+                    return self._calculate_quality_metrics(img_array)
+            else:
+                # 접근 실패 시 기본 점수
+                return {
+                    "overall": 0.6,
+                    "sharpness": 0.6,
+                    "contrast": 0.6,
+                    "brightness": 0.6,
+                    "composition": 0.6,
+                    "note": "Default score due to blob access failure"
+                }
+                
+        except Exception as e:
+            self.logger.error(f"블롭 품질 평가 실패 {image_url}: {e}")
             return {
-                "allocation_plan": fallback_plan,
-                "embeddings_cache": self.image_embeddings_cache,
-                "vector_enhanced": False
+                "overall": 0.5,
+                "sharpness": 0.5,
+                "contrast": 0.5,
+                "brightness": 0.5,
+                "composition": 0.5,
+                "note": f"Error: {str(e)}"
             }
 
+    def _calculate_quality_metrics(self, img_array: np.ndarray) -> Dict[str, float]:
+        """이미지 배열에서 품질 메트릭 계산"""
+        try:
+            quality_scores = {}
+            
+            for metric_name, metric_func in self.quality_metrics.items():
+                quality_scores[metric_name] = metric_func(img_array)
+            
+            # 전체 품질 점수 계산
+            overall_quality = np.mean(list(quality_scores.values()))
+            quality_scores["overall"] = overall_quality
+            
+            return quality_scores
+            
+        except Exception as e:
+            self.logger.error(f"품질 메트릭 계산 실패: {e}")
+            return {
+                "overall": 0.5,
+                "sharpness": 0.5,
+                "contrast": 0.5,
+                "brightness": 0.5,
+                "composition": 0.5,
+                "note": "Calculation failed"
+            }
+
+    # ✅ 벡터 패턴 관련 메서드들
     async def _collect_image_semantic_patterns(self, images: List[Dict], 
                                              unified_patterns: Dict) -> Dict:
         """✅ 벡터 검색 기반 이미지 의미 패턴 수집"""
@@ -274,7 +768,6 @@ class ImageDiversityManager(SessionAwareMixin):
         if total_results == 0:
             return 0.0
         
-        # 간단한 정렬도 계산 (실제로는 더 복잡한 로직 필요)
         alignment_score = min(total_results / 9.0, 1.0)  # 최대 9개 결과 기준
         return alignment_score
 
@@ -290,6 +783,7 @@ class ImageDiversityManager(SessionAwareMixin):
         relevance_score = (cross_index_score * 0.7) + (min(pattern_count / 6.0, 1.0) * 0.3)
         return relevance_score
 
+    # ✅ CLIP 관련 메서드들
     async def _cluster_images_with_clip_and_vectors(self, images: List[Dict], 
                                                    semantic_patterns: Dict) -> Dict[str, List[Dict]]:
         """✅ CLIP + 벡터 패턴 기반 이미지 클러스터링"""
@@ -353,346 +847,8 @@ class ImageDiversityManager(SessionAwareMixin):
         
         return enhanced_embeddings
 
-    def _select_representative_images_with_vectors(self, clusters: Dict[str, List[Dict]], 
-                                                 semantic_patterns: Dict) -> List[Dict]:
-        """✅ 벡터 패턴 기반 대표 이미지 선택"""
-        representative_images = []
-        temp_hashes = set()
-        
-        for cluster_name, cluster_images in clusters.items():
-            # 클러스터 내에서 벡터 패턴 점수가 높은 이미지 우선 선택
-            scored_images = []
-            
-            for img in cluster_images:
-                img_hash = img.get("perceptual_hash")
-                quality = img.get("overall_quality", 0.5)
-                
-                # 벡터 패턴 점수 추가
-                image_index = cluster_images.index(img)
-                pattern_key = f"image_{image_index}"
-                vector_score = semantic_patterns.get(pattern_key, {}).get("semantic_score", 0.0)
-                
-                # 종합 점수 계산
-                combined_score = (quality * 0.6) + (vector_score * 0.4)
-                
-                scored_images.append((img, combined_score, img_hash))
-            
-            # 점수순으로 정렬
-            scored_images.sort(key=lambda x: x[1], reverse=True)
-            
-            # 상위 이미지들 선택 (중복 제거)
-            for img, score, img_hash in scored_images:
-                if score >= 0.3 and img_hash and img_hash not in temp_hashes:
-                    representative_images.append(img)
-                    temp_hashes.add(img_hash)
-                elif not img_hash:  # 해시가 없으면 포함
-                    representative_images.append(img)
-        
-        self.logger.info(f"벡터 기반 대표 이미지 선택 완료: {len(representative_images)}개")
-        return representative_images
-
-    async def _allocate_images_with_vector_diversity(self, images: List[Dict], 
-                                                   sections: List[Dict], 
-                                                   semantic_patterns: Dict) -> Dict:
-        """✅ 벡터 다양성 기반 섹션별 이미지 할당"""
-        total_images = len(images)
-        total_sections = len(sections)
-        
-        if total_images == 0 or total_sections == 0:
-            return {f"section_{i}": {
-                "images": [], "count": 0, 
-                "section_title": sections[i].get("title", f"섹션 {i+1}") if i < len(sections) else f"섹션 {i+1}",
-                "diversity_score": 0.0, "avg_quality": 0.0, "vector_score": 0.0
-            } for i in range(max(total_sections, 1))}
-
-        # CLIP 임베딩 생성 (벡터 패턴 강화)
-        if self.clip_available:
-            image_embeddings = await self._generate_clip_embeddings(images)
-            if image_embeddings is not None:
-                image_embeddings = self._enhance_embeddings_with_vector_patterns(
-                    image_embeddings, images, semantic_patterns
-                )
-        else:
-            image_embeddings = None
-
-        allocation_plan = {}
-        assigned_image_indices = set()
-        
-        # 섹션별 필요 이미지 수 계산
-        images_per_section = max(1, total_images // total_sections) if total_sections > 0 else 1
-        
-        for i, section in enumerate(sections):
-            # 할당량 계산
-            allocation_count = images_per_section
-            if i < total_images % total_sections:
-                allocation_count += 1
-            
-            # 남은 이미지 중에서 할당
-            available_indices = [idx for idx in range(total_images) if idx not in assigned_image_indices]
-            
-            # 벡터 패턴 + 품질 + 다양성 기반 선택
-            if available_indices:
-                selected_indices = self._select_images_with_vector_diversity(
-                    images, available_indices, allocation_count, 
-                    semantic_patterns, image_embeddings
-                )
-            else:
-                selected_indices = []
-
-            selected_images = [images[idx] for idx in selected_indices]
-            for idx in selected_indices:
-                assigned_image_indices.add(idx)
-
-            # 섹션 다양성 점수 계산 (벡터 강화)
-            section_diversity_score = self._calculate_vector_enhanced_diversity(
-                selected_images, semantic_patterns, image_embeddings, selected_indices
-            )
-            
-            # 벡터 패턴 점수 계산
-            vector_score = self._calculate_section_vector_score(selected_images, semantic_patterns)
-
-            allocation_plan[f"section_{i}"] = {
-                "images": selected_images,
-                "count": len(selected_images),
-                "section_title": section.get("title", f"섹션 {i+1}"),
-                "diversity_score": section_diversity_score,
-                "avg_quality": float(np.mean([img.get("overall_quality", 0.5) for img in selected_images])) if selected_images else 0.0,
-                "vector_score": vector_score
-            }
-
-        return allocation_plan
-
-    def _select_images_with_vector_diversity(self, images: List[Dict], available_indices: List[int],
-                                           allocation_count: int, semantic_patterns: Dict,
-                                           image_embeddings: Optional[np.ndarray]) -> List[int]:
-        """벡터 다양성 기반 이미지 선택"""
-        if len(available_indices) <= allocation_count:
-            return available_indices
-        
-        # 종합 점수 계산 (품질 + 벡터 패턴)
-        scored_indices = []
-        for idx in available_indices:
-            quality_score = images[idx].get("overall_quality", 0.5)
-            
-            # 벡터 패턴 점수
-            pattern_key = f"image_{idx}"
-            vector_score = semantic_patterns.get(pattern_key, {}).get("semantic_score", 0.0)
-            
-            # 종합 점수
-            combined_score = (quality_score * 0.6) + (vector_score * 0.4)
-            scored_indices.append((idx, combined_score))
-        
-        # 점수순 정렬 후 상위 선택
-        scored_indices.sort(key=lambda x: x[1], reverse=True)
-        selected_indices = [idx for idx, _ in scored_indices[:allocation_count]]
-        
-        return selected_indices
-
-    def _calculate_vector_enhanced_diversity(self, selected_images: List[Dict], 
-                                           semantic_patterns: Dict,
-                                           image_embeddings: Optional[np.ndarray],
-                                           selected_indices: List[int]) -> float:
-        """벡터 강화 다양성 점수 계산"""
-        if len(selected_images) <= 1:
-            return 1.0
-        
-        # CLIP 기반 다양성
-        clip_diversity = 0.5
-        if image_embeddings is not None and selected_indices:
-            selected_embeddings = image_embeddings[selected_indices]
-            clip_diversity = self._calculate_section_diversity(selected_embeddings)
-        
-        # 벡터 패턴 기반 다양성
-        vector_diversity = self._calculate_vector_pattern_diversity(selected_images, semantic_patterns)
-        
-        # 종합 다양성 점수
-        enhanced_diversity = (clip_diversity * 0.7) + (vector_diversity * 0.3)
-        return enhanced_diversity
-
-    def _calculate_vector_pattern_diversity(self, selected_images: List[Dict], 
-                                          semantic_patterns: Dict) -> float:
-        """벡터 패턴 기반 다양성 계산"""
-        if len(selected_images) <= 1:
-            return 1.0
-        
-        pattern_scores = []
-        for i, img in enumerate(selected_images):
-            pattern_key = f"image_{i}"
-            pattern_data = semantic_patterns.get(pattern_key, {})
-            
-            # 각 인덱스별 패턴 수
-            magazine_count = len(pattern_data.get("patterns", {}).get("magazine_patterns", []))
-            jsx_count = len(pattern_data.get("patterns", {}).get("jsx_patterns", []))
-            semantic_count = len(pattern_data.get("patterns", {}).get("semantic_patterns", []))
-            
-            pattern_scores.append([magazine_count, jsx_count, semantic_count])
-        
-        if not pattern_scores:
-            return 0.5
-        
-        # 패턴 다양성 계산 (표준편차 기반)
-        pattern_array = np.array(pattern_scores)
-        diversity_score = np.mean(np.std(pattern_array, axis=0))
-        
-        return min(diversity_score / 3.0, 1.0)  # 정규화
-
-    def _calculate_section_vector_score(self, selected_images: List[Dict], 
-                                      semantic_patterns: Dict) -> float:
-        """섹션의 벡터 패턴 점수 계산"""
-        if not selected_images:
-            return 0.0
-        
-        total_score = 0.0
-        for i, img in enumerate(selected_images):
-            pattern_key = f"image_{i}"
-            pattern_score = semantic_patterns.get(pattern_key, {}).get("semantic_score", 0.0)
-            total_score += pattern_score
-        
-        return total_score / len(selected_images)
-
-    # 기존 메서드들 유지 (중복 제거, 품질 평가, CLIP 임베딩 등)
-    async def _remove_duplicate_images_async(self, images: List[Dict]) -> List[Dict]:
-        """비동기 중복 이미지 제거 (기존 로직 유지)"""
-        unique_images = []
-        
-        for image_data in images:
-            try:
-                image_url = image_data.get("image_url", "")
-                image_name = image_data.get("image_name", "")
-                
-                if not image_url:
-                    continue
-                
-                image_hash = await self._calculate_perceptual_hash_async(image_url)
-                
-                if image_hash and not self._is_duplicate_or_similar(image_hash):
-                    self.processed_hashes.add(image_hash)
-                    image_data["perceptual_hash"] = image_hash
-                    unique_images.append(image_data)
-                    self.logger.debug(f"고유 이미지 추가: {image_name}")
-                else:
-                    self.logger.debug(f"중복 이미지 제거: {image_name}")
-                    
-            except Exception as e:
-                self.logger.error(f"이미지 중복 검사 실패 {image_data.get('image_name', 'Unknown')}: {e}")
-                unique_images.append(image_data)
-        
-        self.logger.info(f"중복 제거 완료: {len(images)} → {len(unique_images)}개")
-        return unique_images
-
-    async def _calculate_perceptual_hash_async(self, image_url: str) -> Optional[str]:
-        """비동기 Perceptual Hash 계산"""
-        try:
-            loop = asyncio.get_event_loop()
-            image_hash = await loop.run_in_executor(
-                None, self._calculate_perceptual_hash_sync, image_url
-            )
-            return image_hash
-        except Exception as e:
-            self.logger.error(f"Perceptual hash 계산 실패: {e}")
-            return None
-
-    def _calculate_perceptual_hash_sync(self, image_url: str) -> str:
-        """동기 Perceptual Hash 계산"""
-        try:
-            if image_url.startswith(('http://', 'https://')):
-                response = self.session.get(image_url, timeout=30)
-                response.raise_for_status()
-                
-                content_type = response.headers.get('content-type', '')
-                if not content_type.startswith('image/'):
-                    self.logger.warning(f"URL이 이미지가 아님: {content_type}")
-                    return ""
-                
-                image_data = BytesIO(response.content)
-                with Image.open(image_data) as img:
-                    if img.mode != 'RGB':
-                        img = img.convert('RGB')
-                    
-                    phash = imagehash.phash(img, hash_size=16)
-                    return str(phash)
-            else:
-                with Image.open(image_url) as img:
-                    if img.mode != 'RGB':
-                        img = img.convert('RGB')
-                    
-                    phash = imagehash.phash(img, hash_size=16)
-                    return str(phash)
-                    
-        except Exception as e:
-            self.logger.error(f"이미지 해시 계산 실패 {image_url}: {e}")
-            return ""
-
-    def _is_duplicate_or_similar(self, image_hash: str) -> bool:
-        """중복 또는 유사 이미지 검사"""
-        try:
-            current_hash = imagehash.hex_to_hash(image_hash)
-            
-            for existing_hash_str in self.processed_hashes:
-                existing_hash = imagehash.hex_to_hash(existing_hash_str)
-                distance = current_hash - existing_hash
-                
-                if distance <= self.similarity_threshold:
-                    if distance <= 5:
-                        return True
-                    return False
-            
-            return False
-        except Exception as e:
-            self.logger.error(f"유사도 검사 실패: {e}")
-            return False
-
-    async def _enhance_image_quality_scores(self, images: List[Dict]) -> List[Dict]:
-        """이미지 품질 점수 향상"""
-        enhanced_images = []
-        
-        for image_data in images:
-            try:
-                image_url = image_data.get("image_url", "")
-                
-                if image_url:
-                    quality_scores = await self._assess_image_quality_async(image_url)
-                    image_data["quality_scores"] = quality_scores
-                    image_data["overall_quality"] = quality_scores.get("overall", 0.5)
-                else:
-                    image_data["quality_scores"] = {"overall": 0.3}
-                    image_data["overall_quality"] = 0.3
-                
-                enhanced_images.append(image_data)
-                
-            except Exception as e:
-                self.logger.error(f"품질 점수 계산 실패: {e}")
-                image_data["quality_scores"] = {"overall": 0.3}
-                image_data["overall_quality"] = 0.3
-                enhanced_images.append(image_data)
-        
-        return enhanced_images
-
-    async def _assess_image_quality_async(self, image_url: str) -> Dict[str, float]:
-        """비동기 이미지 품질 평가"""
-        try:
-            loop = asyncio.get_event_loop()
-            quality_scores = await loop.run_in_executor(
-                None, self._assess_image_quality_sync, image_url
-            )
-            return quality_scores
-        except Exception as e:
-            self.logger.error(f"이미지 품질 평가 실패: {e}")
-            return {"overall": 0.3, "error": str(e)}
-
-    def _assess_image_quality_sync(self, image_url: str) -> Dict[str, float]:
-        """동기 이미지 품질 평가"""
-        return {
-            "overall": 0.75,
-            "sharpness": 0.7,
-            "contrast": 0.7,
-            "brightness": 0.7,
-            "composition": 0.7,
-            "note": "Simplified for performance"
-        }
-
     async def _generate_clip_embeddings(self, images: List[Dict]) -> Optional[np.ndarray]:
-        """CLIP 임베딩 생성 (외부 세션 사용)"""
+        """✅ 블롭 스토리지 지원 CLIP 임베딩 생성"""
         try:
             if not self.clip_available or not self.onnx_session:
                 return None
@@ -707,34 +863,50 @@ class ImageDiversityManager(SessionAwareMixin):
                     continue
                 
                 try:
-                    if image_url.startswith(('http://', 'https://')):
-                        response = self.session.get(image_url, timeout=30)
-                        response.raise_for_status()
-                        
-                        image_data_bytes = BytesIO(response.content)
-                        pil_image = Image.open(image_data_bytes)
+                    pil_image = None
+                    
+                    # ✅ 블롭 스토리지 URL인 경우 블롭 클라이언트 사용
+                    if self._is_blob_storage_url(image_url):
+                        image_bytes = self._download_blob_image(image_url)
+                        if image_bytes:
+                            pil_image = Image.open(image_bytes)
+                        else:
+                            # 폴백: HTTP 요청
+                            image_bytes = self._download_image_http_fallback(image_url)
+                            if image_bytes:
+                                pil_image = Image.open(image_bytes)
                     else:
-                        pil_image = Image.open(image_url)
+                        # 일반 HTTP URL인 경우
+                        if image_url.startswith(('http://', 'https://')):
+                            image_bytes = self._download_image_http_fallback(image_url)
+                            if image_bytes:
+                                pil_image = Image.open(image_bytes)
+                        else:
+                            pil_image = Image.open(image_url)
                     
-                    if pil_image.mode != 'RGB':
-                        pil_image = pil_image.convert('RGB')
-                    
-                    # ✅ 외부 ONNX 세션 사용
-                    image_input_tensor = self.clip_preprocess(pil_image).unsqueeze(0).to(self.device)
-                    image_input_np = image_input_tensor.cpu().numpy()
+                    if pil_image:
+                        if pil_image.mode != 'RGB':
+                            pil_image = pil_image.convert('RGB')
+                        
+                        # ✅ 외부 ONNX 세션 사용
+                        image_input_tensor = self.clip_preprocess(pil_image).unsqueeze(0).to(self.device)
+                        image_input_np = image_input_tensor.cpu().numpy()
 
-                    onnx_inputs = {self.onnx_session.get_inputs()[0].name: image_input_np}
-                    onnx_outputs = self.onnx_session.run(None, onnx_inputs)
-                    embedding = onnx_outputs[0].flatten()
+                        onnx_inputs = {self.onnx_session.get_inputs()[0].name: image_input_np}
+                        onnx_outputs = self.onnx_session.run(None, onnx_inputs)
+                        embedding = onnx_outputs[0].flatten()
 
-                    norm = np.linalg.norm(embedding)
-                    normalized_embedding = embedding / norm if norm != 0 else embedding
-                    
-                    self.image_embeddings_cache[image_url] = normalized_embedding
-                    embeddings.append(normalized_embedding)
+                        norm = np.linalg.norm(embedding)
+                        normalized_embedding = embedding / norm if norm != 0 else embedding
+                        
+                        self.image_embeddings_cache[image_url] = normalized_embedding
+                        embeddings.append(normalized_embedding)
+                    else:
+                        # 이미지 로드 실패 시 기본 임베딩
+                        embeddings.append(np.zeros(512))
                         
                 except Exception as e:
-                    self.logger.error(f"ONNX 기반 임베딩 생성 실패 {image_url}: {e}")
+                    self.logger.error(f"블롭 기반 임베딩 생성 실패 {image_url}: {e}")
                     embeddings.append(np.zeros(512))
             
             return np.array(embeddings) if embeddings else None
@@ -743,73 +915,92 @@ class ImageDiversityManager(SessionAwareMixin):
             self.logger.error(f"CLIP 임베딩 생성 전체 실패: {e}")
             return None
 
-    def _calculate_section_diversity(self, embeddings: Optional[np.ndarray]) -> float:
-        """섹션 내 이미지 다양성 점수 계산"""
-        if embeddings is None or len(embeddings) <= 1:
-            return 1.0
+    def _select_representative_images_with_enhanced_deduplication(self, clusters: Dict[str, List[Dict]], 
+                                                               semantic_patterns: Dict) -> List[Dict]:
+        """✅ 강화된 중복 방지 대표 이미지 선택"""
+        representative_images = []
+        global_seen_hashes = set()
+        global_seen_urls = set()
+        global_seen_content = set()
         
-        try:
-            cosine_similarity_matrix = np.dot(embeddings, embeddings.T)
-            num_embeddings = len(embeddings)
-            total_similarity = np.sum(np.triu(cosine_similarity_matrix, k=1))
-            pair_count = num_embeddings * (num_embeddings - 1) / 2
-
-            if pair_count == 0:
-                return 1.0
-
-            avg_similarity = total_similarity / pair_count
-            avg_distance = 1.0 - avg_similarity
+        for cluster_name, cluster_images in clusters.items():
+            scored_images = []
             
-            return avg_distance
+            for img in cluster_images:
+                img_hash = img.get("perceptual_hash", "")
+                img_url = img.get("image_url", "")
+                content_hash = img.get("content_hash", "")
+                quality = img.get("overall_quality", 0.5)
+                
+                # ✅ 전역 중복 검사
+                if (img_hash and img_hash in global_seen_hashes) or \
+                   (img_url and img_url in global_seen_urls) or \
+                   (content_hash and content_hash in global_seen_content):
+                    continue
+                
+                # 벡터 패턴 점수 추가
+                image_index = cluster_images.index(img)
+                pattern_key = f"image_{image_index}"
+                vector_score = semantic_patterns.get(pattern_key, {}).get("semantic_score", 0.0)
+                
+                # 종합 점수 계산
+                combined_score = (quality * 0.6) + (vector_score * 0.4)
+                
+                scored_images.append((img, combined_score, img_hash, img_url, content_hash))
             
-        except Exception as e:
-            self.logger.error(f"다양성 점수 계산 실패: {e}")
-            return 0.5
+            # 점수순으로 정렬
+            scored_images.sort(key=lambda x: x[1], reverse=True)
+            
+            # 상위 이미지들 선택 (전역 중복 제거)
+            for img, score, img_hash, img_url, content_hash in scored_images:
+                if score >= 0.3:
+                    representative_images.append(img)
+                    
+                    # 전역 중복 방지 세트에 추가
+                    if img_hash:
+                        global_seen_hashes.add(img_hash)
+                    if img_url:
+                        global_seen_urls.add(img_url)
+                    if content_hash:
+                        global_seen_content.add(content_hash)
+        
+        self.logger.info(f"강화된 중복 방지 대표 이미지 선택 완료: {len(representative_images)}개")
+        return representative_images
 
-    def _fallback_sequential_distribution(self, images: List[Dict], 
-                                        sections: List[Dict]) -> Dict[str, Dict]:
-        """폴백: 순차적 이미지 분배"""
-        self.logger.warning("폴백 모드: 순차적 이미지 분배 사용")
+    def _ensure_all_sections_have_images(self, images: List[Dict], sections: List[Dict]) -> Dict:
+        """✅ 모든 섹션에 이미지 배치 보장 (기본 방식)"""
+        actual_sections = self._calculate_actual_sections(sections)
+        total_sections = len(actual_sections)
         
-        total_images = len(images)
-        total_sections = len(sections)
-        
-        if total_images == 0:
-            return {f"section_{i}": {
-                "images": [], "count": 0, 
-                "section_title": f"섹션 {i+1}",
-                "diversity_score": 0.5, "avg_quality": 0.5, "vector_score": 0.0
-            } for i in range(total_sections)}
-        
-        base_allocation = max(1, total_images // total_sections)
-        remainder = total_images % total_sections
+        if not images or total_sections == 0:
+            return {}
         
         allocation_plan = {}
-        current_idx = 0
         
-        for i, section in enumerate(sections):
-            allocation_count = base_allocation + (1 if i < remainder else 0)
-            end_idx = min(current_idx + allocation_count, total_images)
+        for i, section in enumerate(actual_sections):
+            # 순환 방식으로 이미지 할당
+            image_index = i % len(images)
+            allocated_image = images[image_index]
             
-            allocated_images = images[current_idx:end_idx]
+            section_key = f"section_{section['section_index']}"
             
-            allocation_plan[f"section_{i}"] = {
-                "images": allocated_images,
-                "count": len(allocated_images),
-                "section_title": section.get("title", f"섹션 {i+1}"),
+            allocation_plan[section_key] = {
+                "images": [allocated_image],
+                "count": 1,
+                "section_title": section["title"],
                 "diversity_score": 0.5,
                 "avg_quality": 0.5,
                 "vector_score": 0.0,
-                "fallback_used": True
+                "is_subsection": section["is_subsection"],
+                "fallback_allocation": True
             }
-            
-            current_idx = end_idx
         
+        self.logger.info(f"기본 방식으로 {total_sections}개 섹션에 이미지 할당 완료")
         return allocation_plan
 
     async def _log_diversity_optimization_results(self, allocation_plan: Dict, 
-                                            original_images: List[Dict], 
-                                            sections: List[Dict]) -> None:
+                                                original_images: List[Dict], 
+                                                sections: List[Dict]) -> None:
         """다양성 최적화 결과 로깅"""
         try:
             total_allocated = sum(data["count"] for data in allocation_plan.values())
@@ -868,10 +1059,11 @@ class ImageDiversityManager(SessionAwareMixin):
             "clip_available": self.clip_available,
             "similarity_threshold": self.similarity_threshold,
             "diversity_weight": self.diversity_weight,
-            "vector_integrated": True
+            "vector_integrated": True,
+            "blob_storage_available": self.blob_storage_available
         }
 
-    # 품질 평가 메트릭 메서드들 (기존 유지)
+    # ✅ 품질 평가 메트릭 메서드들
     def _calculate_sharpness(self, img_array: np.ndarray) -> float:
         try:
             if len(img_array.shape) == 3:

@@ -1,6 +1,6 @@
 import re
 from typing import List, Dict, Optional
-from utils.data.pdf_vector_manager import PDFVectorManager
+from app.utils.data.pdf_vector_manager import PDFVectorManager
 
 class JSXVectorManager:
     """

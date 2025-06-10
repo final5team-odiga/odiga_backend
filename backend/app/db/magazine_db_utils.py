@@ -1,6 +1,5 @@
 from typing import Dict, List, Optional
 from .cosmos_connection import magazine_container, image_container
-from azure.cosmos.cosmos_client import CosmosClient
 from uuid import uuid4
 from datetime import datetime
 

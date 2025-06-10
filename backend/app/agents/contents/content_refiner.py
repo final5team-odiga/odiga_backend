@@ -1,8 +1,8 @@
 import asyncio
 import re
 from typing import Dict, List, Any, Tuple
-from custom_llm import get_azure_llm
-from utils.log.hybridlogging import get_hybrid_logger
+from app.custom_llm import get_azure_llm
+from app.utils.log.hybridlogging import get_hybrid_logger
 
 class ContentRefiner:
     """콘텐츠 분량 검토 및 지능적 분할을 담당하는 클래스"""

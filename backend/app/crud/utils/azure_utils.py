@@ -1,9 +1,9 @@
 import os
-from azure.storage.blob import BlobServiceClient, ContainerClient, generate_blob_sas, BlobSasPermissions, ContentSettings
+from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions, ContentSettings
 from azure.ai.contentsafety import ContentSafetyClient
 from azure.ai.contentsafety.models import AnalyzeImageOptions, ImageData, ImageCategory
 from azure.core.credentials import AzureKeyCredential
-from azure.core.exceptions import HttpResponseError, ResourceNotFoundError, ResourceExistsError
+from azure.core.exceptions import HttpResponseError
 from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 from pathlib import Path

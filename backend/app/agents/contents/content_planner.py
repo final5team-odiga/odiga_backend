@@ -1,7 +1,7 @@
 import asyncio
 from typing import Dict, List, Any
-from custom_llm import get_azure_llm
-from utils.log.hybridlogging import get_hybrid_logger
+from app.custom_llm import get_azure_llm
+from app.utils.log.hybridlogging import get_hybrid_logger
 
 class ContentPlannerAgent:
     """콘텐츠 분석 및 구조 설계를 담당하는 에이전트"""

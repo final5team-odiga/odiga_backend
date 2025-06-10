@@ -2,20 +2,20 @@ import asyncio
 import json
 import traceback
 from typing import Dict, List, Any
-from utils.log.hybridlogging import get_hybrid_logger
-from utils.data.blob_storage import BlobStorageManager
-from utils.log.logging_manager import LoggingManager
+from app.utils.log.hybridlogging import get_hybrid_logger
+from app.utils.data.blob_storage import BlobStorageManager
+from app.utils.log.logging_manager import LoggingManager
 
-from agents.image_analyzer import ImageAnalyzerAgent
-from agents.contents.content_creator import ContentCreatorV2Crew
-from utils.data.pdf_vector_manager import PDFVectorManager
-from agents.Editor.unified_multimodal_agent import UnifiedMultimodalAgent
-from db.cosmos_connection import logging_container, template_container, jsx_container
-from db.db_utils import save_to_cosmos, save_jsx_components
-from crewai import Crew
+from app.agents.image_analyzer import ImageAnalyzerAgent
+from app.agents.contents.content_creator import ContentCreatorV2Crew
+from app.utils.data.pdf_vector_manager import PDFVectorManager
+from app.agents.Editor.unified_multimodal_agent import UnifiedMultimodalAgent
+from app.db.cosmos_connection import logging_container, template_container, jsx_container
+from app.db.db_utils import save_to_cosmos, save_jsx_components
 from uuid import uuid4
-from db.magazine_db_utils import MagazineDBUtils
+from app.db.magazine_db_utils import MagazineDBUtils
 from datetime import datetime
+from app.service.pdf.pdf_generater import PDFGenerationService
 
 def sanitize_coroutines(data: Any) -> Any:
     if isinstance(data, dict):
@@ -29,27 +29,35 @@ def sanitize_coroutines(data: Any) -> Any:
 class SystemCoordinator:
     """통합 시스템 조율자 - 완전 통합 아키텍처 적용"""
 
-    def __init__(self):
+    def __init__(self, user_id: str, magazine_id: str):
+        self.user_id = user_id
+        self.magazine_id = magazine_id
         self.logger = get_hybrid_logger(self.__class__.__name__)
-        self.blob_manager = BlobStorageManager()
+        
+        # ✅ user_id와 magazine_id를 사용하여 BlobStorageManager 초기화
+        self.blob_manager = BlobStorageManager(
+            user_id=self.user_id,
+            magazine_id=self.magazine_id
+        )
+        
         self.logging_manager = LoggingManager(self.logger)
-
         self.vector_manager = PDFVectorManager(isolation_enabled=True)
-
         self.image_analyzer = ImageAnalyzerAgent()
         self.content_creator = ContentCreatorV2Crew()
         
         # ✅ 통합된 멀티모달 에이전트 (템플릿 선택 + JSX 생성 포함)
         self.multimodal_agent = UnifiedMultimodalAgent(self.vector_manager, self.logger)
-
+        
+        # ✅ PDF 생성 서비스 추가
+        self.pdf_service = PDFGenerationService()
 
     async def coordinate_complete_magazine_generation(self, user_input: str = None,
                                                       image_folder: str = None,
-                                                      user_id: str = "unknown_user") -> Dict:
-        """✅ 완전 통합 매거진 생성 프로세스 (이미지 배치 강화)"""
+                                                      generate_pdf: bool = True,
+                                                      output_pdf_path: str = None) -> Dict:
+        """✅ 완전 통합 매거진 생성 프로세스 (PDF 생성 포함)"""
 
         self.logger.info("=== 📝 완전 통합 아키텍처 기반 매거진 생성 시작 ===")
-        magazine_id = str(uuid4())
         
         try:
             # === Phase 1: 콘텐츠 초안 생성 ===
@@ -60,8 +68,10 @@ class SystemCoordinator:
             if image_analysis_results:
                 self.logger.info(f"✅ 이미지 분석 완료: {len(image_analysis_results)}개 이미지")
                 await MagazineDBUtils.save_combined_image_analysis({
-                    "id": str(uuid4()), "magazine_id": magazine_id,
-                    "created_at": str(datetime.now()), "analysis_count": len(image_analysis_results),
+                    "id": str(uuid4()), 
+                    "magazine_id": self.magazine_id,
+                    "created_at": str(datetime.now()), 
+                    "analysis_count": len(image_analysis_results),
                     "image_analyses": image_analysis_results
                 })
             else:
@@ -69,13 +79,15 @@ class SystemCoordinator:
             
             raw_content_json = await self._execute_content_generation_stage(user_input, image_analysis_results)
             raw_content = json.loads(raw_content_json)
-            raw_content['magazine_id'] = magazine_id
+            raw_content['magazine_id'] = self.magazine_id
             
             await MagazineDBUtils.save_magazine_content({
-                "id": magazine_id, "user_id": user_id, "status": "phase1_completed",
+                "id": self.magazine_id, 
+                "user_id": self.user_id, 
+                "status": "phase1_completed",
                 "content": raw_content
             })
-            self.logger.info(f"✅ Phase 1 완료. Magazine ID: {magazine_id}")
+            self.logger.info(f"✅ Phase 1 완료. Magazine ID: {self.magazine_id}")
 
             # === ✅ Phase 2: 이미지 배치가 포함된 멀티모달 처리 ===
             self.logger.info("--- 🎨 Phase 2: 이미지 배치 포함 멀티모달 처리 ---")
@@ -84,7 +96,7 @@ class SystemCoordinator:
             final_result = await self.multimodal_agent.process_magazine_unified(
                 raw_content, 
                 image_analysis_results,  # ✅ 실제 이미지 데이터 전달
-                user_id=user_id
+                user_id=self.user_id
             )
             
             # ✅ 이미지 배치 결과 검증
@@ -98,11 +110,11 @@ class SystemCoordinator:
             
             # ✅ 최종 결과 구성
             complete_result = {
-                "magazine_id": magazine_id,
+                "magazine_id": self.magazine_id,
                 "magazine_title": raw_content.get("magazine_title", "제목 없음"),
                 "magazine_subtitle": raw_content.get("magazine_subtitle", ""),
                 "components": jsx_components,
-                "user_id": user_id,
+                "user_id": self.user_id,
                 "processing_summary": final_result.get("processing_metadata", {}),
                 "content_sections": jsx_components,
                 "image_placement_success": image_placement_success,
@@ -111,24 +123,90 @@ class SystemCoordinator:
             
             # ✅ 결과 저장
             await self._save_results_with_file_manager({
-                "magazine_id": magazine_id,
+                "magazine_id": self.magazine_id,
                 "jsx_components": jsx_components,
                 "template_data": {
-                    "user_id": user_id,
+                    "user_id": self.user_id,
                     "content_sections": jsx_components
                 }
             })
             
-            self.logger.info("🎉✅ 완전 통합 처리 완료!")
-            return {"magazine_id": magazine_id, "result": complete_result}
+            # ✅ Phase 3: PDF 생성 (Blob Storage에 저장)
+            if generate_pdf:
+                self.logger.info("--- 📄 Phase 3: PDF 생성 ---")
+                pdf_result = await self._execute_pdf_generation_stage(output_pdf_path)
+                complete_result["pdf_generation"] = pdf_result
             
+            self.logger.info("🎉✅ 완전 통합 처리 완료!")
+            return {"magazine_id": self.magazine_id, "result": complete_result}
+        
         except Exception as e:
             self.logger.error(f"매거진 생성 실패: {e}\n{traceback.format_exc()}")
-            await MagazineDBUtils.update_magazine_content(magazine_id, {
+            await MagazineDBUtils.update_magazine_content(self.magazine_id, {
                 "status": "failed", "error": str(e)
             })
-            return {"error": str(e), "magazine_id": magazine_id}
+            return {"error": str(e), "magazine_id": self.magazine_id}
 
+    async def _execute_pdf_generation_stage(self, output_pdf_path: str = None) -> Dict:
+        """✅ Phase 3: PDF 생성 실행 (Blob Storage에 저장)"""
+        try:
+            if not output_pdf_path:
+                output_pdf_path = f"magazine_result_{self.user_id}_{self.magazine_id}.pdf"
+            
+            self.logger.info(f"PDF 생성 시작: {self.magazine_id} -> {output_pdf_path}")
+            
+            # ✅ PDF 생성 후 Blob Storage의 outputs 폴더에 저장
+            success = await self.pdf_service.generate_pdf_from_cosmosdb(
+                magazine_id=self.magazine_id,
+                output_pdf_path=output_pdf_path
+            )
+            
+            if success:
+                # ✅ 생성된 PDF를 Blob Storage의 outputs 폴더에 저장
+                import os
+                if os.path.exists(output_pdf_path):
+                    with open(output_pdf_path, 'rb') as pdf_file:
+                        pdf_content = pdf_file.read()
+                    
+                    # Blob Storage의 outputs 폴더에 저장
+                    blob_url = self.blob_manager.save_to_blob(
+                        content=pdf_content,
+                        filename=os.path.basename(output_pdf_path),
+                        category="outputs",
+                        content_type="application/pdf"
+                    )
+                    
+                    # 로컬 파일 삭제
+                    os.remove(output_pdf_path)
+                    
+                    self.logger.info(f"✅ PDF 생성 완료 및 Blob Storage 저장: {blob_url}")
+                    return {
+                        "success": True,
+                        "output_path": blob_url,
+                        "message": "PDF 생성 및 Blob Storage 저장 성공"
+                    }
+                else:
+                    self.logger.error("❌ PDF 파일이 생성되지 않았습니다.")
+                    return {
+                        "success": False,
+                        "output_path": None,
+                        "message": "PDF 파일 생성 실패"
+                    }
+            else:
+                self.logger.error("❌ PDF 생성 실패")
+                return {
+                    "success": False,
+                    "output_path": None,
+                    "message": "PDF 생성 실패"
+                }
+                
+        except Exception as e:
+            self.logger.error(f"PDF 생성 중 오류 발생: {e}")
+            return {
+                "success": False,
+                "output_path": None,
+                "message": f"PDF 생성 오류: {str(e)}"
+            }
 
     def _verify_image_placement(self, jsx_components: List[Dict]) -> bool:
         """JSX 컴포넌트에 이미지가 포함되었는지 검증"""
@@ -145,7 +223,6 @@ class SystemCoordinator:
             jsx_code = component.get("jsx_code", "")
             total_images += jsx_code.count("<img")
         return total_images
-    
 
     async def _execute_image_analysis_stage(self) -> List[Dict]:
         """1단계: 이미지 분석 실행"""
@@ -160,7 +237,12 @@ class SystemCoordinator:
                 return []
             
             if hasattr(self.image_analyzer, 'analyze_images_batch_async'):
-                results = await self.image_analyzer.analyze_images_batch_async(images, max_concurrent=5)
+                results = await self.image_analyzer.analyze_images_batch_async(
+                    images, 
+                    user_id=self.user_id, 
+                    magazine_id=self.magazine_id, 
+                    max_concurrent=5
+                )
             else:
                 loop = asyncio.get_event_loop()
                 results = await loop.run_in_executor(None, self.image_analyzer.analyze_single_image_async, images)
@@ -217,7 +299,7 @@ class SystemCoordinator:
             return magazine_content
 
         except Exception as e:
-            self.logger.error(f"콘텐츠 생성 실패: {e}\\n{traceback.format_exc()}")
+            self.logger.error(f"콘텐츠 생성 실패: {e}\n{traceback.format_exc()}")
             return self._create_default_content()
 
     def _create_default_content(self) -> str:

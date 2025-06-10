@@ -4,11 +4,9 @@ from PIL import Image
 from io import BytesIO
 import numpy as np
 import open_clip
-import time
 import torch
 from typing import Dict, List, Any, Optional
 from sklearn.metrics.pairwise import cosine_similarity
-from utils.log.hybridlogging import get_hybrid_logger
 import onnxruntime as ort
 import os
 

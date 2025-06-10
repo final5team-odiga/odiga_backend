@@ -5,8 +5,8 @@
 import time
 from typing import Dict, Any
 from dataclasses import dataclass
-from utils.isolation.ai_search_isolation import AISearchIsolationManager
-from utils.isolation.session_isolation import SessionManager
+from app.utils.isolation.ai_search_isolation import AISearchIsolationManager
+from app.utils.isolation.session_isolation import SessionManager
 
 @dataclass
 class DataTransferRequest:
