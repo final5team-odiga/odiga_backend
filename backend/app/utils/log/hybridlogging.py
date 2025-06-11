@@ -3,7 +3,9 @@ import time
 from typing import List, Dict, Any
 import sys
 import io
+import os
 from .agent_decision_logger import AgentDecisionLogger
+from datetime import datetime
 
 if sys.platform.startswith('win'):
     # Windows에서 UTF-8 인코딩 강제 설정
@@ -15,8 +17,41 @@ class HybridLogger:
         self.name = name or self.__class__.__name__
         self.logger = logging.getLogger(self.name)
         self.agent_logger = None
-        self.setup_logging()
         
+        if os.getenv('DISABLE_FILE_LOGGING', 'false').lower() == 'true':
+            self.disable_file_logging()
+
+        self.setup_logging()   
+
+    def disable_file_logging(self):
+        """파일 로깅 완전 비활성화"""
+        root_logger = logging.getLogger()
+        
+        # 모든 파일 핸들러 제거
+        for handler in root_logger.handlers[:]:
+            if isinstance(handler, (logging.FileHandler, logging.handlers.TimedRotatingFileHandler)):
+                root_logger.removeHandler(handler)
+        
+        # 새로운 파일 핸들러 추가 방지
+        original_addHandler = root_logger.addHandler
+        def filtered_addHandler(handler):
+            if not isinstance(handler, (logging.FileHandler, logging.handlers.TimedRotatingFileHandler)):
+                original_addHandler(handler)
+        root_logger.addHandler = filtered_addHandler
+
+
+
+    def safe_log(self, message):
+        try:
+            if hasattr(self, 'logger'):
+                self.logger.info(message)
+        except (ValueError, OSError):
+            # 파일 로깅 비활성화 - 콘솔 출력만 시도
+            try:
+                print(f"{datetime.now()}: {message}")
+            except:
+                pass  # 완전 실패 시 무시
+    
     def setup_logging(self):
         """로깅 설정"""
         try:
@@ -60,6 +95,7 @@ class HybridLogger:
         else:
             self.info(f"Agent Decision - {agent_name}: {reasoning}")
             return f"standard_{agent_name}_{int(time.time())}"
+
 
     def log_agent_real_output(self, agent_name: str, agent_role: str = None,
                              task_description: str = "", final_answer: str = "",
@@ -379,7 +415,8 @@ class SafeAgentLogger:
         self.standard_logger = standard_logger
         self.outputs = []
         self.max_outputs = 1000  # 메모리 사용량 제한
-    
+        
+
     def get_all_outputs(self) -> List[Dict]:
         """모든 출력 반환"""
         return self.outputs.copy()

@@ -57,7 +57,7 @@ class AgentInfo:
 class AgentOutputManager:
     """에이전트 응답 전용 관리 시스템"""
     
-    def __init__(self, storage_dir: str = "./agent_outputs"):
+    def __init__(self):
         # storage_dir 파라미터는 호환성을 위해 유지하지만 실제로 사용하지 않음
         self.current_session_id = self._generate_session_id()
         self.outputs = []  # 에이전트 응답만 메모리에 저장 (로컬 캐싱용)

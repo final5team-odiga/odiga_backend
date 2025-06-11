@@ -9,6 +9,7 @@ from typing import Dict, List, Any, Optional
 from sklearn.metrics.pairwise import cosine_similarity
 import onnxruntime as ort
 import os
+from pathlib import Path
 
 class SemanticAnalysisEngine:
     """
@@ -51,7 +52,9 @@ class SemanticAnalysisEngine:
         self.clip_preprocess = None
         self.onnx_session = None
         
-        onnx_model_path = "models/clip_onnx/clip_visual.quant.onnx"
+        current_file = Path(__file__)
+        project_root = current_file.parent.parent.parent  # backend/app까지 올라가기
+        onnx_model_path = project_root / "model" / "clip_onnx" / "clip_visual.quant.onnx"
 
         try:
             # 텍스트 인코딩용 PyTorch 모델

@@ -2,7 +2,8 @@ import asyncio
 import json
 import re
 import numpy as np
-
+import os
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 from crewai import Agent, Task, Crew
 from ...custom_llm import get_azure_llm
@@ -72,8 +73,9 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
             import open_clip
             import onnxruntime as ort
             import os
-            
-            onnx_model_path = "models/clip_onnx/clip_visual.quant.onnx"
+            current_file = Path(__file__)
+            project_root = current_file.parent.parent.parent  # backend/app까지 올라가기
+            onnx_model_path = project_root / "model" / "clip_onnx" / "clip_visual.quant.onnx"
             
             # PyTorch 텍스트 모델
             clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(

@@ -25,8 +25,10 @@ class PDFGenerationService:
                 self.logger.error(f"매거진 ID {magazine_id}에 대한 JSX 컴포넌트를 찾을 수 없습니다.")
                 return False
             
+            
+            current_file = os.path.abspath(__file__)
             # 2. 프로젝트 루트 경로 확인
-            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+            project_root = os.path.dirname(os.path.dirname(current_file))
             self.logger.info(f"프로젝트 루트: {project_root}")
             
             # ✅ 3. 프로젝트 루트에 필요한 파일들이 있는지 확인

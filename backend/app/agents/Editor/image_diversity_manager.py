@@ -2,6 +2,7 @@ import asyncio
 import numpy as np
 import time
 import os
+from pathlib import Path
 from typing import List, Dict, Set, Optional
 from PIL import Image
 import requests
@@ -68,29 +69,35 @@ class ImageDiversityManager(SessionAwareMixin):
         self.logger.info("ImageDiversityManager 초기화 완료 (블롭 스토리지 통합 버전)")
 
     def _initialize_blob_storage(self):
-        """✅ 블롭 스토리지 클라이언트 초기화"""
+        """✅ BlobStorageManager와 동일한 방식으로 블롭 스토리지 클라이언트 초기화"""
         try:
             load_dotenv()
-            
             connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-            self.container_name = os.getenv("AZURE_STORAGE_CONTAINER")
             
-            if connection_string and self.container_name:
-                self.blob_service_client = BlobServiceClient.from_connection_string(connection_string)
-                self.container_client = self.blob_service_client.get_container_client(self.container_name)
-                self.blob_storage_available = True
-                self.logger.info("✅ 블롭 스토리지 클라이언트 초기화 성공")
-            else:
+            # ✅ BlobStorageManager와 동일한 검증 로직
+            if not connection_string:
                 self.blob_storage_available = False
-                self.logger.warning("블롭 스토리지 연결 정보가 없습니다")
-                
+                self.logger.warning("AZURE_STORAGE_CONNECTION_STRING not found in .env")
+                return
+
+            # ✅ BlobStorageManager와 동일한 container_name 설정
+            self.container_name = os.getenv("AZURE_STORAGE_CONTAINER", "user")  # BlobStorageManager 기본값 사용
+            
+            # ✅ BlobStorageManager와 동일한 클라이언트 초기화 패턴
+            self.blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+            self.container_client = self.blob_service_client.get_container_client(self.container_name)
+            
+            self.blob_storage_available = True
+            self.logger.info(f"✅ BlobStorageManager 방식 블롭 스토리지 클라이언트 초기화 성공 (container: {self.container_name})")
+
         except Exception as e:
-            self.logger.error(f"블롭 스토리지 초기화 실패: {e}")
+            self.logger.error(f"BlobStorageManager 방식 블롭 스토리지 초기화 실패: {e}")
             self.blob_storage_available = False
 
     def _initialize_external_clip_model(self):
-        """외부 CLIP 모델 초기화 (중복 방지)"""
-        onnx_model_path = "models/clip_onnx/clip_visual.quant.onnx"
+        current_file = Path(__file__)
+        project_root = current_file.parent.parent.parent  # backend/app까지 올라가기
+        onnx_model_path = project_root / "model" / "clip_onnx" / "clip_visual.quant.onnx"
         
         if os.path.exists(onnx_model_path):
             try:
@@ -406,28 +413,81 @@ class ImageDiversityManager(SessionAwareMixin):
             return ""
 
     def _download_blob_image(self, image_url: str) -> Optional[BytesIO]:
-        """✅ 블롭 스토리지에서 이미지 다운로드"""
+        """✅ BlobStorageManager 방식으로 개선된 블롭 스토리지 이미지 다운로드"""
         try:
             if not self.blob_storage_available:
                 return None
-                
-            blob_name = self._extract_blob_name_from_url(image_url)
+
+            # ✅ BlobStorageManager 방식: 직접 blob_name 추출
+            blob_name = self._extract_blob_name_from_url_enhanced(image_url)
             if not blob_name:
                 return None
-            
+
+            # ✅ BlobStorageManager 방식: get_blob_client 직접 사용
             blob_client = self.container_client.get_blob_client(blob_name)
+            
+            # ✅ BlobStorageManager 방식: download_blob().readall() 패턴 사용
             download_stream = blob_client.download_blob()
             image_data = BytesIO(download_stream.readall())
             
-            self.logger.debug(f"블롭 이미지 다운로드 성공: {blob_name}")
+            self.logger.debug(f"✅ BlobStorageManager 방식 이미지 다운로드 성공: {blob_name}")
             return image_data
-            
+
         except Exception as e:
-            self.logger.error(f"블롭 이미지 다운로드 실패 {image_url}: {e}")
+            self.logger.error(f"BlobStorageManager 방식 이미지 다운로드 실패 {image_url}: {e}")
             return None
 
+    def _extract_blob_name_from_url_enhanced(self, image_url: str) -> str:
+        """✅ BlobStorageManager 방식에 맞춘 향상된 블롭 이름 추출"""
+        try:
+            # BlobStorageManager의 URL 구조: 
+            # https://{account_name}.blob.core.windows.net/{container_name}/{user_id}/magazine/{magazine_id}/images/{filename}
+            
+            parts = image_url.split('/')
+            if len(parts) < 5:
+                return ""
+
+            # ✅ container_name 이후의 모든 경로를 blob_name으로 사용 (BlobStorageManager 방식)
+            try:
+                # container_name 위치 찾기
+                container_index = -1
+                for i, part in enumerate(parts):
+                    if part == self.container_name:
+                        container_index = i
+                        break
+                
+                if container_index != -1 and container_index + 1 < len(parts):
+                    # container_name 다음부터 모든 경로를 blob_name으로 사용
+                    blob_name = '/'.join(parts[container_index + 1:])
+                    return blob_name
+                else:
+                    # 폴백: 도메인 이후 경로에서 container_name 제거
+                    domain_parts = [p for p in parts if '.' in p and 'blob.core.windows.net' in p]
+                    if domain_parts:
+                        domain_index = parts.index(domain_parts[0])
+                        remaining_parts = parts[domain_index + 1:]
+                        if remaining_parts and remaining_parts[0] == self.container_name:
+                            blob_name = '/'.join(remaining_parts[1:])
+                            return blob_name
+                    
+                    return ""
+                    
+            except (ValueError, IndexError):
+                # 최종 폴백: 간단한 경로 추출
+                if self.container_name in image_url:
+                    container_pos = image_url.find(self.container_name)
+                    after_container = image_url[container_pos + len(self.container_name):].lstrip('/')
+                    return after_container
+                
+                return ""
+
+        except Exception as e:
+            self.logger.error(f"향상된 블롭 이름 추출 실패 {image_url}: {e}")
+            return ""
+
+
     def _download_image_http_fallback(self, image_url: str) -> Optional[BytesIO]:
-        """HTTP 요청으로 이미지 다운로드 (폴백)"""
+        """✅ BlobStorageManager 호환 HTTP 폴백 다운로드"""
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -435,25 +495,36 @@ class ImageDiversityManager(SessionAwareMixin):
                 'Accept-Encoding': 'gzip, deflate',
                 'Connection': 'keep-alive'
             }
-            
+
+            # ✅ BlobStorageManager와 호환되는 요청 방식
             response = self.session.get(
-                image_url, 
-                timeout=30, 
+                image_url,
+                timeout=60,  # 타임아웃 증가
                 headers=headers,
                 allow_redirects=True,
-                verify=False
+                verify=False,  # SSL 검증 비활성화 (BlobStorageManager 호환)
+                stream=True    # 스트림 다운로드
             )
+            
             response.raise_for_status()
             
             content_type = response.headers.get('content-type', '')
             if not content_type.startswith('image/'):
                 self.logger.warning(f"URL이 이미지가 아님: {content_type}")
                 return None
+
+            # ✅ BlobStorageManager 방식: BytesIO로 직접 변환
+            image_data = BytesIO()
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    image_data.write(chunk)
             
-            return BytesIO(response.content)
-            
+            image_data.seek(0)  # BlobStorageManager 방식과 동일하게 처음으로 이동
+            self.logger.debug(f"✅ BlobStorageManager 호환 HTTP 폴백 다운로드 성공: {image_url}")
+            return image_data
+
         except Exception as e:
-            self.logger.error(f"HTTP 이미지 다운로드 실패 {image_url}: {e}")
+            self.logger.error(f"BlobStorageManager 호환 HTTP 이미지 다운로드 실패 {image_url}: {e}")
             return None
 
     async def _calculate_perceptual_hash_async(self, image_url: str) -> Optional[str]:
@@ -469,29 +540,29 @@ class ImageDiversityManager(SessionAwareMixin):
             return None
 
     def _calculate_perceptual_hash_sync(self, image_url: str) -> str:
-        """✅ 블롭 스토리지 지원 동기 Perceptual Hash 계산"""
+        """✅ BlobStorageManager 방식 호환 동기 Perceptual Hash 계산"""
         try:
             image_data = None
-            
-            # ✅ 블롭 스토리지 URL인 경우 블롭 클라이언트 사용
+
+            # ✅ BlobStorageManager 방식: 블롭 스토리지 URL 우선 처리
             if self._is_blob_storage_url(image_url):
                 image_data = self._download_blob_image(image_url)
                 if image_data is None:
-                    self.logger.warning(f"블롭 이미지 다운로드 실패, HTTP 요청으로 폴백: {image_url}")
+                    self.logger.warning(f"BlobStorageManager 방식 다운로드 실패, HTTP 요청으로 폴백: {image_url}")
                     image_data = self._download_image_http_fallback(image_url)
             else:
                 # 일반 HTTP URL인 경우
                 if image_url.startswith(('http://', 'https://')):
                     image_data = self._download_image_http_fallback(image_url)
                 else:
-                    # 로컬 파일인 경우
+                    # 로컬 파일인 경우 (BlobStorageManager에서는 사용하지 않지만 호환성 유지)
                     with Image.open(image_url) as img:
                         if img.mode != 'RGB':
                             img = img.convert('RGB')
                         phash = imagehash.phash(img, hash_size=16)
                         return str(phash)
-            
-            # 이미지 데이터 처리
+
+            # ✅ BlobStorageManager 방식: BytesIO 데이터 처리
             if image_data:
                 with Image.open(image_data) as img:
                     if img.mode != 'RGB':
@@ -499,12 +570,12 @@ class ImageDiversityManager(SessionAwareMixin):
                     phash = imagehash.phash(img, hash_size=16)
                     return str(phash)
             else:
-                # ✅ 다운로드 실패 시에도 기본 해시 반환 (배치 보장)
+                # ✅ BlobStorageManager 호환: 다운로드 실패 시에도 기본 해시 반환
                 return f"fallback_hash_{hash(image_url)}"
-                
+
         except Exception as e:
-            self.logger.error(f"이미지 해시 계산 실패 {image_url}: {e}")
-            # ✅ 실패해도 기본 해시 반환 (배치 보장)
+            self.logger.error(f"BlobStorageManager 호환 이미지 해시 계산 실패 {image_url}: {e}")
+            # ✅ BlobStorageManager 호환: 실패해도 기본 해시 반환
             return f"error_hash_{hash(image_url)}"
 
     def _is_duplicate_or_similar(self, image_hash: str) -> bool:

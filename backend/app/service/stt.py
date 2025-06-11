@@ -99,7 +99,7 @@ def transcribe_audio(filepath: str, key: str, region: str):
         # Azure Speech SDK 설정
         speech_config = speechsdk.SpeechConfig(subscription=key, region=region)
         # 한국어와 영어 자동 감지
-        auto_detect = speechsdk.AutoDetectSourceLanguageConfig(languages=["ko-KR", "en-US", "de-DE", "es-ES", "zh-CN", "ja-JP"])
+        auto_detect = speechsdk.AutoDetectSourceLanguageConfig(languages=["ko-KR", "en-US"])
         audio_config = speechsdk.AudioConfig(filename=working_file)
         
         recognizer = speechsdk.SpeechRecognizer(

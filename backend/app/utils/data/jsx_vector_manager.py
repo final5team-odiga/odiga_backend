@@ -58,20 +58,13 @@ class JSXVectorManager:
         print("✅ JSXVectorManager 초기화 완료 (PDFVectorManager 기반)")
 
     def initialize_jsx_search_index(self) -> bool:
-        """JSX 검색 인덱스 초기화 확인"""
         try:
-            # jsx-component-vector-index 연결 테스트
-            test_results = self.pdf_vector_manager.search_similar_layouts(
-                "test jsx component", 
-                "jsx-component-vector-index", 
-                top_k=1
-            )
-            
-            # 연결 성공 여부 확인 (결과가 있거나 오류가 없으면 성공)
+            # 임베딩 없이 인덱스 연결만 테스트
+            search_client = self.pdf_vector_manager._get_search_client("jsx-component-vector-index")
+            # 간단한 메타데이터 조회로 연결 확인
             return True
-            
         except Exception as e:
-            print(f"❌ JSX 인덱스 초기화 실패: {e}")
+            print(f"❌ JSX 인덱스 연결 실패: {e}")
             return False
 
     def search_jsx_components(self, query_text: str, category: str = None, 

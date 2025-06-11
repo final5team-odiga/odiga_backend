@@ -39,7 +39,7 @@ class PDFVectorManager:
         
         # Azure OpenAI 클라이언트 (임베딩 생성용)
         self.openai_client = AzureOpenAI(
-            api_key=os.getenv("AZURE_OPENAI_KEY"),
+            api_key=os.getenv("AZURE_OPENAI_KEY"), 
             api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
             azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
         )

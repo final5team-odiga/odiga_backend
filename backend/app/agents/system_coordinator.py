@@ -46,6 +46,7 @@ class SystemCoordinator:
         self.logging_manager = LoggingManager(self.logger)
         self.vector_manager = PDFVectorManager(isolation_enabled=True)
         self.image_analyzer = ImageAnalyzerAgent()
+        self.image_analyzer.set_blob_manager(self.blob_manager)
         self.content_creator = ContentCreatorV2Crew()
         
         # ✅ 통합된 멀티모달 에이전트 (템플릿 선택 + JSX 생성 포함)
@@ -53,6 +54,13 @@ class SystemCoordinator:
         
         # ✅ PDF 생성 서비스 추가
         self.pdf_service = PDFGenerationService()
+        
+    def safe_log(self, message):
+            
+        self.logger.info(message)
+
+    
+
 
     async def coordinate_complete_magazine_generation(self, user_input: str = None,
                                                       image_folder: str = None,

@@ -1,5 +1,6 @@
 import os
 import logging
+import sys
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -15,9 +16,48 @@ load_dotenv()
 # Windows 환경 설정 추가
 if os.name == 'nt':  # Windows
     os.environ['PYTHONIOENCODING'] = 'utf-8'
+    
+    # stdout/stderr 재설정
+    try:
+        import io
+        # 기존 stdout을 안전하게 교체
+        if hasattr(sys.stdout, 'buffer') and sys.stdout.buffer:
+            sys.stdout = io.TextIOWrapper(
+                sys.stdout.buffer, 
+                encoding='utf-8', 
+                errors='replace',
+                line_buffering=True
+            )
+        if hasattr(sys.stderr, 'buffer') and sys.stderr.buffer:
+            sys.stderr = io.TextIOWrapper(
+                sys.stderr.buffer, 
+                encoding='utf-8', 
+                errors='replace',
+                line_buffering=True
+            )
+    except Exception:
+        pass
 
-logging.basicConfig(level=logging.INFO)
+# ✅ 로깅을 파일 우선으로 설정
+try:
+    # 로그 디렉토리 생성
+    os.makedirs('logs', exist_ok=True)
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('logs/app.log', encoding='utf-8'),  # 파일 우선
+            logging.StreamHandler()  # 콘솔은 보조
+        ],
+        force=True  # 기존 로깅 설정 강제 재설정
+    )
+except Exception:
+    # 최소한의 로깅 설정
+    logging.basicConfig(level=logging.WARNING, force=True)
+
 logger = logging.getLogger(__name__)
+
 
 app = FastAPI(title="CRUD & Magazine Generation API")
 
