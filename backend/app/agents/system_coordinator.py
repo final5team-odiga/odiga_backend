@@ -1,21 +1,24 @@
 import asyncio
 import json
 import traceback
-from typing import Dict, List, Any
-from app.utils.log.hybridlogging import get_hybrid_logger
-from app.utils.data.blob_storage import BlobStorageManager
-from app.utils.log.logging_manager import LoggingManager
-
-from app.agents.image_analyzer import ImageAnalyzerAgent
-from app.agents.contents.content_creator import ContentCreatorV2Crew
-from app.utils.data.pdf_vector_manager import PDFVectorManager
-from app.agents.Editor.unified_multimodal_agent import UnifiedMultimodalAgent
-from app.db.cosmos_connection import logging_container, template_container, jsx_container
-from app.db.db_utils import save_to_cosmos, save_jsx_components
+import os
 from uuid import uuid4
-from app.db.magazine_db_utils import MagazineDBUtils
+
+from typing import Dict, List, Any
+from ..utils.log.hybridlogging import get_hybrid_logger
+from ..utils.data.blob_storage import BlobStorageManager
+from ..utils.log.logging_manager import LoggingManager
+
+from .image_analyzer import ImageAnalyzerAgent
+from .contents.content_creator import ContentCreatorV2Crew
+from .Editor.unified_multimodal_agent import UnifiedMultimodalAgent
+
+from ..utils.data.pdf_vector_manager import PDFVectorManager
+from ..db.cosmos_connection import logging_container, template_container, jsx_container
+from ..db.db_utils import save_to_cosmos, save_jsx_components
+from ..db.magazine_db_utils import MagazineDBUtils
 from datetime import datetime
-from app.service.pdf.pdf_generater import PDFGenerationService
+from ..service.pdf.pdf_generater import PDFGenerationService
 
 def sanitize_coroutines(data: Any) -> Any:
     if isinstance(data, dict):
@@ -163,7 +166,6 @@ class SystemCoordinator:
             
             if success:
                 # ✅ 생성된 PDF를 Blob Storage의 outputs 폴더에 저장
-                import os
                 if os.path.exists(output_pdf_path):
                     with open(output_pdf_path, 'rb') as pdf_file:
                         pdf_content = pdf_file.read()

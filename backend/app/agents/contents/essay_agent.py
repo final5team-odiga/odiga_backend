@@ -1,6 +1,6 @@
 from typing import Dict, List
 from crewai import Agent, Task
-from app.custom_llm import get_azure_llm
+from ...custom_llm import get_azure_llm
 
 class EssayAgentBase:
     def __init__(self, name: str, instruction: Dict):

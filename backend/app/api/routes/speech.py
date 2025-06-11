@@ -5,10 +5,10 @@ from fastapi import APIRouter, Request, UploadFile, File, Form, Depends, HTTPExc
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.crud.data.database import get_db
-from app.service.stt import transcribe_audio
-from app.service.tts import lan_det, request_tts
-from api.dependencies import require_auth
+from ...crud.data.database import get_db
+from ...service.stt import transcribe_audio
+from ...service.tts import lan_det, request_tts
+from ..dependencies import require_auth
 
 router = APIRouter(prefix="/speech", tags=["speech"])
 logger = logging.getLogger(__name__)

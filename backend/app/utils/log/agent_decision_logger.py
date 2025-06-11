@@ -4,8 +4,8 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, asdict
 
 # 추가: Cosmos DB 관련 임포트
-from app.db.cosmos_connection import logging_container
-from app.db.db_utils import update_agent_logs_in_cosmos, get_agent_logs_from_cosmos
+from ...db.cosmos_connection import logging_container
+from ...db.db_utils import update_agent_logs_in_cosmos, get_agent_logs_from_cosmos
 
 @dataclass
 class AgentOutput:

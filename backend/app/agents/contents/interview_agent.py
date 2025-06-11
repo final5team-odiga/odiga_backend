@@ -1,6 +1,6 @@
 from typing import Dict, List
 from crewai import Agent, Task
-from app.custom_llm import get_azure_llm
+from ...custom_llm import get_azure_llm
 
 class InterviewAgentBase:
     def __init__(self, name: str, instruction: Dict):
@@ -108,7 +108,7 @@ class InterviewAgentManager:
                 "purpose": '여행 중 "이건 꼭 해보자"라고 생각한 것이 있었다면에 대한 인터뷰 답변을 정제',
                 "page_instruction": {
                     "page": "4page", 
-                    "source": '여행 중 “이건 꼭 해보자”라고 생각한 것이 있었다면',
+                    "source": '여행 중 "이건 꼭 해보자"라고 생각한 것이 있었다면',
                     "goal": "계획이나 다짐에 대한 구체적이고 솔직한 표현"
                 }
             },

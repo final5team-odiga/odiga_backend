@@ -5,10 +5,10 @@ from sqlalchemy.future import select
 from sqlalchemy import delete, update
 from passlib.context import CryptContext
 
-from app.crud.data.database import get_db
-from app.crud.models.models import User, Article, Comment, Like
-from app.crud.utils.azure_utils import upload_profile_image, is_image_safe_for_upload
-from api.dependencies import require_auth
+from ...crud.data.database import get_db
+from ...crud.models.models import User, Article, Comment, Like
+from ...crud.utils.azure_utils import upload_profile_image, is_image_safe_for_upload
+from ..dependencies import require_auth
 
 router = APIRouter(prefix="/profile", tags=["profiles"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

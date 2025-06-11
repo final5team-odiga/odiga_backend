@@ -6,10 +6,10 @@ from sqlalchemy.exc import IntegrityError
 from pydantic import EmailStr
 from passlib.context import CryptContext
 
-from app.crud.data.database import get_db
-from app.models import User
-from app.crud.utils.schemas import UserCreate
-from app.crud.crud import create_user
+from ...crud.data.database import get_db
+from ...crud.models.models import User
+from ...crud.utils.schemas import UserCreate
+from ...crud.crud import create_user
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

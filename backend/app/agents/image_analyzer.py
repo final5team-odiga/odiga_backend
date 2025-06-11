@@ -1,9 +1,10 @@
 from crewai import Agent
-from app.custom_llm import get_azure_llm
+from ..custom_llm import get_azure_llm
 import asyncio
 import aiohttp
 import os
 from typing import List, Dict, Any
+from ..utils.data.blob_storage import BlobStorageManager
 
 class ImageAnalyzerAgent:
     def __init__(self):
@@ -51,7 +52,6 @@ class ImageAnalyzerAgent:
                 print(f"\n=== 이미지 {image_index}: '{image.name}' 분석 중 ===")
                 
                 # 이미지 URL 생성
-                from utils.data.blob_storage import BlobStorageManager
                 blob_manager = BlobStorageManager()
                 image_url = blob_manager.get_image_url(image)
                 print(f"이미지 URL: {image_url}")

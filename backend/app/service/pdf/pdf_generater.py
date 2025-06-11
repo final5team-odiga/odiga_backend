@@ -5,8 +5,8 @@ import shutil
 import logging
 import re
 
-from app.db.cosmos_connection import jsx_container
-from app.db.db_utils import get_from_cosmos
+
+from ...db.cosmos_connection import jsx_container
 
 class PDFGenerationService:
     def __init__(self):

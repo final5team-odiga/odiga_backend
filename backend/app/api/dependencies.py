@@ -1,6 +1,4 @@
-from fastapi import Request, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.crud.data.database import get_db
+from fastapi import Request
 
 async def get_current_user(request: Request) -> str | None:
     """현재 로그인된 사용자 가져오기"""

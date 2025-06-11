@@ -4,8 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func
 
-from app.crud.data.database import get_db
-from app.models import Article
+from ...crud.data.database import get_db
+from ...crud.models.models import Article
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 

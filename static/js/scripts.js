@@ -312,6 +312,41 @@ function initApiTestForms() {
             document.getElementById("storage-images-delete-filename").value
           );
           break;
+        case "storage-texts-upload":
+          url = "/storage/texts/upload/";
+          method = "POST";
+          formData = new FormData();
+          formData.append(
+            "magazine_id",
+            document.getElementById("storage-texts-upload-magazineID").value
+          );
+          formData.append(
+            "text",
+            document.getElementById("storage-texts-upload-content").value
+          );
+          break;
+
+        case "storage-texts-list":
+          const textListMagazineId = document.getElementById(
+            "storage-texts-list-magazineID"
+          ).value;
+          url = `/storage/texts/list/?magazine_id=${textListMagazineId}`;
+          method = "GET";
+          break;
+
+        case "storage-texts-delete":
+          url = "/storage/texts/delete/";
+          method = "DELETE";
+          formData = new FormData();
+          formData.append(
+            "magazine_id",
+            document.getElementById("storage-texts-delete-magazineID").value
+          );
+          formData.append(
+            "filename",
+            document.getElementById("storage-texts-delete-filename").value
+          );
+          break;
 
         // 음성 API 엔드포인트 추가
         case "speech-transcribe":

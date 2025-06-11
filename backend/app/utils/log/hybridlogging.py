@@ -3,7 +3,7 @@ import time
 from typing import List, Dict, Any
 import sys
 import io
-
+from .agent_decision_logger import AgentDecisionLogger
 
 if sys.platform.startswith('win'):
     # Windows에서 UTF-8 인코딩 강제 설정
@@ -20,7 +20,6 @@ class HybridLogger:
     def setup_logging(self):
         """로깅 설정"""
         try:
-            from utils.log.agent_decision_logger import AgentDecisionLogger
             self.agent_logger = AgentDecisionLogger()
         except ImportError:
             self.logger.warning("AgentDecisionLogger를 불러올 수 없습니다. 표준 로깅으로 진행합니다.")
@@ -507,7 +506,7 @@ def create_hybrid_logger(class_name: str, agent_logger_factory=None) -> HybridLo
             agent_logger = agent_logger_factory()
         else:
             try:
-                from utils.log.agent_decision_logger import get_agent_logger
+                from backend.app.utils.log.agent_decision_logger import get_agent_logger
                 agent_logger = get_agent_logger()
             except ImportError:
                 agent_logger = None

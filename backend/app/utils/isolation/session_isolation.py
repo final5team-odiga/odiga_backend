@@ -4,11 +4,10 @@
 """
 
 import os
-import time
 import threading
+import time
 from typing import List, Optional, Any, Dict
 from dataclasses import dataclass
-from app.utils.isolation.ai_search_isolation import AISearchIsolationManager
 
 @dataclass
 class SessionConfig:
@@ -199,11 +198,11 @@ class SessionAwareMixin:
         )
     
     def get_previous_results(self, max_results: int = 10) -> List[Any]:
-        """이전 결과 조회 (세션 격리 적용)"""
+        """이전 결과 조회"""
         results = self.session_manager.get_agent_results(
             self.current_session_id, self.agent_name
         )
-        return results[-max_results:] if results else []
+        return results[:max_results] if len(results) > max_results else results
     
     def get_cross_session_insights(self, max_sessions: int = 3) -> List[Any]:
         """교차 세션 인사이트 조회"""
@@ -212,18 +211,18 @@ class SessionAwareMixin:
         )
     
     def get_session_isolated_path(self, filename: str) -> str:
-        """세션별 격리된 파일 경로"""
-        session_path = self.session_manager.get_session_data_path(self.current_session_id)
-        return os.path.join(session_path, filename)
+        """세션별 격리된 파일 경로 생성"""
+        if not filename:
+            return ""
+        base, ext = os.path.splitext(filename)
+        return f"{base}_{self.current_session_id}{ext}"
 
-# 전역 세션 관리자 인스턴스
-session_manager = SessionManager()
 
 def get_current_session() -> str:
-    """현재 활성 세션 ID 반환"""
-    return getattr(threading.current_thread(), 'session_id', 
-                   session_manager.create_session())
+    """현재 세션 ID 조회"""
+    session_manager = SessionManager()
+    return session_manager.create_session()
 
 def set_current_session(session_id: str):
-    """현재 스레드의 세션 ID 설정"""
-    threading.current_thread().session_id = session_id
+    """현재 세션 ID 설정"""
+    return session_id

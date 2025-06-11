@@ -1,10 +1,11 @@
 import asyncio
+import logging
 import json
 import time
 from typing import Dict, Any, TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from utils.log.hybridlogging import HybridLogger
+# 커스텀 하이브리드 로깅
+from .hybridlogging import HybridLogger
 
 class LoggingManager:
     """에이전트 응답 로그 전문 관리자 - 각 에이전트의 실제 응답 데이터만 수집"""

@@ -6,9 +6,9 @@ azure-identity==1.19.0
 azure-ai-formrecognizer==3.3.3
 azure-search-documents==11.5.2
 azure-core==1.34.0
-azure-cosmos
+azure-cosmos==4.9.0
 azure-cognitiveservices-speech==1.34.1
-azure-ai-contentsafety
+azure-ai-contentsafety==1.0.0
 
 nest_asyncio==1.6.0
 psutil==7.0.0
@@ -25,20 +25,20 @@ torchvision==0.20.1
 open-clip-torch==2.32.0
 scikit-learn==1.5.2
 
-fastapi
-uvicorn[standard]
-jinja2
+fastapi==0.115.9
+uvicorn[standard]==0.34.0
+jinja2==3.1.6
 
 
-passlib[bcrypt]
-sqlalchemy[asyncio]
-asyncpg
-pillow
+passlib[bcrypt]==1.7.4
+sqlalchemy[asyncio]==2.0.41
+asyncpg==0.30.0
+pillow==11.2.1
 
-python-multipart
+python-multipart==0.0.20
 
-email-validator
-itsdangerous
+email-validator==2.2.0
+itsdangerous==2.2.0    
 
 requests>=2.31.0
 pydub>=0.25.1

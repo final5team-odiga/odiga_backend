@@ -1,11 +1,10 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from app.crud.models.models import User, Article, Comment, Like
-from app.crud.utils.schemas import UserCreate, ArticleCreate, ArticleUpdate, CommentCreate, CommentUpdate, LikeCreate
-from sqlalchemy.orm import selectinload, Session
+from backend.app.crud.models.models import User, Article, Comment, Like
+from backend.app.crud.utils.schemas import UserCreate, ArticleCreate, ArticleUpdate, CommentCreate, CommentUpdate, DailyCreate
 from passlib.context import CryptContext
 from sqlalchemy.exc import IntegrityError
-from app.crud.models import Daily
+from backend.app.crud.models.models import Daily
 import uuid
 
 

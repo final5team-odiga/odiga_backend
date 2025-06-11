@@ -3,11 +3,15 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.crud.data.database import get_db
-from app.models import Article
-from app.crud.utils.schemas import ArticleCreate, ArticleUpdate
-from app.crud.crud import create_article, update_article, delete_article
-from api.dependencies import get_current_user, require_auth
+from ...crud.data.database import get_db
+from ...crud.models.models import Article
+from ...crud.utils.schemas import ArticleCreate, ArticleUpdate
+from ...crud.crud import create_article, update_article, delete_article
+from ..dependencies import get_current_user, require_auth
+
+from ...crud.models.models import Comment
+
+from ...crud.crud import check_user_liked
 
 router = APIRouter(prefix="/articles", tags=["articles"])
 
@@ -52,7 +56,6 @@ async def article_detail(
     await db.commit()
 
     # 댓글 로드
-    from app.models import Comment
     comments_result = await db.execute(
         select(Comment).where(Comment.articleID == article_id).order_by(Comment.createdAt.asc())
     )
@@ -73,7 +76,6 @@ async def article_detail(
     user_id = await get_current_user(request)
     user_liked = False
     if user_id:
-        from app.crud.crud import check_user_liked
         user_liked = await check_user_liked(db, article_id, user_id)
 
     article_data = {

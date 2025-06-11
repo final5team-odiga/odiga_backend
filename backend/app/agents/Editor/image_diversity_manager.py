@@ -8,17 +8,16 @@ import requests
 from io import BytesIO
 import imagehash
 import cv2
-from pathlib import Path
 from dotenv import load_dotenv
 
 from azure.storage.blob import BlobServiceClient
 
 from sklearn.cluster import DBSCAN
-from app.utils.log.hybridlogging import HybridLogger
-from app.utils.isolation.session_isolation import SessionAwareMixin
-from app.utils.log.logging_manager import LoggingManager
-from app.utils.data.pdf_vector_manager import PDFVectorManager
-from app.utils.isolation.ai_search_isolation import AISearchIsolationManager
+from ...utils.log.hybridlogging import HybridLogger
+from ...utils.isolation.session_isolation import SessionAwareMixin
+from ...utils.log.logging_manager import LoggingManager
+from ...utils.data.pdf_vector_manager import PDFVectorManager
+from ...utils.isolation.ai_search_isolation import AISearchIsolationManager
 import onnxruntime as ort
 
 class ImageDiversityManager(SessionAwareMixin):
@@ -71,9 +70,7 @@ class ImageDiversityManager(SessionAwareMixin):
     def _initialize_blob_storage(self):
         """✅ 블롭 스토리지 클라이언트 초기화"""
         try:
-            # 환경 변수 로드
-            dotenv_path = Path(r'C:\Users\EL0021\Desktop\odiga_multimodal_agent\.env')
-            load_dotenv(dotenv_path=dotenv_path, override=True)
+            load_dotenv()
             
             connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
             self.container_name = os.getenv("AZURE_STORAGE_CONTAINER")

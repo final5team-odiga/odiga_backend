@@ -3,13 +3,13 @@ import json
 import time
 import re
 from typing import Dict, List, Any
-from custom_llm import get_azure_llm
-from utils.isolation.ai_search_isolation import AISearchIsolationManager
-from utils.isolation.session_isolation import SessionAwareMixin
-from utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
-from utils.log.logging_manager import LoggingManager
-from utils.data.jsx_vector_manager import JSXVectorManager
-from utils.data.pdf_vector_manager import PDFVectorManager
+from ...custom_llm import get_azure_llm
+from ...utils.isolation.ai_search_isolation import AISearchIsolationManager
+from ...utils.isolation.session_isolation import SessionAwareMixin
+from ...utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
+from ...utils.log.logging_manager import LoggingManager
+from ...utils.data.jsx_vector_manager import JSXVectorManager
+from ...utils.data.pdf_vector_manager import PDFVectorManager
 
 class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
 

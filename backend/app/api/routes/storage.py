@@ -5,9 +5,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import update
 from azure.core.exceptions import ResourceNotFoundError
 
-from app.crud.data.database import get_db
-from app.models import User
-from app.crud.utils.azure_utils import (
+from ...crud.data.database import get_db
+from ...crud.models.models import User
+from ...crud.utils.azure_utils import (
     upload_image_if_not_exists,
     delete_image,
     list_images,
@@ -18,7 +18,7 @@ from app.crud.utils.azure_utils import (
     delete_interview_result,
     list_text_files
 )
-from api.dependencies import require_auth
+from ..dependencies import require_auth
 
 router = APIRouter(prefix="/storage", tags=["storage"])
 

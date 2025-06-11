@@ -4,10 +4,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import asyncio
 import os
 
-from app.crud.data.database import get_db
-from agents.system_coordinator import SystemCoordinator
-from utils.log.hybridlogging import get_hybrid_logger
-from api.dependencies import require_auth
+from ...crud.data.database import get_db
+from ...agents.system_coordinator import SystemCoordinator
+from ...utils.log.hybridlogging import get_hybrid_logger
+from ..dependencies import require_auth
+from ...db.magazine_db_utils import MagazineDBUtils
 
 router = APIRouter(prefix="/magazine", tags=["magazine"])
 logger = get_hybrid_logger("MagazineAPI")
@@ -145,9 +146,7 @@ async def get_magazine_status(
     """매거진 생성 상태 확인"""
     try:
         # MagazineDBUtils를 사용하여 상태 확인
-        from db.magazine_db_utils import MagazineDBUtils
-        
-        magazine_data = await MagazineDBUtils.get_magazine_content(magazine_id)
+        magazine_data = await MagazineDBUtils.get_magazine_by_id(magazine_id) 
         
         if not magazine_data:
             raise HTTPException(

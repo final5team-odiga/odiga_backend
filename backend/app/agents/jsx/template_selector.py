@@ -1,6 +1,6 @@
 from typing import Dict, List, Optional
-from utils.log.hybridlogging import get_hybrid_logger
-from utils.data.pdf_vector_manager import PDFVectorManager
+from ...utils.log.hybridlogging import get_hybrid_logger
+from ...utils.data.pdf_vector_manager import PDFVectorManager
 
 class SectionStyleAnalyzer:
     """

@@ -1,24 +1,24 @@
-import re
 import asyncio
-import numpy as np
 import json
+import re
+import numpy as np
 
 from typing import Dict, List, Any, Optional
 from crewai import Agent, Task, Crew
-from app.custom_llm import get_azure_llm
+from ...custom_llm import get_azure_llm
 
-from app.agents.Editor.semantic_analysis_engine import SemanticAnalysisEngine
-from app.agents.Editor.image_diversity_manager import ImageDiversityManager
-from app.agents.jsx.template_selector import SectionStyleAnalyzer
-from app.agents.jsx.unified_jsx_generator import UnifiedJSXGenerator
+from .semantic_analysis_engine import SemanticAnalysisEngine
+from .image_diversity_manager import ImageDiversityManager
+from ..jsx.template_selector import SectionStyleAnalyzer
+from ..jsx.unified_jsx_generator import UnifiedJSXGenerator
 
-from app.utils.isolation.ai_search_isolation import AISearchIsolationManager
-from app.utils.data.pdf_vector_manager import PDFVectorManager
-from app.utils.isolation.session_isolation import SessionAwareMixin
-from app.utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
-from app.utils.log.logging_manager import LoggingManager
+from ...utils.isolation.ai_search_isolation import AISearchIsolationManager
+from ...utils.data.pdf_vector_manager import PDFVectorManager
+from ...utils.isolation.session_isolation import SessionAwareMixin
+from ...utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
+from ...utils.log.logging_manager import LoggingManager
 
-from app.db.magazine_db_utils import MagazineDBUtils
+from ...db.magazine_db_utils import MagazineDBUtils
 
 class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
     """통합 멀티모달 에이전트 - 하이브리드 방식: 요약 없는 CrewAI 분석 + 이미지 배치 강화"""

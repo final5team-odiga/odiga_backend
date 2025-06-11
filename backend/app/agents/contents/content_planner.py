@@ -1,7 +1,8 @@
 import asyncio
+import json
 from typing import Dict, List, Any
-from app.custom_llm import get_azure_llm
-from app.utils.log.hybridlogging import get_hybrid_logger
+from ...custom_llm import get_azure_llm
+from ...utils.log.hybridlogging import get_hybrid_logger
 
 class ContentPlannerAgent:
     """콘텐츠 분석 및 구조 설계를 담당하는 에이전트"""
@@ -77,7 +78,6 @@ estimated_length 필드에는 "짧음", "중간", "김" 중 하나의 값만 입
             response = await self.llm.ainvoke(prompt)
             
             # JSON 응답 추출 및 파싱
-            import json
             import re
             
             # JSON 부분만 추출

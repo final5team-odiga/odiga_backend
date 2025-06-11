@@ -3,10 +3,11 @@
 에이전트 간 데이터 교환 시 오염 방지 및 격리 적용
 """
 import time
+import threading
 from typing import Dict, Any
 from dataclasses import dataclass
-from app.utils.isolation.ai_search_isolation import AISearchIsolationManager
-from app.utils.isolation.session_isolation import SessionManager
+from .ai_search_isolation import AISearchIsolationManager
+from .session_isolation import SessionManager
 
 @dataclass
 class DataTransferRequest:
@@ -185,7 +186,6 @@ class AgentCommunicationIsolator:
     def _get_agent_session(self, agent_name: str) -> str:
         """에이전트의 세션 ID 조회"""
         # 현재 스레드의 세션 ID 반환
-        import threading
         return getattr(threading.current_thread(), 'session_id', 'default_session')
     
     def get_transfer_statistics(self) -> Dict[str, Any]:

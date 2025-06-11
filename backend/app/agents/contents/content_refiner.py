@@ -1,8 +1,9 @@
 import asyncio
 import re
+import json
 from typing import Dict, List, Any, Tuple
-from app.custom_llm import get_azure_llm
-from app.utils.log.hybridlogging import get_hybrid_logger
+from ...custom_llm import get_azure_llm
+from ...utils.log.hybridlogging import get_hybrid_logger
 
 class ContentRefiner:
     """콘텐츠 분량 검토 및 지능적 분할을 담당하는 클래스"""
@@ -89,8 +90,6 @@ class ContentRefiner:
             response = await self.llm.ainvoke(prompt)
             
             # JSON 응답 추출 및 파싱
-            import json
-            
             # JSON 부분만 추출
             json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
             if json_match:

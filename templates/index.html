@@ -822,6 +822,7 @@
         <section id="storage" class="content-section">
           <h2>스토리지 API</h2>
           <div class="endpoint-container">
+            <!-- 이미지 목록 조회 -->
             <div class="endpoint-card">
               <div class="endpoint-header">
                 <span class="method get">GET</span>
@@ -831,11 +832,12 @@
                 <p class="description">이미지 목록 조회하기</p>
                 <div class="test-form">
                   <div class="form-group">
-                    <label for="storage-images-magazineID">매거진 ID</label>
+                    <label for="storage-images-magazineID">Magazine ID</label>
                     <input
                       type="text"
                       id="storage-images-magazineID"
                       name="magazine_id"
+                      placeholder="Magazine ID를 입력하세요"
                     />
                   </div>
                   <button class="send-btn" data-endpoint="storage-images-list">
@@ -851,6 +853,7 @@
               </div>
             </div>
 
+            <!-- 이미지 업로드 -->
             <div class="endpoint-card">
               <div class="endpoint-header">
                 <span class="method post">POST</span>
@@ -861,25 +864,27 @@
                 <div class="test-form">
                   <div class="form-group">
                     <label for="storage-images-upload-magazineID"
-                      >매거진 ID</label
+                      >Magazine ID</label
                     >
                     <input
                       type="text"
                       id="storage-images-upload-magazineID"
                       name="magazine_id"
+                      placeholder="Magazine ID를 입력하세요"
                     />
                   </div>
                   <div class="form-group">
-                    <label for="storage-images-upload-files"
-                      >이미지 파일 (다중 선택 가능)</label
-                    >
+                    <label for="storage-images-upload-files">이미지 파일</label>
                     <input
                       type="file"
                       id="storage-images-upload-files"
                       name="files"
-                      multiple
                       accept="image/*"
+                      multiple
                     />
+                    <small
+                      >지원 형식: JPG, PNG, GIF, WEBP (다중 선택 가능)</small
+                    >
                   </div>
                   <button
                     class="send-btn"
@@ -897,6 +902,7 @@
               </div>
             </div>
 
+            <!-- 이미지 삭제 -->
             <div class="endpoint-card">
               <div class="endpoint-header">
                 <span class="method delete">DELETE</span>
@@ -907,12 +913,13 @@
                 <div class="test-form">
                   <div class="form-group">
                     <label for="storage-images-delete-magazineID"
-                      >매거진 ID</label
+                      >Magazine ID</label
                     >
                     <input
                       type="text"
                       id="storage-images-delete-magazineID"
                       name="magazine_id"
+                      placeholder="Magazine ID를 입력하세요"
                     />
                   </div>
                   <div class="form-group">
@@ -921,10 +928,16 @@
                       type="text"
                       id="storage-images-delete-filename"
                       name="filename"
+                      placeholder="삭제할 파일명을 입력하세요"
                     />
                   </div>
+                  <div class="warning-message">
+                    <p style="color: #e53935; font-weight: bold">
+                      ⚠️ 주의: 삭제된 파일은 복구할 수 없습니다!
+                    </p>
+                  </div>
                   <button
-                    class="send-btn"
+                    class="send-btn danger-btn"
                     data-endpoint="storage-images-delete"
                   >
                     삭제
@@ -933,6 +946,135 @@
                 <div class="response-container">
                   <h4>응답</h4>
                   <pre id="storage-images-delete-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <!-- 텍스트 파일 업로드 -->
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method post">POST</span>
+                <span class="path">/storage/texts/upload/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">텍스트 파일 업로드하기</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="storage-texts-upload-magazineID"
+                      >Magazine ID</label
+                    >
+                    <input
+                      type="text"
+                      id="storage-texts-upload-magazineID"
+                      name="magazine_id"
+                      placeholder="Magazine ID를 입력하세요"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="storage-texts-upload-content"
+                      >텍스트 내용</label
+                    >
+                    <textarea
+                      id="storage-texts-upload-content"
+                      name="text"
+                      rows="6"
+                      placeholder="업로드할 텍스트 내용을 입력하세요..."
+                    ></textarea>
+                    <small>입력한 텍스트가 .txt 파일로 저장됩니다</small>
+                  </div>
+                  <button class="send-btn" data-endpoint="storage-texts-upload">
+                    업로드
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="storage-texts-upload-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <!-- 텍스트 파일 목록 조회 -->
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method get">GET</span>
+                <span class="path">/storage/texts/list/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">텍스트 파일 목록 조회하기</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="storage-texts-list-magazineID"
+                      >Magazine ID</label
+                    >
+                    <input
+                      type="text"
+                      id="storage-texts-list-magazineID"
+                      name="magazine_id"
+                      placeholder="Magazine ID를 입력하세요"
+                    />
+                  </div>
+                  <button class="send-btn" data-endpoint="storage-texts-list">
+                    전송
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="storage-texts-list-response" class="response-box">
+// 응답이 여기에 표시됩니다</pre
+                  >
+                </div>
+              </div>
+            </div>
+
+            <!-- 텍스트 파일 삭제 -->
+            <div class="endpoint-card">
+              <div class="endpoint-header">
+                <span class="method delete">DELETE</span>
+                <span class="path">/storage/texts/delete/</span>
+              </div>
+              <div class="endpoint-body">
+                <p class="description">텍스트 파일 삭제하기</p>
+                <div class="test-form">
+                  <div class="form-group">
+                    <label for="storage-texts-delete-magazineID"
+                      >Magazine ID</label
+                    >
+                    <input
+                      type="text"
+                      id="storage-texts-delete-magazineID"
+                      name="magazine_id"
+                      placeholder="Magazine ID를 입력하세요"
+                    />
+                  </div>
+                  <div class="form-group">
+                    <label for="storage-texts-delete-filename">파일명</label>
+                    <input
+                      type="text"
+                      id="storage-texts-delete-filename"
+                      name="filename"
+                      placeholder="예: interview_06-11.txt"
+                    />
+                    <small>삭제할 텍스트 파일명을 정확히 입력하세요</small>
+                  </div>
+                  <div class="warning-message">
+                    <p style="color: #e53935; font-weight: bold">
+                      ⚠️ 주의: 삭제된 파일은 복구할 수 없습니다!
+                    </p>
+                  </div>
+                  <button
+                    class="send-btn danger-btn"
+                    data-endpoint="storage-texts-delete"
+                  >
+                    삭제
+                  </button>
+                </div>
+                <div class="response-container">
+                  <h4>응답</h4>
+                  <pre id="storage-texts-delete-response" class="response-box">
 // 응답이 여기에 표시됩니다</pre
                   >
                 </div>

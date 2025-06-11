@@ -3,11 +3,11 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.crud.data.database import get_db
-from app.models import Article, Comment
-from app.crud.utils.schemas import CommentCreate, CommentUpdate, LikeCreate
-from app.crud.crud import create_comment, update_comment, delete_comment, toggle_like
-from api.dependencies import require_auth
+from ...crud.data.database import get_db
+from ...crud.models.models import Article, Comment
+from ...crud.utils.schemas import CommentCreate, CommentUpdate, LikeCreate
+from ...crud.crud import create_comment, update_comment, delete_comment, toggle_like
+from ..dependencies import require_auth
 
 router = APIRouter(prefix="/articles", tags=["comments"])
 

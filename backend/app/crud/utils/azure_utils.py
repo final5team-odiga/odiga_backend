@@ -10,14 +10,9 @@ from pathlib import Path
 from PIL import Image, ImageOps
 import io
 
-# Get the directory where azure_utils.py is located
-current_dir = Path(__file__).parent
-env_path = current_dir / '.env'
 
-print(f"Looking for .env at: {env_path}")
-print(f".env exists: {env_path.exists()}")
 
-load_dotenv(env_path, override=True)
+load_dotenv()
 
 AZURE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 AZURE_STORAGE_ACCOUNT_NAME = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")

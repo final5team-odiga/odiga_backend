@@ -701,3 +701,216 @@ pre code {
   background-color: rgba(194, 24, 91, 0.2);
   color: #f48fb1;
 }
+/* 텍스트 업로드 섹션 스타일 - 기존 endpoint-card 스타일 적용 */
+.storage-texts-section {
+  background-color: var(--background-color);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--box-shadow);
+  margin-bottom: 1.5rem;
+}
+
+/* 텍스트 API 헤더 스타일 */
+.storage-texts-section h4 {
+  display: flex;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background-color: var(--background-secondary);
+  border-bottom: 1px solid var(--border-color);
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+/* POST 메서드 배지 스타일 */
+.storage-texts-section h4::before {
+  content: "POST";
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  margin-right: 0.75rem;
+  background-color: #81c784;
+  color: #1b5e20;
+}
+
+/* GET 메서드용 배지 */
+.storage-texts-list h4::before {
+  content: "GET";
+  background-color: #8ab4f8;
+  color: #0d47a1;
+}
+
+/* DELETE 메서드용 배지 */
+.storage-texts-delete h4::before {
+  content: "DELETE";
+  background-color: #e57373;
+  color: #b71c1c;
+}
+
+/* 설명 텍스트 스타일 */
+.storage-texts-section p {
+  color: var(--text-light);
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+  padding: 0 1rem;
+  margin-top: 1rem;
+}
+
+/* 입력 필드 컨테이너 */
+.storage-texts-section .form-group {
+  margin-bottom: 0.75rem;
+  padding: 0 1rem;
+}
+
+/* 입력 필드 스타일 */
+.storage-texts-section input[type="text"],
+.storage-texts-section textarea {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  font-size: 0.875rem;
+  transition: var(--transition);
+  font-family: inherit;
+}
+
+/* 텍스트 영역 특별 스타일 */
+.storage-texts-section textarea {
+  resize: vertical;
+  min-height: 100px;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+/* 포커스 상태 스타일 */
+.storage-texts-section input[type="text"]:focus,
+.storage-texts-section textarea:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 2px rgba(62, 99, 221, 0.2);
+}
+
+/* 전송 버튼 스타일 */
+.storage-texts-section .send-btn {
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+  font-weight: 500;
+  cursor: pointer;
+  transition: var(--transition);
+  margin: 0 1rem 1rem 1rem;
+  font-size: 0.875rem;
+}
+
+.storage-texts-section .send-btn:hover {
+  background-color: var(--primary-dark);
+}
+
+/* 응답 섹션 헤더 */
+.storage-texts-section h5 {
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+  padding: 0 1rem;
+  margin-top: 1rem;
+  color: var(--text-color);
+}
+
+/* 응답 박스 스타일 */
+.storage-texts-section pre {
+  background-color: var(--background-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  font-family: monospace;
+  font-size: 0.875rem;
+  overflow-x: auto;
+  max-height: 200px;
+  overflow-y: auto;
+  margin: 0 1rem 1rem 1rem;
+  color: var(--text-color);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* 다크 모드 지원 */
+.dark-mode .storage-texts-section pre {
+  background-color: var(--dark-background-secondary);
+  border-color: var(--dark-border-color);
+  color: var(--dark-text-color);
+}
+
+/* 플레이스홀더 스타일 */
+.storage-texts-section input::placeholder,
+.storage-texts-section textarea::placeholder {
+  color: var(--text-light);
+  opacity: 0.7;
+}
+
+.dark-mode .storage-texts-section input::placeholder,
+.dark-mode .storage-texts-section textarea::placeholder {
+  color: var(--dark-text-light);
+  opacity: 0.7;
+}
+
+/* 반응형 디자인 */
+@media (max-width: 768px) {
+  .storage-texts-section {
+    margin: 0 0.5rem 1rem 0.5rem;
+  }
+
+  .storage-texts-section h4 {
+    padding: 0.5rem;
+    font-size: 0.8rem;
+  }
+
+  .storage-texts-section p,
+  .storage-texts-section .form-group,
+  .storage-texts-section .send-btn,
+  .storage-texts-section h5,
+  .storage-texts-section pre {
+    margin-left: 0.5rem;
+    margin-right: 0.5rem;
+  }
+}
+
+/* 로딩 상태 스타일 */
+.storage-texts-section .send-btn:disabled {
+  background-color: var(--text-light);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* 성공/에러 상태 표시 */
+.storage-texts-section .response-success {
+  border-left: 4px solid var(--success-color);
+}
+
+.storage-texts-section .response-error {
+  border-left: 4px solid var(--danger-color);
+}
+
+/* 스크롤바 스타일 (웹킷 기반 브라우저) */
+.storage-texts-section pre::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.storage-texts-section pre::-webkit-scrollbar-track {
+  background: var(--background-secondary);
+}
+
+.storage-texts-section pre::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+.storage-texts-section pre::-webkit-scrollbar-thumb:hover {
+  background: var(--text-light);
+}

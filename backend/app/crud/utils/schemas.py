@@ -1,6 +1,6 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr,  ConfigDict
 from typing import Optional
-import datetime
+from datetime import datetime
 
 # Existing schemas
 class UserCreate(BaseModel):
@@ -11,8 +11,7 @@ class UserCreate(BaseModel):
     userCountry: Optional[str] = None
     userLanguage: Optional[str] = None
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ArticleCreate(BaseModel):
     articleTitle: str
@@ -24,8 +23,7 @@ class ArticleCreate(BaseModel):
     shareLink: Optional[str] = None
     price: Optional[float] = None
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ArticleUpdate(BaseModel):
     articleTitle: Optional[str] = None
@@ -36,30 +34,26 @@ class ArticleUpdate(BaseModel):
     shareLink: Optional[str] = None
     price: Optional[float] = None
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class CommentCreate(BaseModel):
     articleID: str
     commentAuthor: str
     content: str
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class CommentUpdate(BaseModel):
     content: str
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 # New schema for Like
 class LikeCreate(BaseModel):
     articleID: str
     userID: str
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class DailyCreate(BaseModel):
     date: datetime
@@ -69,8 +63,7 @@ class DailyCreate(BaseModel):
     mood: Optional[str]
     country: str
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class DailyRead(DailyCreate):
     id: int
