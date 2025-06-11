@@ -1,7 +1,7 @@
 import os
 from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions, ContentSettings
 from azure.ai.contentsafety import ContentSafetyClient
-from azure.ai.contentsafety.models import AnalyzeImageOptions, ImageData, ImageCategory
+from azure.ai.contentsafety.models import AnalyzeImageOptions, ImageData, ImageCategory, AnalyzeTextOptions, TextCategory
 from azure.core.credentials import AzureKeyCredential
 from azure.core.exceptions import HttpResponseError
 from dotenv import load_dotenv
@@ -195,9 +195,16 @@ def upload_profile_image(user_id: str, content: bytes, filename: str = "profile_
 
     return f"https://{AZURE_STORAGE_ACCOUNT_NAME}.blob.core.windows.net/user/{blob_path}?{sas_token}"
 
+
 def upload_interview_result(user_id: str, magazine_id: str, content: bytes):
-    container_client = get_or_create_container()
+    # Add text safety check
+    text_content = content.decode("utf-8")
+    is_safe, safety_result = is_text_safe_for_upload(text_content)
+    if not is_safe:
+        raise ValueError(f"Text failed content safety check: {safety_result}")
     
+    container_client = get_or_create_container()
+   
     # Generate date-based filename
     current_date = datetime.now()
     base_filename = f"interview_{current_date.month:02d}-{current_date.day:02d}"
@@ -319,5 +326,65 @@ def get_next_image_name(user_id: str, magazine_id: str) -> str:
     
     next_number = max(existing_numbers) + 1 if existing_numbers else 1
     return f"image{next_number}.jpg"
+
+
+def analyze_text_from_blob(text_content: str, filename: str = "") -> dict:
+    """
+    Analyze text content using Azure Content Safety API.
+    Returns result dict including 'should_filter' flag and per-category analysis.
+    """
+    if not CONTENT_SAFETY_ENDPOINT or not CONTENT_SAFETY_KEY:
+        raise ValueError("Content Safety endpoint and key must be configured")
+    
+    client = ContentSafetyClient(
+        endpoint=CONTENT_SAFETY_ENDPOINT,
+        credential=AzureKeyCredential(CONTENT_SAFETY_KEY)
+    )
+
+    request = AnalyzeTextOptions(text=text_content)
+
+    try:
+        response = client.analyze_text(request)
+    except HttpResponseError as e:
+        print(f"Content Safety API error for {filename}: {e}")
+        raise
+    except Exception as e:
+        print(f"Unexpected error analyzing {filename}: {e}")
+        raise
+
+    results = {
+        "filename": filename,
+        "text_length": len(text_content),
+        "analysis": {},
+        "should_filter": False
+    }
+
+    categories = [
+        ("hate", TextCategory.HATE),
+        ("self_harm", TextCategory.SELF_HARM),
+        ("sexual", TextCategory.SEXUAL),
+        ("violence", TextCategory.VIOLENCE)
+    ]
+
+    for name, cat_enum in categories:
+        cat_result = next((c for c in response.categories_analysis if c.category == cat_enum), None)
+        severity = cat_result.severity if cat_result else 0
+        filtered = severity > 2
+        results["analysis"][name] = {
+            "severity": severity,
+            "filtered": filtered
+        }
+        if filtered:
+            results["should_filter"] = True
+
+    return results
+
+
+def is_text_safe_for_upload(text_content: str, filename: str = "") -> tuple[bool, dict]:
+    try:
+        result = analyze_text_from_blob(text_content, filename)
+        return not result["should_filter"], result
+    except Exception as e:
+        return False, {"error": str(e)}
 
 

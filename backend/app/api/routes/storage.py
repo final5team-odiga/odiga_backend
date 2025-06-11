@@ -16,7 +16,8 @@ from ...crud.utils.azure_utils import (
     upload_output_file,
     upload_interview_result,
     delete_interview_result,
-    list_text_files
+    list_text_files,
+    list_user_folders
 )
 from ..dependencies import require_auth
 
@@ -146,14 +147,33 @@ async def upload_interview_text(
     user_id: str = Depends(require_auth)
 ):
     """Azure Blob Storage의 "user" Container 아래 {user_id}/magazine/{magazine_id}/texts 폴더 속 텍스트 파일 업로드"""
-    blob_path = upload_interview_result(user_id, magazine_id, text.encode("utf-8"))
-    final_filename = blob_path.split("/")[-1]
-    
-    return JSONResponse(status_code=201, content={
-        "success": True, 
-        "message": f"Uploaded '{final_filename}'",
-        "filename": final_filename
-    })
+    try:
+        blob_path = upload_interview_result(user_id, magazine_id, text.encode("utf-8"))
+        final_filename = blob_path.split("/")[-1]
+        
+        return JSONResponse(status_code=201, content={
+            "success": True, 
+            "message": f"Uploaded '{final_filename}'",
+            "filename": final_filename
+        })
+    except ValueError as e:
+        return JSONResponse(
+            status_code=400, 
+            content={
+                "success": False, 
+                "message": "Text content failed safety check",
+                "error": str(e)
+            }
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500, 
+            content={
+                "success": False, 
+                "message": "Upload failed",
+                "error": str(e)
+            }
+        )
 
 @router.delete("/texts/delete/")
 async def delete_interview_text(
@@ -178,3 +198,28 @@ async def list_interview_texts(
     """Azure Blob Storage의 "user" Container 아래 {user_id}/magazine/{magazine_id}/texts 폴더 속 텍스트 파일 조회"""
     files = list_text_files(user_id, magazine_id)
     return JSONResponse(status_code=200, content={"success": True, "files": files})
+
+
+@router.get("/magazines/list/")
+async def list_user_magazines(
+    user_id: str = Depends(require_auth)
+):
+    """Azure Blob Storage의 "user" Container 아래 {user_id}/magazine/ 폴더 속 magazine_id 목록 조회"""
+    try:
+        magazine_folders = list_user_folders(user_id)
+        return JSONResponse(
+            status_code=200, 
+            content={
+                "success": True, 
+                "magazines": magazine_folders
+            }
+        )
+    except Exception as e:
+        return JSONResponse(
+            status_code=500, 
+            content={
+                "success": False, 
+                "message": "Failed to retrieve magazine folders", 
+                "error": str(e)
+            }
+        )
