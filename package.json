@@ -1,0 +1,25 @@
+{
+  "name": "odiga-fastapi",
+  "version": "1.0.0",
+  "description": "PDF 생성을 위한 JSX-to-PDF 변환 서비스",
+  "main": "service/export_pdf.js",
+  "dependencies": {
+    "@babel/parser": "^7.23.0",
+    "@babel/register": "^7.22.0",
+    "@babel/preset-react": "^7.22.0",
+    "puppeteer": "^21.0.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "pdf",
+    "jsx",
+    "react",
+    "puppeteer"
+  ],
+  "author": "",
+  "license": "ISC"
+}
