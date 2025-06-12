@@ -1,303 +1,219 @@
-import os
+
+from __future__ import annotations
+
 import asyncio
-import tempfile
-import shutil
 import logging
+import os
 import re
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Dict, List
 
+import aiohttp
 
+# 프로젝트 고유 모듈
 from ...db.cosmos_connection import jsx_container
 
+logger = logging.getLogger(__name__)
+
+_CHEVRON_FIX_RE = re.compile(r'<{2,}\s*([A-Za-z\/])')
+
 class PDFGenerationService:
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
-        
- 
-    async def generate_pdf_from_cosmosdb(self, magazine_id: str, output_pdf_path: str = "magazine_result.pdf") -> bool:
-        """Cosmos DB에서 JSX 컴포넌트를 가져와 PDF 생성 (프로젝트 루트 기반)"""
-        temp_dir = None
+    # ─────────────────────────────── 퍼블릭 API ────────────────────────────────
+    async def generate_pdf_from_cosmosdb(
+        self, magazine_id: str, output_pdf_path: str
+    ) -> bool:
+        """SystemCoordinator 가 await 하는 비동기 진입점"""
+        return await self._generate_pdf_from_cosmosdb(magazine_id, output_pdf_path)
+
+    def generate_pdf_from_db(
+        self, magazine_id: str, output_pdf_path: str = "magazine_result.pdf"
+    ) -> bool:
+        """백오퍼드 호환용 동기 래퍼"""
+        return asyncio.run(
+            self._generate_pdf_from_cosmosdb(magazine_id, output_pdf_path)
+        )
+
+    # ─────────────────────── 내부: CosmosDB → PDF(비동기) ────────────────────────
+    async def _generate_pdf_from_cosmosdb(
+        self, magazine_id: str, output_pdf_path: str
+    ) -> bool:
+        temp_dir: str | None = None
+
         try:
-            # 1. Cosmos DB에서 JSX 컴포넌트 조회
-            query = f"SELECT * FROM c WHERE c.magazine_id = '{magazine_id}' ORDER BY c.order_index"
-            items = list(jsx_container.query_items(query=query, enable_cross_partition_query=True))
-            
+            # 1) JSX 목록 조회
+            query = (
+                f"SELECT * FROM c WHERE c.magazine_id = '{magazine_id}' "
+                "ORDER BY c.order_index"
+            )
+            items: List[Dict] = list(
+                jsx_container.query_items(
+                    query=query, enable_cross_partition_query=True
+                )
+            )
             if not items:
-                self.logger.error(f"매거진 ID {magazine_id}에 대한 JSX 컴포넌트를 찾을 수 없습니다.")
+                logger.error(f"JSX 없음 – magazine_id={magazine_id}")
                 return False
-            
-            
-            current_file = os.path.abspath(__file__)
-            # 2. 프로젝트 루트 경로 확인
-            project_root = os.path.dirname(os.path.dirname(current_file))
-            self.logger.info(f"프로젝트 루트: {project_root}")
-            
-            # ✅ 3. 프로젝트 루트에 필요한 파일들이 있는지 확인
-            package_json_path = os.path.join(project_root, "package.json")
-            node_modules_path = os.path.join(project_root, "node_modules")
-            
-            if not os.path.exists(package_json_path):
-                raise FileNotFoundError(f"package.json이 없습니다: {package_json_path}")
-            if not os.path.exists(node_modules_path):
-                raise FileNotFoundError(f"node_modules가 없습니다: {node_modules_path}")
-            
-            self.logger.info("✅ package.json과 node_modules 확인 완료")
-            
-            # 4. 임시 디렉토리 생성 (프로젝트 루트 하위에)
+
+            # 2) 깨진 이미지 URL 사전 필터링
+            items = await self._prefilter_images(items)
+
+            # 3) Node 프로젝트 루트 경로 확인
+            current = Path(__file__).resolve()
+            project_root = current.parent.parent.parent.parent.parent
+            if not (project_root / "package.json").exists():
+                raise FileNotFoundError("package.json 누락")
+            if not (project_root / "node_modules").exists():
+                raise FileNotFoundError("node_modules 누락")
+            logger.info("✅ Node 의존성 확인 완료")
+
+            # 4) 임시 디렉터리 생성
             temp_dir = tempfile.mkdtemp(prefix="jsx_pdf_", dir=project_root)
-            self.logger.info(f"임시 디렉토리 생성: {temp_dir}")
-            
-            # ✅ 5. JSX 파일 저장 시 템플릿별 스타일 적용
-            jsx_files = []
-            for i, item in enumerate(items):
-                jsx_code = item.get('jsx_code')
-                if not jsx_code:
+            logger.info(f"임시 디렉터리: {temp_dir}")
+
+            # 5) JSX 파일 저장 + 구문 검증
+            jsx_files: list[str] = []
+            for idx, item in enumerate(items, start=1):
+                jsx_code: str = item.get("jsx_code", "")
+                if not jsx_code.strip():
                     continue
-                    
-                order_index = item.get('order_index', i)
-                
-                # ✅ 템플릿 이름 추출
-                template_name = self._extract_template_name_from_jsx(jsx_code)
-                
-                # ✅ 템플릿별 스타일 적용 (여기서 호출!)
-                styled_jsx_code = self._apply_template_specific_styles(jsx_code, template_name)
-                
-                filename = f"Section{order_index+1:02d}.jsx"
-                file_path = os.path.join(temp_dir, filename)
-                
-                # JSX 코드 정리 (이스케이프 문자 처리)
-                cleaned_jsx_code = styled_jsx_code.replace('\\n', '\n').replace('\\"', '"')
-                
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(cleaned_jsx_code)
-                
-                jsx_files.append(file_path)
-                self.logger.info(f"JSX 파일 저장: {filename} (템플릿: {template_name})")
-            
-            # 6. export_pdf.js 실행
-            script_path = os.path.join(project_root, "service", "export_pdf.js")
-            
-            if not os.path.exists(script_path):
-                raise FileNotFoundError(f"export_pdf.js를 찾을 수 없습니다: {script_path}")
-            
+
+                jsx_code = self._fix_double_chevrons(jsx_code)
+
+                try:
+                    self._assert_valid_jsx(jsx_code)
+                except ValueError as err:
+                    logger.error(f"⚠️ JSX 구문 오류, 제외: Section{idx:02d}.jsx – {err}")
+                    continue
+
+                file_path = Path(temp_dir) / f"Section{idx:02d}.jsx"
+                file_path.write_text(
+                    jsx_code.replace("\\n", "\n").replace('\\"', '"'),
+                    encoding="utf-8",
+                )
+                jsx_files.append(str(file_path))
+                logger.debug(f"저장 완료: {file_path.name}")
+
+            if not jsx_files:
+                logger.error("유효한 JSX 파일이 없어서 PDF를 생성할 수 없습니다.")
+                return False
+
+            # 6) PDF 생성 스크립트 실행
+            script = project_root / "service" / "export_pdf.js"
+            if not script.exists():
+                raise FileNotFoundError("export_pdf.js 누락")
+
             cmd = [
                 "node",
-                script_path,
-                "--files", *jsx_files,
-                "--output", os.path.abspath(output_pdf_path)
+                str(script),
+                "--files",
+                *jsx_files,
+                "--output",
+                str(Path(output_pdf_path).resolve()),
             ]
-            
-            self.logger.info("PDF 생성 시작...")
-            
-            # ✅ 핵심: 프로젝트 루트를 작업 디렉토리로 설정
-            process = await asyncio.create_subprocess_exec(
+            logger.info("📄 PDF 생성 시작")
+            proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=project_root  # ✅ 프로젝트 루트에서 실행
+                cwd=project_root,
             )
-            
-            stdout, stderr = await process.communicate()
-            
-            if process.returncode == 0:
-                self.logger.info(f"✅ PDF 생성 완료: {output_pdf_path}")
+            stdout, stderr = await proc.communicate()
+
+            if proc.returncode == 0:
+                logger.info(f"✅ PDF 완료: {output_pdf_path}")
+                logger.debug(stdout.decode())
                 return True
-            else:
-                self.logger.error(f"❌ PDF 생성 실패: {stderr.decode()}")
-                return False
-                
-        except Exception as e:
-            self.logger.error(f"PDF 생성 중 오류: {e}")
+
+            logger.error(f"❌ PDF 실패\n{stderr.decode()}")
             return False
-            
+
+        except Exception as exc:
+            logger.exception(f"PDF 생성 중 예외: {exc}")
+            return False
+
         finally:
-            # 임시 파일 정리
-            if temp_dir and os.path.exists(temp_dir):
+            if temp_dir and Path(temp_dir).is_dir():
                 try:
                     shutil.rmtree(temp_dir)
-                    self.logger.info(f"임시 디렉토리 삭제: {temp_dir}")
-                except Exception as e:
-                    self.logger.warning(f"임시 디렉토리 삭제 실패: {e}")
+                    logger.info(f"임시 디렉터리 삭제: {temp_dir}")
+                except Exception as exc:
+                    logger.warning(f"임시 삭제 실패: {exc}")
 
-                
-    def generate_pdf_from_db(self, magazine_id: str, output_pdf_path: str = "magazine_result.pdf") -> bool:
+    # ─────────────────────────── 헬퍼: JSX 구문 검증 ────────────────────────────
+    def _assert_valid_jsx(self, code: str) -> None:
         """
-        Cosmos DB에서 JSX 컴포넌트를 가져와 PDF를 생성하는 동기 메서드 (편의를 위한 인터페이스)
+        Babel Parser(@babel/parser)로 JSX를 파싱해 문법 오류가 있으면 ValueError 발생.
+        ✅ 상세 오류 로깅 추가
         """
-        return asyncio.run(self.generate_pdf_from_cosmosdb(magazine_id, output_pdf_path))
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".jsx", encoding="utf-8") as tmp:
+            tmp.write(code)
+            tmp_path = tmp.name
 
-    def _extract_template_name_from_jsx(self, jsx_code: str) -> str:
-        """✅ JSX 코드에서 템플릿 이름 추출"""
-        
-        # const 컴포넌트명 패턴 찾기
-        match = re.search(r'const\s+(\w+)\s*=', jsx_code)
-        if match:
-            component_name = match.group(1)
-            self.logger.debug(f"추출된 컴포넌트 이름: {component_name}")
-            return component_name
-        
-        # export default 패턴 찾기
-        match = re.search(r'export\s+default\s+(\w+)', jsx_code)
-        if match:
-            component_name = match.group(1)
-            self.logger.debug(f"추출된 컴포넌트 이름 (export): {component_name}")
-            return component_name
-        
-        # 기본값
-        return "Unknown"
+        try:
+            # ✅ stderr 캡처를 위해 run 사용
+            result = subprocess.run(
+                [
+                    "node",
+                    "-e",
+                    (
+                        "const p=require('@babel/parser');"
+                        f"p.parse(require('fs').readFileSync('{tmp_path}','utf8'),"
+                        "{sourceType:'module',plugins:['jsx']});"
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                encoding="utf-8",
+            )
+        except subprocess.CalledProcessError as err:
+            # ✅ 상세 오류 메시지 로깅
+            error_detail = err.stderr.strip() if err.stderr else "알 수 없는 오류"
+            logger.error(f"⚠️ JSX 구문 오류 상세: {error_detail}")
+            logger.error(f"⚠️ 문제가 된 JSX 코드 일부: {code[:200]}...")
+            raise ValueError(f"Babel-JSX 파싱 실패: {error_detail}") from err
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
 
-    def _apply_template_specific_styles(self, jsx_code: str, template_name: str) -> str:
-        """✅ 흰색 배경, 검정 텍스트 고정 조건에서 템플릿별 타이포그래피 적용"""
+    def _fix_double_chevrons(self, code: str) -> str:
+        """이중 꺾쇠 패턴 수정 강화"""
+        # 기존 패턴
+        code = _CHEVRON_FIX_RE.sub(r'<\1', code)
         
-        # 템플릿별 스타일 매핑 (색상 제외, 타이포그래피 중심)
-        template_styles = {
-            "MixedMagazine07": {
-                "container_class": "template-mixed-07 layout-elegant template-elegant",
-                "title_class": "title-elegant",
-                "subtitle_class": "subtitle-elegant", 
-                "text_class": "text-elegant",
-                "image_class": "image-elegant",
-                "spacing_class": "spacing-loose"
-            },
-            "MixedMagazine08": {
-                "container_class": "template-mixed-08 layout-gallery template-modern",
-                "title_class": "title-modern",
-                "subtitle_class": "subtitle-modern",
-                "text_class": "text-modern", 
-                "image_class": "image-small",
-                "spacing_class": "spacing-normal"
-            },
-            "MixedMagazine09": {
-                "container_class": "layout-magazine template-classic",
-                "title_class": "title-classic",
-                "subtitle_class": "subtitle-classic",
-                "text_class": "text-classic",
-                "image_class": "image-classic",
-                "spacing_class": "spacing-normal"
-            },
-            "MixedMagazine10": {
-                "container_class": "template-mixed-10 layout-modern template-modern",
-                "title_class": "title-modern",
-                "subtitle_class": "subtitle-modern",
-                "text_class": "text-modern",
-                "image_class": "image-modern",
-                "spacing_class": "spacing-normal"
-            },
-            "MixedMagazine11": {
-                "container_class": "layout-elegant template-elegant content-box-elegant",
-                "title_class": "title-elegant",
-                "subtitle_class": "subtitle-elegant",
-                "text_class": "text-elegant",
-                "image_class": "image-large",
-                "spacing_class": "spacing-loose"
-            },
-            "MixedMagazine12": {
-                "container_class": "layout-modern template-modern content-box-modern",
-                "title_class": "title-modern",
-                "subtitle_class": "subtitle-modern",
-                "text_class": "text-modern",
-                "image_class": "image-modern",
-                "spacing_class": "spacing-normal"
-            },
-            "MixedMagazine13": {
-                "container_class": "template-mixed-13 layout-gallery template-modern",
-                "title_class": "title-modern",
-                "subtitle_class": "subtitle-modern",
-                "text_class": "text-modern",
-                "image_class": "image-small",
-                "spacing_class": "spacing-tight"
-            },
-            "MixedMagazine14": {
-                "container_class": "layout-elegant template-elegant",
-                "title_class": "title-elegant",
-                "subtitle_class": "subtitle-elegant",
-                "text_class": "text-elegant",
-                "image_class": "image-elegant",
-                "spacing_class": "spacing-loose"
-            },
-            "MixedMagazine15": {
-                "container_class": "layout-magazine template-modern content-box-modern",
-                "title_class": "title-modern",
-                "subtitle_class": "subtitle-modern",
-                "text_class": "text-modern",
-                "image_class": "image-large",
-                "spacing_class": "spacing-normal"
-            },
-            "MixedMagazine16": {
-                "container_class": "layout-classic template-classic content-box-minimal",
-                "title_class": "title-minimal",
-                "subtitle_class": "subtitle-classic",
-                "text_class": "text-classic",
-                "image_class": "image-classic",
-                "spacing_class": "spacing-normal"
-            }
-        }
+        # ✅ 추가 패턴: <<h1, <<div 등 직접 수정
+        code = re.sub(r'<<([a-zA-Z][a-zA-Z0-9]*)', r'<\1', code)
         
-        # 기본 스타일
-        default_style = {
-            "container_class": "layout-classic template-classic",
-            "title_class": "title-classic",
-            "subtitle_class": "subtitle-classic",
-            "text_class": "text-classic",
-            "image_class": "image-classic",
-            "spacing_class": "spacing-normal"
-        }
+        # ✅ 중첩된 꺾쇠 모든 경우 처리
+        while '<<' in code:
+            code = code.replace('<<', '<')
         
-        # 템플릿 스타일 선택
-        style = template_styles.get(template_name, default_style)
-        
-        # ✅ 컨테이너 클래스 적용 (배경색 흰색 강제)
-        jsx_code = jsx_code.replace(
-            'className="bg-white text-black p-8',
-            f'className="bg-white text-black p-8 {style["container_class"]} {style["spacing_class"]}'
-        )
-        jsx_code = jsx_code.replace(
-            'style={{ backgroundColor: "white", color: "black"',
-            f'style={{ backgroundColor: "white", color: "black"'
-        )
-        
-        # ✅ 제목 스타일 적용
-        jsx_code = jsx_code.replace(
-            'className="text-6xl font-bold',
-            f'className="text-6xl font-bold {style["title_class"]}'
-        )
-        jsx_code = jsx_code.replace(
-            'className="text-5xl font-bold',
-            f'className="text-5xl font-bold {style["title_class"]}'
-        )
-        jsx_code = jsx_code.replace(
-            'className="text-4xl font-bold',
-            f'className="text-4xl font-bold {style["title_class"]}'
-        )
-        
-        # ✅ 부제목 스타일 적용
-        jsx_code = jsx_code.replace(
-            'className="text-2xl',
-            f'className="text-2xl {style["subtitle_class"]}'
-        )
-        jsx_code = jsx_code.replace(
-            'className="text-xl',
-            f'className="text-xl {style["subtitle_class"]}'
-        )
-        jsx_code = jsx_code.replace(
-            'className="text-lg',
-            f'className="text-lg {style["subtitle_class"]}'
-        )
-        
-        # ✅ 본문 텍스트 스타일 적용
-        jsx_code = jsx_code.replace(
-            '<p className="',
-            f'<p className="{style["text_class"]} '
-        )
-        jsx_code = jsx_code.replace(
-            '<div className="text-',
-            f'<div className="{style["text_class"]} text-'
-        )
-        
-        # ✅ 이미지 스타일 적용
-        jsx_code = jsx_code.replace(
-            '<img',
-            f'<img className="{style["image_class"]}"'
-        )
-        
-        return jsx_code
+        return code
+    
+
+    # ─────────────────────── 헬퍼: 깨진 이미지 URL 교체 ────────────────────────
+    async def _head_ok(self, session: aiohttp.ClientSession, url: str) -> bool:
+        """HEAD 200 이면 True, 그 외/예외 시 False"""
+        try:
+            async with session.head(url, timeout=5) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    async def _prefilter_images(self, items: List[Dict]) -> List[Dict]:
+        """
+        JSX 코드에 포함된 이미지 URL 중 HEAD 200이 아닌 것은
+        FALLBACK_URL 로 교체해 PDF 렌더링 시 빈 프레임이 남지 않도록 한다.
+        """
+        FALLBACK_URL = "https://static.example.com/fallback.png"
+        async with aiohttp.ClientSession() as sess:
+            for item in items:
+                jsx = item.get("jsx_code", "")
+                for bad_url in re.findall(r'src="(https?://[^"]+)"', jsx):
+                    if not await self._head_ok(sess, bad_url):
+                        jsx = jsx.replace(bad_url, FALLBACK_URL)
+                item["jsx_code"] = jsx
+        return items
