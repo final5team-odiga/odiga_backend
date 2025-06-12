@@ -10,7 +10,6 @@ from ...agents.system_coordinator import SystemCoordinator
 from ...utils.log.hybridlogging import get_hybrid_logger
 from ..dependencies import require_auth
 from ...db.magazine_db_utils import MagazineDBUtils
-from ...db.db_utils import JSXComponentFetcher
 
 router = APIRouter(prefix="/magazine", tags=["magazine"])
 
@@ -201,40 +200,6 @@ async def get_magazine_status(
             content={
                 "success": False,
                 "message": "상태 확인 중 오류가 발생했습니다.",
-                "error": str(e)
-            }
-        )
-
-@router.get("/jsx-code/")
-async def get_jsx_code_api(
-    magazine_id: str,
-    page_id: str,
-    user_id: str = Depends(require_auth)
-):
-    """특정 페이지의 JSX 코드 조회"""
-    try:
-        jsx_code = await JSXComponentFetcher.get_jsx_code(magazine_id, page_id)
-        if jsx_code is None:
-            raise HTTPException(
-                status_code=404,
-                detail="JSX 코드를 찾을 수 없습니다."
-            )
-        return JSONResponse(
-            status_code=200,
-            content={
-                "success": True,
-                "magazine_id": magazine_id,
-                "page_id": page_id,
-                "jsx_code": jsx_code
-            }
-        )
-    except Exception as e:
-        logger.error(f"JSX 코드 조회 중 오류: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "success": False,
-                "message": "JSX 코드 조회 실패",
                 "error": str(e)
             }
         )

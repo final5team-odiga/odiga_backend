@@ -59,7 +59,15 @@ class SystemCoordinator:
             
         self.logger.info(message)
 
-    
+    async def initialize_magazine_record(self):
+        initial_data = {
+            "id": self.magazine_id,
+            "user_id": self.user_id,
+            "status": "initializing",
+            "created_at": str(datetime.now()),
+            "content": {}
+        }
+        await MagazineDBUtils.save_magazine_content(initial_data)
 
 
     async def coordinate_complete_magazine_generation(self, user_input: str = None,
@@ -369,25 +377,39 @@ class SystemCoordinator:
                 
                 save_to_cosmos(template_container, jsx_data, partition_key_field='user_id')
                 self.logger.info(f"✅ JSX 컴포넌트 메타데이터를 Template 컨테이너에 저장 완료")
+
+                session_id = str(uuid4())  # 새로운 세션 ID 생성
+                current_timestamp = datetime.now().isoformat()
                 
                 # ✅ JSX 전용 컨테이너에는 순수 JSX 코드만 저장
                 magazine_id = final_result.get("magazine_id", str(uuid4()))
                 
-                # 순수 JSX 컴포넌트만 추출하여 저장
+                # ✅ 순수 JSX 컴포넌트만 추출하여 저장 (session_id 포함)
                 pure_jsx_components = []
                 for i, component in enumerate(jsx_components):
                     pure_jsx_data = {
                         "title": component.get("title", f"섹션 {i+1}"),
                         "jsx_code": component.get("jsx_code", ""),
-                        "metadata": component.get("metadata", {})
+                        "metadata": component.get("metadata", {}),
+                        "session_id": session_id,  # ✅ 세션 ID 추가
+                        "created_at": current_timestamp  # ✅ 생성 시간 추가
                     }
                     pure_jsx_components.append(pure_jsx_data)
+
+                # ✅ session_id와 함께 저장
+                saved_ids = save_jsx_components(
+                    jsx_container, 
+                    magazine_id, 
+                    pure_jsx_components, 
+                    order_matters=True,
+                    session_id=session_id  # ✅ 세션 ID 전달
+                )
                 
-                saved_ids = save_jsx_components(jsx_container, magazine_id, pure_jsx_components, order_matters=True)
-                self.logger.info(f"✅ JSX 컴포넌트 {len(saved_ids)}개를 JSX 전용 컨테이너에 저장 완료")
+                self.logger.info(f"✅ JSX 컴포넌트 {len(saved_ids)}개를 세션 ID {session_id}로 저장 완료")
                 
-                # ✅ magazine_id를 final_result에 추가하여 PDF 생성에서 사용할 수 있도록 함
-                final_result["magazine_id"] = magazine_id
+                # ✅ 세션 정보를 final_result에 추가
+                final_result["session_id"] = session_id
+                final_result["created_at"] = current_timestamp
                 
             else:
                 self.logger.warning("저장할 JSX 컴포넌트가 없습니다.")

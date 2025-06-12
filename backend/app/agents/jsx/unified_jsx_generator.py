@@ -2,6 +2,7 @@ import asyncio
 import json
 import time
 import re
+import html
 from typing import Dict, List, Any
 from ...custom_llm import get_azure_llm
 from ...utils.isolation.ai_search_isolation import AISearchIsolationManager
@@ -10,6 +11,8 @@ from ...utils.isolation.agent_communication_isolation import InterAgentCommunica
 from ...utils.log.logging_manager import LoggingManager
 from ...utils.data.jsx_vector_manager import JSXVectorManager
 from ...utils.data.pdf_vector_manager import PDFVectorManager
+
+_CHEVRON_RE = re.compile(r'<{2,}\s*([A-Za-z/])')
 
 class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
 
@@ -652,40 +655,6 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
         
         return list(set(style_preferences))
     
-    def _replace_images_with_safe_alt(self, jsx_code: str, images: List[Dict]) -> str:
-        """✅ 실제 이미지 데이터 구조에 맞춘 안전한 이미지 교체"""
-        
-        # 기존 img 태그들을 찾아서 순차적으로 교체
-        img_pattern = r'<img[^>]*src="[^"]*"[^>]*>'
-        img_tags = re.findall(img_pattern, jsx_code)
-        
-        for i, old_img_tag in enumerate(img_tags):
-            if i < len(images):
-                real_img = images[i]
-                # ✅ 실제 키 이름 사용
-                real_img_url = real_img.get("image_url", "")
-                
-                # ✅ 안전한 alt 텍스트 생성 (실제 데이터 활용)
-                city = real_img.get("city", "")
-                if city:
-                    safe_alt = f"{city} 여행 이미지 {i+1}"
-                else:
-                    safe_alt = f"베네치아 여행 이미지 {i+1}"
-                
-                # 따옴표 및 특수문자 제거
-                safe_alt = re.sub(r'["\']', '', safe_alt)
-                
-                if real_img_url:
-                    # 새로운 img 태그 생성 (안전한 속성만 포함)
-                    new_img_tag = f'''<img
-            src="{real_img_url}"
-            alt="{safe_alt}"
-            style={{{{ width: "100%", height: "auto", display: "block" }}}}
-            />'''
-                    
-                    jsx_code = jsx_code.replace(old_img_tag, new_img_tag)
-        
-        return jsx_code
 
     async def _generate_jsx_from_vector_recommendations(self, content_data: Dict, 
                                                        content_requirements: Dict) -> Dict:
@@ -729,35 +698,6 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
             self.logger.error(f"벡터 추천 기반 JSX 생성 실패: {e}")
             return self._generate_jsx_from_scratch(content_data)
 
-    def _apply_intelligent_data_binding(self, content_data: Dict, template_code: str, 
-                                      template_analysis: Dict) -> Dict:
-        """✅ 지능형 데이터 바인딩 (구조 분석 기반)"""
-        
-        title = content_data.get("title", "제목 없음")
-        subtitle = content_data.get("subtitle", "")
-        content = content_data.get("content", "")
-        images = content_data.get("images", [])
-        
-        # 템플릿 내용을 실제 데이터로 교체
-        modified_jsx = self._replace_template_content_intelligent(
-            template_code, 
-            template_analysis, 
-            title, 
-            subtitle, 
-            content, 
-            images
-        )
-        
-        # 컴포넌트 이름 업데이트
-        component_name = self._generate_component_name(title)
-        modified_jsx = self._update_component_name(modified_jsx, component_name)
-        
-        self.logger.info(f"지능형 데이터 바인딩 완료: {title} (이미지: {len(images)}개)")
-        
-        return {
-            "title": title,
-            "jsx_code": modified_jsx
-        }
 
     def _remove_image_elements_safe(self, jsx_code: str) -> str:
         """✅ 이미지 요소 안전하게 제거"""
@@ -829,25 +769,195 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
             modified_jsx = self._remove_image_elements_safe(modified_jsx)
         
         return modified_jsx
+    
 
-    def _replace_images_intelligent(self, jsx_code: str, image_patterns: List[str], 
-                                  images: List[Dict]) -> str:
-        """지능형 이미지 교체"""
+    def _inject_title_safe(self, template: str, title: str) -> str:
+
+        escaped = html.escape(title)
+        template = _CHEVRON_RE.sub(r'<\1', template)        # ← 핵심 보정
+
+        if "{{TITLE}}" in template:
+            return template.replace("{{TITLE}}", escaped)
+
+        empty =  re.compile(r'(<h[1-6][^>]*>)[^<]*(</h[1-6]>)')
+        if empty.search(template):
+            return empty.sub(rf'\1{escaped}\2', template, 1)
+
+        broken = re.compile(r'([^<]*)(</h[1-6]>)', re.I)
+        m = broken.search(template)
+        if m and not re.search(r'<h[1-6][^>]*>', template[:m.start()]):
+            return broken.sub(
+                rf'<h1 className="text-5xl font-bold text-center mb-8 leading-tight">{escaped}</h1>',
+                template,
+            )
+
+        first_div = re.search(r'(<div[^>]*>)', template, re.I)
+        if first_div:
+            pos = first_div.end()
+            return (
+                template[:pos]
+                + f'\n  <h1 className="text-5xl font-bold text-center mb-8 leading-tight">{escaped}</h1>'
+                + template[pos:]
+            )
+
+        return f'<h1 className="text-5xl font-bold text-center mb-8 leading-tight">{escaped}</h1>\n{template}'
+
+    def _apply_intelligent_data_binding(self, content_data: Dict, template_code: str, template_analysis: Dict) -> Dict:
+        """지능형 데이터 바인딩 적용"""
+        try:
+            images = self._filter_valid_images(content_data.get("images", []))
+            title = content_data.get("title", "제목 없음")
+            content = content_data.get("content", "")
+            images = content_data.get("images", [])
+
+            # JSX 코드 복사
+            modified_jsx = template_code
+
+            # ✅ 1. 제목 안전 치환 (태그 구조 보존)
+            modified_jsx = self._inject_title_safe(modified_jsx, title)
+
+            # ✅ 2. 콘텐츠 치환 (기존 로직 유지)
+            if content:
+                # 긴 텍스트 콘텐츠 교체
+                modified_jsx = re.sub(
+                    r'(<p[^>]*className="[^"]*text-xl[^"]*"[^>]*>)[^<]*(<\/p>)',
+                    rf'\1{content[:500]}\2',
+                    modified_jsx,
+                    flags=re.IGNORECASE | re.DOTALL
+                )
+
+            # ✅ 3. 이미지 교체 (안전한 alt 텍스트 사용)
+            if images:
+                modified_jsx = self._replace_images_with_safe_alt(modified_jsx, images)
+            else:
+                modified_jsx = self._remove_image_elements_safe(modified_jsx)
+
+            return {
+                "jsx_code": modified_jsx,
+                "success": True,
+                "template_name": self._extract_template_name(template_code)
+            }
+
+        except Exception as e:
+            self.logger.error(f"지능형 데이터 바인딩 실패: {e}")
+            return self._create_fallback_jsx(content_data, str(e))
+
+    def _replace_images_with_safe_alt(self, jsx_code: str, images: List[Dict]) -> str:
+        """✅ 향상된 이미지 교체 + 그리드 레이아웃 적용"""
         
-        for i, img_url in enumerate(image_patterns):
-            if i < len(images):
-                real_img = images[i]
-                real_img_url = real_img.get("image_url", real_img.get("url", ""))
-                real_img_alt = real_img.get("description", real_img.get("alt", f"이미지 {i+1}"))
+        # ✅ 이미지 개수에 따른 동적 스타일
+        image_count = len(images)
+        
+        if image_count == 1:
+            # 단일 이미지: 중앙 정렬
+            SAFE_IMG_STYLE = '{maxWidth:"100%",height:"auto",maxHeight:"400px",objectFit:"cover",display:"block",margin:"16px auto",borderRadius:"8px"}'
+        elif image_count == 2:
+            # 2개 이미지: 좌우 배치
+            SAFE_IMG_STYLE = '{width:"48%",height:"auto",maxHeight:"300px",objectFit:"cover",display:"inline-block",margin:"8px 1%",borderRadius:"8px"}'
+        else:
+            # 3개 이상: 그리드 레이아웃
+            SAFE_IMG_STYLE = '{width:"100%",height:"auto",maxHeight:"250px",objectFit:"cover",display:"block",margin:"8px 0",borderRadius:"8px"}'
+
+        # 기존 이미지 패턴 찾기
+        img_patterns = re.findall(r'src="([^"]*)"', jsx_code)
+        
+        for i, pattern in enumerate(img_patterns):
+            if i >= len(images):
+                break
                 
-                if real_img_url:
-                    # URL 교체
-                    jsx_code = jsx_code.replace(f'src="{img_url}"', f'src="{real_img_url}"')
-                    
-                    # alt 속성 업데이트
-                    alt_pattern = rf'(<img[^>]*src="{re.escape(real_img_url)}"[^>]*alt=")[^"]*(")'
-                    jsx_code = re.sub(alt_pattern, rf'\1{real_img_alt}\2', jsx_code)
+            image = images[i]
+            new_url = image.get("image_url", image.get("url", ""))
+            
+            # ✅ 존재하지 않는 URL 필터링
+            if not new_url or "nonexistent" in new_url or "fallback" in new_url:
+                continue
+                
+            alt_text = image.get("description", image.get("alt", f"이미지 {i+1}"))
+            
+            if new_url:
+                # URL 교체
+                jsx_code = jsx_code.replace(f'src="{pattern}"', f'src="{new_url}"')
+                
+                # alt 텍스트 교체
+                jsx_code = re.sub(
+                    rf'(src="{re.escape(new_url)}"[^>]*alt=")[^"]*"',
+                    rf'\1{alt_text}"',
+                    jsx_code
+                )
+                
+                # ✅ 향상된 스타일 적용
+                jsx_code = re.sub(
+                    rf'(]*src="{re.escape(new_url)}"[^>]*?)style=\{{[^}}]*\}}',
+                    rf'\1style={{{SAFE_IMG_STYLE}}}',
+                    jsx_code
+                )
+                
+                # 스타일이 없는 경우 추가
+                if f'style=' not in jsx_code[jsx_code.find(f'src="{new_url}"'):jsx_code.find('>', jsx_code.find(f'src="{new_url}"'))]:
+                    jsx_code = re.sub(
+                        rf'(]*src="{re.escape(new_url)}"[^>]*?)(/?>)',
+                        rf'\1 style={{{SAFE_IMG_STYLE}}}\2',
+                        jsx_code
+                    )
+
+        # ✅ 다중 이미지 컨테이너 래핑
+        if image_count > 2:
+            jsx_code = self._wrap_images_in_grid(jsx_code)
+
+        return jsx_code
+
+    def _wrap_images_in_grid(self, jsx_code: str) -> str:
+        """✅ 다중 이미지를 그리드 컨테이너로 래핑"""
         
+        # 연속된 img 태그들을 찾아서 그리드로 래핑
+        img_pattern = r'(]*>(?:\s*]*>)*)'
+        
+        def wrap_with_grid(match):
+            images_block = match.group(1)
+            return f'''
+            <div style={{{{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+            gap: "16px",
+            margin: "16px 0",
+            padding: "0"
+            }}}}>
+            {images_block}
+            </div>
+            '''
+        
+        jsx_code = re.sub(img_pattern, wrap_with_grid, jsx_code, flags=re.DOTALL)
+        return jsx_code
+
+
+    def _replace_images_intelligent(self, jsx_code: str, image_patterns: List[str], images: List[Dict]) -> str:
+        """지능형 이미지 교체 + 안전 스타일 삽입"""
+        SAFE_STYLE = '{maxWidth:"100%",height:"auto",maxHeight:"260px",objectFit:"contain",display:"block",margin:"8px auto"}'
+
+        for i, img_url in enumerate(image_patterns):
+            if i >= len(images):
+                continue
+            real = images[i]
+            new_url = real.get("image_url", real.get("url", ""))
+            alt = real.get("description", real.get("alt", f"이미지{i+1}"))
+            if not new_url:
+                continue
+
+            # 1) src·alt 치환
+            jsx_code = jsx_code.replace(f'src="{img_url}"', f'src="{new_url}"')
+            jsx_code = re.sub(rf'(src="{re.escape(new_url)}"[^>]*alt=")[^"]*"', rf'\1{alt}"', jsx_code)
+
+            # 2) style 주입·교체
+            def _inject_style(match):
+                tag = match.group(0)
+                if 'style=' in tag:
+                    tag = re.sub(r'style=\{{[^}}]*\}}', f'style={{{SAFE_STYLE}}}', tag)
+                else:
+                    tag = tag[:-1] + f' style={{{SAFE_STYLE}}}>'
+                return tag
+
+            jsx_code = re.sub(rf'<img[^>]*src="{re.escape(new_url)}"[^>]*?>', _inject_style, jsx_code)
+
         return jsx_code
 
     def _remove_image_elements(self, jsx_code: str) -> str:
@@ -1233,3 +1343,30 @@ class UnifiedJSXGenerator(SessionAwareMixin, InterAgentCommunicationMixin):
             return json.dumps(simplified_images, ensure_ascii=False)
         except:
             return "[]"
+        
+    def _filter_valid_images(self, images: List[Dict]) -> List[Dict]:
+        """✅ 유효한 이미지만 필터링 (폴백 이미지 제외)"""
+        valid_images = []
+        
+        invalid_patterns = [
+            "fallback",
+            "placeholder", 
+            "nonexistent",
+            "static.example.com",
+            "via.placeholder.com"
+            "unsplash.com"
+        ]
+        
+        for image in images:
+            image_url = image.get("image_url", image.get("url", ""))
+            
+            # 유효하지 않은 URL 패턴 검사
+            if any(pattern in image_url.lower() for pattern in invalid_patterns):
+                self.logger.info(f"폴백/플레이스홀더 이미지 제외: {image_url}")
+                continue
+                
+            # 유효한 이미지만 추가
+            if image_url and image_url.startswith(("http://", "https://")):
+                valid_images.append(image)
+        
+        return valid_images

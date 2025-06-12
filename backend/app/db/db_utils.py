@@ -1,6 +1,10 @@
 from uuid import uuid4
 from azure.cosmos.exceptions import CosmosResourceNotFoundError
-from .cosmos_connection import jsx_container
+from typing import List, Dict
+from datetime import datetime
+
+import uuid
+
 
 def save_to_cosmos(container, data, partition_key_field):
     """
@@ -54,67 +58,41 @@ def get_from_cosmos(container, item_id, partition_key=None):
         return None
 
 
-def save_jsx_components(container, magazine_id, jsx_components, order_matters=True):
-    """
-    JSX 컴포넌트 코드들을 Cosmos DB에 저장합니다.
-    
-    container: JSX 컴포넌트용 Cosmos DB 컨테이너
-    magazine_id: 매거진 ID (파티션 키로 사용)
-    jsx_components: JSX 코드 문자열 리스트 또는 JSX 컴포넌트 객체 리스트
-    order_matters: 순서가 중요한지 여부 (True면 순서 정보 저장)
-    """
+def save_jsx_components(container, magazine_id: str, components: List[Dict], 
+                       order_matters: bool = True, session_id: str = None):
+    """JSX 컴포넌트를 CosmosDB에 저장 (세션 ID 포함)"""
     saved_ids = []
     
-    try:
-        # 기존 컴포넌트 삭제 (동일 매거진에 대한 중복 방지)
-        query = f"SELECT * FROM c WHERE c.magazine_id = '{magazine_id}'"
-        existing_items = list(container.query_items(
-            query=query, 
-            enable_cross_partition_query=True
-        ))
-        
-        for item in existing_items:
-            container.delete_item(item=item['id'], partition_key=magazine_id)
-            print(f"🗑️ 기존 JSX 컴포넌트 삭제: {item['id']}")
-        
-        # 새 컴포넌트 저장
-        for idx, component in enumerate(jsx_components):
-            component_data = {}
-            
-            # 컴포넌트가 문자열인 경우 (코드만 있는 경우)
-            if isinstance(component, str):
-                component_data = {
-                    'jsx_code': component,
-                    'component_type': 'section',
-                    'template_name': f'Section{idx+1:02d}.jsx'
-                }
-            # 컴포넌트가 객체인 경우 (메타데이터가 포함된 경우)
-            elif isinstance(component, dict):
-                component_data = component.copy()
-                if 'jsx_code' not in component_data and 'code' in component_data:
-                    component_data['jsx_code'] = component_data.pop('code')
-            
-            # 공통 필드 추가
-            component_data['magazine_id'] = magazine_id
-            component_data['order_index'] = idx if order_matters else None
-            component_data['timestamp'] = __import__('datetime').datetime.now().isoformat()
-            
-            # Cosmos DB에 저장
-            component_id = save_to_cosmos(
-                container, 
-                component_data, 
-                partition_key_field='magazine_id'
-            )
-            
-            if component_id:
-                saved_ids.append(component_id)
-        
-        print(f"✅ {len(saved_ids)}/{len(jsx_components)}개 JSX 컴포넌트 저장 완료")
-        return saved_ids
+    # session_id가 제공되지 않으면 새로 생성
+    if not session_id:
+        session_id = str(uuid.uuid4())
     
-    except Exception as e:
-        print(f"❌ JSX 컴포넌트 저장 중 오류: {e}")
-        return saved_ids
+    for idx, component in enumerate(components):
+        # 고유 ID 생성
+        component_id = f"{magazine_id}_session_{session_id}_component_{idx:03d}"
+        
+        # CosmosDB 문서 구성
+        document = {
+            "id": component_id,
+            "magazine_id": magazine_id,
+            "session_id": session_id,  # ✅ 세션 ID 추가
+            "order_index": idx if order_matters else 0,
+            "title": component.get("title", f"섹션 {idx + 1}"),
+            "jsx_code": component.get("jsx_code", ""),
+            "metadata": component.get("metadata", {}),
+            "created_at": component.get("created_at", datetime.now().isoformat()),
+            "_partition_key": magazine_id  # 파티션 키
+        }
+        
+        try:
+            # CosmosDB에 저장
+            created_item = container.create_item(document)
+            saved_ids.append(created_item["id"])
+        except Exception as e:
+
+            continue
+    
+    return saved_ids
 
 
 def update_agent_logs_in_cosmos(container, session_id, agent_name, output_data):
@@ -206,27 +184,3 @@ def get_agent_logs_from_cosmos(container, session_id, agent_name=None):
     except Exception as e:
         print(f"❌ 에이전트 로그 조회 실패: {e}")
         return None
-
-
-class JSXComponentFetcher:
-    @staticmethod
-    async def get_jsx_code(magazine_id: str, page_id: str) -> str:
-        """Fetches only the JSX code from Cosmos DB for a given magazine_id and page_id."""
-        query = f"""
-        SELECT c.jsx_code FROM c 
-        WHERE c.magazine_id = @magazine_id AND c.id = @page_id
-        """
-        parameters = [
-            {"name": "@magazine_id", "value": magazine_id},
-            {"name": "@page_id", "value": page_id}
-        ]
-        items = list(
-            jsx_container.query_items(
-                query=query,
-                parameters=parameters,
-                enable_cross_partition_query=True
-            )
-        )
-        if not items:
-            return None
-        return items[0].get("jsx_code")

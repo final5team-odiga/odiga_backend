@@ -278,14 +278,14 @@ class EssayAgentManager:
                     key_words = set(norm_key.split())
                     if agent_words and key_words:  # 빈 집합이 아닌 경우에만
                         common_words = agent_words.intersection(key_words)
-                        similarity = len(common_words) / max(len(agent_words), len(key_words)) * 80  # 최대 80% 유사도
+                        similarity = len(common_words) / max(len(agent_words), len(key_words)) * 50  # 최대 80% 유사도
                         if similarity > best_score:
                             best_match = q_key
                             best_score = similarity
                             print(f"- 단어 일치 ({similarity:.1f}%): '{q_key}'")
             
             # 최소 80% 이상 유사한 경우에만 매칭으로 간주
-            if best_match and best_score >= 80:
+            if best_match and best_score >= 50:
                 agent_matches[agent.name] = {
                     "match_key": best_match,
                     "score": best_score

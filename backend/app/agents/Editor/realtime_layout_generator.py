@@ -3,10 +3,10 @@ import numpy as np
 import time
 import json
 from typing import Dict, List, Any, Optional, Tuple
-from utils.data.pdf_vector_manager import PDFVectorManager
-from utils.isolation.ai_search_isolation import AISearchIsolationManager
-from utils.isolation.session_isolation import SessionAwareMixin
-from utils.log.logging_manager import LoggingManager
+from ...utils.data.pdf_vector_manager import PDFVectorManager
+from ...utils.isolation.ai_search_isolation import AISearchIsolationManager
+from ...utils.isolation.session_isolation import SessionAwareMixin
+from ...utils.log.logging_manager import LoggingManager
 
 class RealtimeLayoutGenerator(SessionAwareMixin):
     """실시간 레이아웃 생성기 - AI Search 벡터 패턴 기반 고급 레이아웃 전략 수립"""

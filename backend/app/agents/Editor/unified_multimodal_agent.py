@@ -7,27 +7,24 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 from crewai import Agent, Task, Crew
 from ...custom_llm import get_azure_llm
-
 from .semantic_analysis_engine import SemanticAnalysisEngine
 from .image_diversity_manager import ImageDiversityManager
+from .realtime_layout_generator import RealtimeLayoutGenerator
 from ..jsx.template_selector import SectionStyleAnalyzer
 from ..jsx.unified_jsx_generator import UnifiedJSXGenerator
-
 from ...utils.isolation.ai_search_isolation import AISearchIsolationManager
 from ...utils.data.pdf_vector_manager import PDFVectorManager
 from ...utils.isolation.session_isolation import SessionAwareMixin
 from ...utils.isolation.agent_communication_isolation import InterAgentCommunicationMixin
 from ...utils.log.logging_manager import LoggingManager
-
 from ...db.magazine_db_utils import MagazineDBUtils
 
 class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
-    """통합 멀티모달 에이전트 - 하이브리드 방식: 요약 없는 CrewAI 분석 + 이미지 배치 강화"""
+    """통합 멀티모달 에이전트 - RealtimeLayoutGenerator 완전 통합 + 하이브리드 방식"""
     
     def __init__(self, vector_manager: PDFVectorManager, logger: Any):
         self.llm = get_azure_llm()
         self.logger = logger
-
         self.isolation_manager = AISearchIsolationManager()
         self.vector_manager = vector_manager
         
@@ -39,21 +36,22 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
         self.image_diversity_manager = ImageDiversityManager(
             self.vector_manager, self.logger
         )
-        
         # CLIP 세션 주입
         self.image_diversity_manager.set_external_clip_session(
             self.shared_clip_session.get("onnx_session"),
             self.shared_clip_session.get("clip_preprocess")
         )
         
-        # ✅ 새로 통합되는 컴포넌트 (수정된 초기화)
+        # ✅ RealtimeLayoutGenerator 통합 추가
+        self.layout_generator = RealtimeLayoutGenerator(vector_manager, logger)
+        
+        # ✅ 기존 컴포넌트들
         self.template_selector = SectionStyleAnalyzer()
         self.jsx_generator = UnifiedJSXGenerator(
-            logger=logger, 
-            vector_manager=vector_manager
+            logger=logger, vector_manager=vector_manager
         )
-        
         self.logging_manager = LoggingManager(self.logger)
+        
         self.__init_session_awareness__()
         self.__init_inter_agent_communication__()
         
@@ -61,7 +59,7 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
         self.content_structure_agent = self._create_content_structure_agent_with_ai_search()
         self.image_layout_agent = self._create_image_layout_agent_with_ai_search()
         self.semantic_coordinator_agent = self._create_semantic_coordinator_agent_with_ai_search()
-
+        
         # ✅ 원본 데이터 보존용 변수
         self.current_magazine_content = None
         self.current_image_analysis = None
@@ -73,6 +71,7 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
             import open_clip
             import onnxruntime as ort
             import os
+            
             current_file = Path(__file__)
             project_root = current_file.parent.parent.parent  # backend/app까지 올라가기
             onnx_model_path = project_root / "model" / "clip_onnx" / "clip_visual.quant.onnx"
@@ -112,24 +111,22 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
         await self.logging_manager.log_agent_response(
             agent_name=self.__class__.__name__,
             agent_role="통합 멀티모달 처리 에이전트",
-            task_description="콘텐츠 구조화, 템플릿 선택, JSX 생성 통합 처리",
+            task_description="콘텐츠 구조화, 레이아웃 전략, 템플릿 선택, JSX 생성 통합 처리",
             response_data=result,
-            metadata={"integrated_processing": True, "clip_shared": True}
+            metadata={"integrated_processing": True, "clip_shared": True, "layout_enhanced": True}
         )
         
         return result
 
     async def process_magazine_unified(self, magazine_content: Dict, image_analysis: List[Dict], 
                                      user_id: str = "unknown_user") -> Dict:
-        """✅ 하이브리드 방식: 요약 없는 CrewAI 분석 + 이미지 배치 강화"""
-        
-        self.logger.info("=== 하이브리드 멀티모달 매거진 처리 시작 ===")
+        """✅ RealtimeLayoutGenerator 통합 하이브리드 방식"""
+        self.logger.info("=== RealtimeLayoutGenerator 통합 하이브리드 멀티모달 매거진 처리 시작 ===")
         
         try:
             # ✅ 원본 데이터 및 이미지 데이터 보존
             self.current_magazine_content = magazine_content
             self.current_image_analysis = image_analysis
-            
             self.logger.info(f"✅ 이미지 데이터 수신: {len(image_analysis)}개")
             
             # === 데이터 준비 단계 ===
@@ -139,11 +136,12 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
                 if magazine_data:
                     magazine_content = magazine_data.get("content", magazine_content)
                     self.current_magazine_content = magazine_content
-                    # 기존 이미지 데이터가 있으면 병합
-                    existing_images = await MagazineDBUtils.get_images_by_magazine_id(magazine_content["magazine_id"])
-                    if existing_images:
-                        image_analysis.extend(existing_images)
-                        self.current_image_analysis = image_analysis
+                
+                # 기존 이미지 데이터가 있으면 병합
+                existing_images = await MagazineDBUtils.get_images_by_magazine_id(magazine_content["magazine_id"])
+                if existing_images:
+                    image_analysis.extend(existing_images)
+                    self.current_image_analysis = image_analysis
             
             # 1. 의미 분석 (공유 CLIP 세션 사용)
             self.logger.info("1단계: 공유 CLIP 기반 의미 분석 실행")
@@ -163,7 +161,6 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
             optimization_result = await self._execute_image_allocation(
                 image_analysis, magazine_content.get('sections', []), unified_patterns
             )
-            
             self.image_allocation_result = optimization_result
             
             # 4. 요약 없는 CrewAI 분석
@@ -172,9 +169,9 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
                 magazine_content, image_analysis, similarity_data, unified_patterns, user_id
             )
             
-            # ✅ 5. 이미지가 포함된 JSX 생성
-            self.logger.info("5단계: 이미지 포함 JSX 생성")
-            final_sections = await self._process_sections_with_images(
+            # ✅ 5. RealtimeLayoutGenerator 기반 향상된 JSX 생성
+            self.logger.info("5단계: RealtimeLayoutGenerator 통합 JSX 생성")
+            final_sections = await self._process_sections_with_enhanced_layouts(
                 structured_content, unified_patterns, optimization_result
             )
             
@@ -185,21 +182,183 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
                     "unified_processing": True,
                     "crew_ai_enhanced": True,
                     "structured_processing": True,
+                    "layout_generator_enhanced": True,
                     "total_sections": len(final_sections),
                     "original_content_preserved": True,
                     "hybrid_approach": True,
                     "images_allocated": len(image_analysis),
-                    "sections_with_images": self._count_sections_with_images(final_sections)
+                    "sections_with_images": self._count_sections_with_images(final_sections),
+                    "realtime_layout_applied": True
                 }
             }
             
-            self.logger.info("=== 하이브리드 멀티모달 매거진 처리 완료 ===")
+            self.logger.info("=== RealtimeLayoutGenerator 통합 하이브리드 멀티모달 매거진 처리 완료 ===")
             return result
             
         except Exception as e:
-            self.logger.error(f"하이브리드 매거진 처리 실패: {e}")
+            self.logger.error(f"RealtimeLayoutGenerator 통합 매거진 처리 실패: {e}")
+            return self._create_fallback_result(magazine_content, image_analysis)
 
+    async def _process_sections_with_enhanced_layouts(self, structured_content: Dict, 
+                                                    unified_patterns: Dict, 
+                                                    optimization_result: Dict) -> List[Dict]:
+        """✅ RealtimeLayoutGenerator를 활용한 향상된 레이아웃 생성을 포함한 섹션 처리"""
+        
+        try:
+            # 1. 기존 방식으로 기본 섹션 데이터 준비
+            enhanced_sections = await self._prepare_enhanced_sections(structured_content, optimization_result)
+            
+            # ✅ 2. RealtimeLayoutGenerator로 레이아웃 전략 수립
+            layout_strategies = await self._generate_layout_strategies(enhanced_sections, unified_patterns)
+            
+            # ✅ 3. 전략 기반 템플릿 선택 및 JSX 생성
+            final_sections = await self._generate_jsx_with_layout_strategies(
+                enhanced_sections, layout_strategies, unified_patterns
+            )
+            
+            return final_sections
+            
+        except Exception as e:
+            self.logger.error(f"향상된 레이아웃 생성 실패, 기본 방식으로 폴백: {e}")
+            return await self._process_sections_with_images(structured_content, unified_patterns, optimization_result)
 
+    async def _prepare_enhanced_sections(self, structured_content: Dict, optimization_result: Dict) -> List[Dict]:
+        """향상된 섹션 데이터 준비"""
+        enhanced_sections = []
+        
+        # CrewAI 구조화 결과 파싱
+        if isinstance(structured_content, str):
+            try:
+                structured_content = json.loads(structured_content)
+            except json.JSONDecodeError:
+                self.logger.warning("구조화된 콘텐츠 JSON 파싱 실패")
+                structured_content = {"sections": []}
+        
+        # 구조화된 데이터와 원본 데이터 결합
+        original_sections = self.current_magazine_content.get("sections", [])
+        structured_sections = structured_content.get("sections", [])
+        
+        section_counter = 0
+        
+        for i, section in enumerate(original_sections):
+            # 구조화된 정보 찾기
+            structured_info = {}
+            if i < len(structured_sections):
+                structured_info = structured_sections[i]
+            
+            sub_sections = section.get("sub_sections", [])
+            
+            if sub_sections:
+                # 하위 섹션 처리
+                for j, sub_section in enumerate(sub_sections):
+                    enhanced_section_data = self._create_enhanced_section_data_with_images(
+                        section, sub_section, structured_info, optimization_result, section_counter, j
+                    )
+                    enhanced_sections.append(enhanced_section_data)
+                    section_counter += 1
+            else:
+                # 단일 섹션 처리
+                enhanced_section_data = self._create_enhanced_single_section_data_with_images(
+                    section, structured_info, optimization_result, section_counter
+                )
+                enhanced_sections.append(enhanced_section_data)
+                section_counter += 1
+        
+        return enhanced_sections
+
+    async def _generate_layout_strategies(self, enhanced_sections: List[Dict], 
+                                        unified_patterns: Dict) -> Dict:
+        """✅ RealtimeLayoutGenerator를 활용한 각 섹션별 레이아웃 전략 생성"""
+        strategies = {}
+        
+        for i, section_data in enumerate(enhanced_sections):
+            try:
+                # ✅ RealtimeLayoutGenerator의 섹션별 전략 생성 활용
+                strategy = await self.layout_generator.generate_layout_strategy_for_section(section_data)
+                strategies[f"section_{i}"] = strategy
+                
+                self.logger.info(f"섹션 {i} 레이아웃 전략 생성 완료: {strategy.get('layout_type', 'unknown')}")
+                
+            except Exception as e:
+                self.logger.error(f"섹션 {i} 레이아웃 전략 생성 실패: {e}")
+                # 폴백 전략
+                strategies[f"section_{i}"] = self._get_fallback_strategy_for_section(section_data)
+        
+        return strategies
+
+    async def _generate_jsx_with_layout_strategies(self, enhanced_sections: List[Dict], 
+                                                 layout_strategies: Dict, 
+                                                 unified_patterns: Dict) -> List[Dict]:
+        """✅ 레이아웃 전략을 활용한 JSX 생성"""
+        final_sections = []
+        
+        for i, section_data in enumerate(enhanced_sections):
+            section_key = f"section_{i}"
+            layout_strategy = layout_strategies.get(section_key, {})
+            
+            # ✅ 레이아웃 전략을 템플릿 선택에 활용
+            enhanced_section_data = {
+                **section_data,
+                "layout_strategy": layout_strategy,
+                "ai_search_patterns": unified_patterns.get("ai_search_patterns", []),
+                "jsx_patterns": unified_patterns.get("jsx_template_patterns", [])
+            }
+            
+            # 전략 기반 템플릿 선택
+            template_code = await self.template_selector.analyze_and_select_template(
+                enhanced_section_data, layout_strategy
+            )
+            
+            # JSX 생성
+            jsx_result = await self.jsx_generator.generate_jsx_from_template(
+                enhanced_section_data, template_code
+            )
+            
+            final_sections.append({
+                "title": section_data["title"],
+                "jsx_code": jsx_result.get("jsx_code", ""),
+                "metadata": {
+                    **jsx_result.get("metadata", {}),
+                    "layout_strategy_applied": True,
+                    "strategy_type": layout_strategy.get("layout_type", "unknown"),
+                    "ai_search_enhanced": True,
+                    "realtime_layout_generated": True
+                }
+            })
+        
+        return final_sections
+
+    def _get_fallback_strategy_for_section(self, section_data: Dict) -> Dict:
+        """섹션별 폴백 전략 생성"""
+        image_count = len(section_data.get("images", []))
+        title = section_data.get("title", "제목 없음")
+        
+        if image_count > 0:
+            return {
+                "layout_type": "균형형",
+                "visual_hierarchy": ["이미지", "제목", "본문"],
+                "image_placement": "상단",
+                "text_flow": "단일 컬럼",
+                "emotional_focus": "이미지 강조",
+                "key_features": ["default", "balanced", "image-focused"],
+                "section_title": title,
+                "pattern_enhanced": False,
+                "ai_search_patterns_used": 0
+            }
+        else:
+            return {
+                "layout_type": "텍스트 중심",
+                "visual_hierarchy": ["제목", "부제목", "본문"],
+                "image_placement": "없음",
+                "text_flow": "단일 컬럼",
+                "emotional_focus": "가독성",
+                "key_features": ["default", "text-centric", "readability"],
+                "section_title": title,
+                "pattern_enhanced": False,
+                "ai_search_patterns_used": 0
+            }
+
+    # ✅ 기존 메서드들 모두 유지 (검색 결과 1번과 동일)
     async def _execute_image_allocation(self, image_analysis: List[Dict], sections: List[Dict], 
                                       unified_patterns: Dict) -> Dict:
         """✅ 이미지 할당 실행 (ImageDiversityManager 활용)"""
@@ -220,14 +379,14 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
             else:
                 self.logger.warning("ImageDiversityManager 할당 결과가 비어있음, 직접 할당 수행")
                 return self._direct_image_allocation(image_analysis, sections)
-            
+                
         except Exception as e:
             self.logger.error(f"이미지 할당 실패: {e}")
             return self._direct_image_allocation(image_analysis, sections)
 
-
-    async def _execute_crew_analysis_without_summary(self, magazine_content: Dict, image_analysis: List[Dict],
-                                                   similarity_data: Dict, unified_patterns: Dict, user_id: str) -> Dict:
+    async def _execute_crew_analysis_without_summary(self, magazine_content: Dict, image_analysis: List[Dict], 
+                                                   similarity_data: Dict, unified_patterns: Dict, 
+                                                   user_id: str) -> Dict:
         """요약 없는 CrewAI 분석 (전체 데이터 활용)"""
         try:
             # ✅ 요약 없는 컨텍스트 생성
@@ -289,11 +448,9 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
         
         return json.dumps(context, ensure_ascii=False, indent=2)
 
-    async def _process_sections_with_images(self, structured_content: Dict, 
-                                          unified_patterns: Dict, 
+    async def _process_sections_with_images(self, structured_content: Dict, unified_patterns: Dict, 
                                           optimization_result: Dict) -> List[Dict]:
         """✅ 이미지가 포함된 섹션 처리"""
-        
         try:
             # CrewAI 구조화 결과 파싱
             if isinstance(structured_content, str):
@@ -308,7 +465,6 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
             # ✅ 구조화된 데이터와 원본 데이터 결합
             original_sections = self.current_magazine_content.get("sections", [])
             structured_sections = structured_content.get("sections", [])
-            
             final_sections = []
             section_counter = 0  # 전체 섹션 카운터
             
@@ -331,7 +487,6 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
                         template_code = await self._select_template_with_structured_info(
                             enhanced_section_data, structured_info, unified_patterns
                         )
-                        
                         jsx_result = await self.jsx_generator.generate_jsx_from_template(
                             enhanced_section_data, template_code
                         )
@@ -346,7 +501,6 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
                                 "images_included": len(enhanced_section_data.get("images", []))
                             }
                         })
-                        
                         section_counter += 1
                 else:
                     # 단일 섹션 처리
@@ -357,7 +511,6 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
                     template_code = await self._select_template_with_structured_info(
                         enhanced_section_data, structured_info, unified_patterns
                     )
-                    
                     jsx_result = await self.jsx_generator.generate_jsx_from_template(
                         enhanced_section_data, template_code
                     )
@@ -372,7 +525,6 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
                             "images_included": len(enhanced_section_data.get("images", []))
                         }
                     })
-                    
                     section_counter += 1
             
             self.logger.info(f"✅ 이미지 포함 JSX 생성 완료: {len(final_sections)}개 컴포넌트")
@@ -486,7 +638,7 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
         # ✅ 4차: 최후의 수단 - 기본 이미지 생성
         if not assigned_images:
             assigned_images = [{
-                "image_url": f"https://via.placeholder.com/600x400?text=Section+{section_index+1}",
+                "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==",
                 "image_name": f"placeholder_section_{section_index+1}",
                 "description": f"섹션 {section_index+1} 기본 이미지",
                 "width": 600,
@@ -1311,63 +1463,182 @@ class UnifiedMultimodalAgent(SessionAwareMixin, InterAgentCommunicationMixin):
         """기본 템플릿 코드 반환 (템플릿 선택 실패 시 사용)"""
         return """import React from "react";
 
-    const DefaultMagazineSection = () => {
-    return (
-        <div style={{ 
-        backgroundColor: "white", 
-        color: "black", 
-        padding: "20px",
-        fontFamily: "'Noto Sans KR', sans-serif",
-        minHeight: "400px"
-        }}>
-        <h1 style={{ 
-            fontSize: "2.5rem", 
-            marginBottom: "16px",
-            fontWeight: "bold",
-            lineHeight: "1.2"
-        }}>
-            매거진 섹션 제목
-        </h1>
-        <h2 style={{ 
-            fontSize: "1.25rem", 
-            marginBottom: "12px", 
-            color: "#606060",
-            fontWeight: "500"
-        }}>
-            부제목
-        </h2>
-        <div style={{ 
-            fontSize: "1rem", 
-            lineHeight: "1.7", 
-            marginBottom: "20px",
-            textAlign: "justify"
-        }}>
-            <p>
-            매거진 콘텐츠가 여기에 표시됩니다. 이 기본 템플릿은 템플릿 선택에 실패했을 때 
-            사용되는 안전한 폴백 템플릿입니다. 텍스트와 이미지가 적절히 배치되어 
-            읽기 쉬운 레이아웃을 제공합니다.
-            </p>
-        </div>
-        <div style={{ 
-            display: "grid", 
-            gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", 
-            gap: "16px", 
-            marginTop: "20px" 
-        }}>
-            <img 
-            src="https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=600" 
-            alt="기본 이미지" 
-            style={{ 
-                width: "100%", 
-                height: "250px", 
-                objectFit: "cover", 
-                borderRadius: "8px",
-                boxShadow: "0 4px 6px rgba(0, 0, 0, 0.1)"
-            }}
-            />
-        </div>
-        </div>
-    );
-    };
+const DefaultMagazineSection = () => {
+  return (
+    <div style={{ 
+      backgroundColor: "white", 
+      color: "black", 
+      padding: "20px",
+      fontFamily: "'Noto Sans KR', sans-serif",
+      minHeight: "400px"
+    }}>
+      <h1 style={{ 
+        fontSize: "2.5rem", 
+        marginBottom: "16px",
+        fontWeight: "bold",
+        lineHeight: "1.2"
+      }}>
+        매거진 섹션 제목
+      </h1>
+      <h2 style={{ 
+        fontSize: "1.25rem", 
+        marginBottom: "12px", 
+        color: "#606060",
+        fontWeight: "500"
+      }}>
+        부제목
+      </h2>
+      <div style={{ 
+        fontSize: "1rem", 
+        lineHeight: "1.7", 
+        marginBottom: "20px",
+        textAlign: "justify"
+      }}>
+        <p>
+          매거진 콘텐츠가 여기에 표시됩니다. 이 기본 템플릿은 템플릿 선택에 실패했을 때 
+          사용되는 안전한 폴백 템플릿입니다. 텍스트와 이미지가 적절히 배치되어 
+          읽기 쉬운 레이아웃을 제공합니다.
+        </p>
+      </div>
+      <div style={{ 
+        display: "grid", 
+        gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", 
+        gap: "16px", 
+        marginTop: "20px" 
+      }}>
+        <img 
+          src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAwIiBoZWlnaHQ9IjQwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg=="
+          alt="기본 이미지" 
+          style={{ 
+            width: "100%", 
+            height: "250px", 
+            objectFit: "cover", 
+            borderRadius: "8px",
+            boxShadow: "0 4px 6px rgba(0, 0, 0, 0.1)"
+          }}
+        />
+      </div>
+    </div>
+  );
+};
 
-    export default DefaultMagazineSection;"""
+export default DefaultMagazineSection;"""
+
+    def _create_fallback_result(self, magazine_content: Dict, image_analysis: List[Dict]) -> Dict:
+        """전체 처리 실패 시 폴백 결과 생성"""
+        try:
+            # 기본 섹션 생성
+            sections = magazine_content.get("sections", [])
+            fallback_sections = []
+            
+            for i, section in enumerate(sections[:3]):  # 최대 3개만 처리
+                # 하위 섹션 확인
+                sub_sections = section.get("sub_sections", [])
+                
+                if sub_sections:
+                    # 하위 섹션이 있는 경우 첫 번째만 처리
+                    sub_section = sub_sections[0]
+                    title = f"{section.get('title', '')}: {sub_section.get('title', '')}"
+                    content = sub_section.get("body", "")
+                else:
+                    title = section.get("title", f"섹션 {i+1}")
+                    content = section.get("content", section.get("body", ""))
+                
+                # 기본 JSX 생성
+                fallback_jsx = self._create_basic_fallback_jsx(title, content, i)
+                
+                fallback_sections.append({
+                    "title": title,
+                    "jsx_code": fallback_jsx,
+                    "metadata": {
+                        "template_applied": False,
+                        "generation_method": "fallback",
+                        "error": "전체 처리 실패",
+                        "section_index": i
+                    }
+                })
+            
+            return {
+                "content_sections": fallback_sections,
+                "processing_metadata": {
+                    "unified_processing": False,
+                    "crew_ai_enhanced": False,
+                    "structured_processing": False,
+                    "layout_generator_enhanced": False,
+                    "total_sections": len(fallback_sections),
+                    "original_content_preserved": True,
+                    "hybrid_approach": False,
+                    "fallback_used": True,
+                    "error": "전체 처리 실패"
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error(f"폴백 결과 생성 실패: {e}")
+            return self._create_minimal_fallback_result()
+
+    def _create_basic_fallback_jsx(self, title: str, content: str, index: int) -> str:
+        """기본 폴백 JSX 생성"""
+        
+        # 안전한 컴포넌트 이름 생성
+        safe_title = re.sub(r'[^a-zA-Z0-9가-힣]', '', title.replace(' ', '').replace(':', ''))
+        component_name = safe_title if safe_title else f"FallbackSection{index+1}"
+        
+        # 콘텐츠 길이 제한
+        safe_content = content[:500] if len(content) > 500 else content
+        
+        jsx_code = f"""import React from "react";
+
+const {component_name} = () => {{
+  return (
+    <div style={{ 
+      backgroundColor: "white", 
+      color: "black", 
+      padding: "20px",
+      fontFamily: "'Noto Sans KR', sans-serif",
+      minHeight: "300px"
+    }}>
+      <h1 style={{ 
+        fontSize: "2rem", 
+        marginBottom: "16px",
+        fontWeight: "bold"
+      }}>
+        {title}
+      </h1>
+      <div style={{ 
+        fontSize: "1rem", 
+        lineHeight: "1.7", 
+        marginBottom: "16px"
+      }}>
+        <p>{safe_content}</p>
+      </div>
+    </div>
+  );
+}};
+
+export default {component_name};"""
+
+        return jsx_code
+
+    def _create_minimal_fallback_result(self) -> Dict:
+        """최소한의 폴백 결과 생성"""
+        return {
+            "content_sections": [
+                {
+                    "title": "기본 섹션",
+                    "jsx_code": self._get_default_template_code(),
+                    "metadata": {
+                        "template_applied": False,
+                        "generation_method": "minimal_fallback",
+                        "error": "최소한의 폴백 사용"
+                    }
+                }
+            ],
+            "processing_metadata": {
+                "unified_processing": False,
+                "layout_generator_enhanced": False,
+                "total_sections": 1,
+                "fallback_used": True,
+                "error": "최소한의 폴백 결과"
+            }
+        }

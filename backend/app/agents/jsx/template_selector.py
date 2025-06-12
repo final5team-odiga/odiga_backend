@@ -238,18 +238,24 @@ class SectionStyleAnalyzer:
         return filtered_results
 
     def _filter_by_image_count(self, results: List[Dict], image_count: int) -> List[Dict]:
-        """이미지 수 기반 필터링"""
-        filtered_results = []
-        
-        for result in results:
-            result_img_count = result.get('image_count', 0)
-            
-            if (image_count == 0 and result_img_count == 0) or \
-               (image_count == 1 and result_img_count == 1) or \
-               (image_count > 1 and result_img_count > 1):
-                filtered_results.append(result)
-        
-        return filtered_results
+        """이미지 수 + 키워드 기반 필터링 (grid·masonry·responsive 우선)"""
+        thumb_keywords = ("grid", "masonry", "responsive", "gallery", "thumbnail")
+        filtered = []
+
+        for r in results:
+            rc = r.get("image_count", 0)
+            name = r.get("component_name", "").lower()
+            keywords = r.get("search_keywords", "")
+            kw_match = any(k in name or k in keywords for k in thumb_keywords)
+
+            if image_count == 0 and rc == 0:
+                filtered.append(r)
+            elif image_count == 1 and rc == 1:
+                filtered.append(r)
+            elif image_count > 1 and rc > 1 and kw_match:
+                filtered.append(r)
+
+        return filtered or results
 
     def _create_query_from_layout_strategy(self, section_data: Dict, layout_strategy: Dict) -> str:
         """레이아웃 전략을 기반으로 풍부한 검색 쿼리를 생성합니다."""
