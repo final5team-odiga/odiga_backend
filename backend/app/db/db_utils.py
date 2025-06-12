@@ -1,6 +1,6 @@
 from uuid import uuid4
 from azure.cosmos.exceptions import CosmosResourceNotFoundError
-
+from .cosmos_connection import jsx_container
 
 def save_to_cosmos(container, data, partition_key_field):
     """
@@ -206,3 +206,27 @@ def get_agent_logs_from_cosmos(container, session_id, agent_name=None):
     except Exception as e:
         print(f"❌ 에이전트 로그 조회 실패: {e}")
         return None
+
+
+class JSXComponentFetcher:
+    @staticmethod
+    async def get_jsx_code(magazine_id: str, page_id: str) -> str:
+        """Fetches only the JSX code from Cosmos DB for a given magazine_id and page_id."""
+        query = f"""
+        SELECT c.jsx_code FROM c 
+        WHERE c.magazine_id = @magazine_id AND c.id = @page_id
+        """
+        parameters = [
+            {"name": "@magazine_id", "value": magazine_id},
+            {"name": "@page_id", "value": page_id}
+        ]
+        items = list(
+            jsx_container.query_items(
+                query=query,
+                parameters=parameters,
+                enable_cross_partition_query=True
+            )
+        )
+        if not items:
+            return None
+        return items[0].get("jsx_code")
