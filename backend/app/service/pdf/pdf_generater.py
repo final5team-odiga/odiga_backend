@@ -197,7 +197,123 @@ class PDFGenerationService:
                     logger.warning(f"임시 삭제 실패: {exc}")
 
     # ─────────────────────────── 헬퍼: JSX 구문 검증 ────────────────────────────
+    async def generate_pdf_from_cosmosdb_by_session(
+            self,
+            magazine_id: str,
+            session_id: str,
+            output_pdf_path: str = "magazine_result.pdf",
+        ) -> bool:
+            """
+            magazine_id 와 session_id 를 모두 고정해 Cosmos DB → PDF.
+            기존 헬퍼∙유틸은 그대로 재사용한다.
+            """
+            return await self._generate_pdf_for_session(
+                magazine_id, session_id, output_pdf_path
+            )
 
+    def generate_pdf_by_session(
+        self,
+        magazine_id: str,
+        session_id: str,
+        output_pdf_path: str = "magazine_result.pdf",
+    ) -> bool:
+        """동기 편의 래퍼"""
+        import asyncio
+
+        return asyncio.run(
+            self._generate_pdf_for_session(magazine_id, session_id, output_pdf_path)
+        )
+
+    # ─── 내부 구현: _generate_pdf_for_session ───
+    async def _generate_pdf_for_session(
+        self, magazine_id: str, session_id: str, output_pdf_path: str
+    ) -> bool:
+        """
+        _generate_pdf_from_cosmosdb() 와 동일하지만
+        ① 최신 세션 검색 단계 생략
+        ② 전달받은 session_id 로 바로 JSX 쿼리
+        """
+        temp_dir = None
+        try:
+            # 1) 해당 session 의 JSX 직접 조회
+            items_query = {
+                "query": (
+                    "SELECT * FROM c "
+                    "WHERE c.magazine_id = @mid AND c.session_id = @sid "
+                    "ORDER BY c.order_index ASC"
+                ),
+                "parameters": [
+                    {"name": "@mid", "value": magazine_id},
+                    {"name": "@sid", "value": session_id},
+                ],
+            }
+            items = list(
+                jsx_container.query_items(items_query, enable_cross_partition_query=True)
+            )
+            if not items:
+                logger.error(
+                    f"JSX 없음 – magazine_id={magazine_id}, session_id={session_id}"
+                )
+                return False
+            logger.info(f"✅ 세션 데이터 로드: {len(items)}개 섹션")
+
+            # 2) 이후 단계는 기존 _generate_pdf_from_cosmosdb 와 동일
+            items = await self._prefilter_images(items)               # [2]
+            session_token = uuid.uuid4().hex[:8]
+            temp_dir = self.temp_base_dir / f"jsx_pdf_{session_token}"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+
+            jsx_files = []
+            for idx, item in enumerate(items, start=1):
+                jsx_code = item.get("jsx_code", "")
+                if not jsx_code.strip():
+                    continue
+                jsx_code = self._replace_unsplash_with_fallback(jsx_code)  # [2]
+                jsx_code = self._fix_double_chevrons(jsx_code)             # [2]
+                try:
+                    self._assert_valid_jsx(jsx_code)                       # [2]
+                except ValueError as e:
+                    logger.warning(f"⚠️ JSX 오류 skip: {e}")
+                    continue
+                p = temp_dir / f"Section{idx:02d}.jsx"
+                p.write_text(
+                    jsx_code.replace("\\n", "\n").replace('\\"', '"'),
+                    encoding="utf-8",
+                )
+                jsx_files.append(str(p))
+            if not jsx_files:
+                logger.error("유효 JSX 없음 → PDF 중단")
+                return False
+
+            script = self.project_root / "service" / "export_pdf.js"       # [2]
+            cmd = ["node", str(script), "--files", *jsx_files,
+                   "--output", str(Path(output_pdf_path).resolve())]
+
+            logger.info("📄 PDF 생성 시작")
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self.project_root),
+            )
+            await asyncio.gather(
+                self._pipe_stream(proc.stdout, logging.INFO),
+                self._pipe_stream(proc.stderr, logging.ERROR),
+            )
+            await proc.wait()
+            if proc.returncode == 0:
+                logger.info(f"✅ PDF 완료: {output_pdf_path}")
+                return True
+            logger.error(f"❌ PDF 실패 – returncode={proc.returncode}")
+            return False
+
+        except Exception as exc:
+            logger.exception(f"PDF 생성 예외: {exc}")
+            return False
+
+        finally:
+            if temp_dir and temp_dir.exists():
+                shutil.rmtree(temp_dir, ignore_errors=True)
     def _assert_valid_jsx(self, code: str) -> None:
         """
         Babel Parser(@babel/parser)로 JSX를 파싱해 문법 오류가 있으면 ValueError 발생.
@@ -280,3 +396,27 @@ class PDFGenerationService:
         # 기존 로직 유지 (생략)
         return items
 
+    async def _pipe_stream(
+            self,
+            stream: asyncio.StreamReader,
+            log_level: int = logging.INFO,
+        ) -> None:
+            """
+            asyncio.create_subprocess_exec 로 얻은 stdout/stderr 스트림을
+            실시간으로 읽어 지정한 로그 레벨로 출력한다.
+
+            Parameters
+            ----------
+            stream : asyncio.StreamReader
+                proc.stdout 또는 proc.stderr
+            log_level : int
+                logging.INFO / logging.ERROR 등
+            """
+            try:
+                while True:
+                    line = await stream.readline()
+                    if not line:           # EOF
+                        break
+                    logger.log(log_level, line.decode(errors="replace").rstrip())
+            except Exception as exc:
+                logger.warning(f"_pipe_stream 예외: {exc}")

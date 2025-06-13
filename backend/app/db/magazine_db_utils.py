@@ -2,6 +2,8 @@ from typing import Dict, List, Optional
 from .cosmos_connection import magazine_container, image_container
 from uuid import uuid4
 from datetime import datetime
+from azure.cosmos.exceptions import CosmosResourceExistsError 
+
 
 class MagazineDBUtils:
     @staticmethod
@@ -47,17 +49,20 @@ class MagazineDBUtils:
 
     @staticmethod
     async def save_magazine_content(content: Dict) -> Optional[str]:
-        """매거진 콘텐츠 저장"""
+        """매거진 콘텐츠 저장 (존재하면 갱신, 없으면 삽입)"""
         try:
             # id 필드가 없으면 자동으로 생성
-            if 'id' not in content:
-                content['id'] = str(uuid4())
-            
-            result = magazine_container.create_item(body=content)
-            print(f"✅ 매거진 콘텐츠 저장 성공: {result['id']}")
-            return result['id']
+            if "id" not in content:
+                content["id"] = str(uuid4())
+
+            # ✅ upsert_item : Insert-or-Replace → 409 충돌 없음
+            result = magazine_container.upsert_item(body=content)
+            print(f"✅ 매거진 콘텐츠 upsert 성공: {result['id']}")
+            return result["id"]
+
         except Exception as e:
-            print(f"❌ 매거진 저장 실패: {e}")
+            # 409 충돌은 더 이상 발생하지 않지만, 혹시 모를 다른 예외 로깅
+            print(f"❌ 매거진 upsert 실패: {e}")
             return None
 
     @staticmethod
@@ -77,40 +82,31 @@ class MagazineDBUtils:
         except Exception as e:
             print(f"이미지 분석 저장 실패: {e}")
             return None
-
+        
     @staticmethod
     async def update_magazine_content(magazine_id: str, content: Dict) -> bool:
-        """매거진 콘텐츠 업데이트"""
+        """매거진 콘텐츠 업데이트(없으면 생성)"""
         try:
-            # 기존 매거진 데이터 조회
-            magazine_data = await MagazineDBUtils.get_magazine_by_id(magazine_id)
-            if not magazine_data:
-                print(f"⚠️ 매거진 ID {magazine_id}에 해당하는 문서를 찾을 수 없습니다. 새로 생성합니다.")
-                # 문서가 없으면 새로 생성
-                content['id'] = magazine_id
-                await MagazineDBUtils.save_magazine_content(content)
-                return True
-            
-            # 새로운 콘텐츠로 기존 데이터 업데이트
-            for key, value in content.items():
-                magazine_data[key] = value
-                
-            magazine_data['id'] = magazine_id
-            magazine_container.replace_item(item=magazine_id, body=magazine_data)
-            print(f"✅ 매거진 ID {magazine_id} 업데이트 완료")
+            content["id"] = magazine_id      # id 보존
+            magazine_container.upsert_item(body=content)   # ✅ 한 줄이면 충분
+            print(f"✅ 매거진 ID {magazine_id} upsert 완료")
             return True
+
         except Exception as e:
             print(f"❌ 매거진 업데이트 실패: {e}")
             return False
 
     @staticmethod
     async def save_combined_image_analysis(combined_analysis: Dict) -> Optional[str]:
-        """이미지 분석 결과를 하나의 통합 문서로 이미지 컨테이너에 저장"""
+        """이미지 분석 결과를 하나의 통합 문서로 이미지 컨테이너에 저장/갱신"""
         try:
-            # 이미지 컨테이너에 저장
-            result = image_container.create_item(body=combined_analysis)
-            print(f"✅ 통합 이미지 분석 결과 ({combined_analysis['analysis_count']}개) 이미지 컨테이너에 저장 완료: {result['id']}")
-            return result['id']
+            result = image_container.upsert_item(body=combined_analysis)   # ✅ 교체
+            print(
+                f"✅ 통합 이미지 분석 결과({combined_analysis['analysis_count']}개) "
+                f"upsert 완료: {result['id']}"
+            )
+            return result["id"]
+
         except Exception as e:
             print(f"통합 이미지 분석 저장 실패: {e}")
-            return None 
+            return None
